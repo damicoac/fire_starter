@@ -1,3 +1,6 @@
+// File overview:
+// TUI state transition engine. It translates keyboard/input events and stage execution messages into deterministic UI behavior so operators can trust what action happens next.
+
 package main
 
 import (

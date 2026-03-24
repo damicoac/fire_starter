@@ -1,3 +1,6 @@
+// File overview:
+// Global node/tool registry management. It provides centralized discovery and initialization so features can self-register without manual wiring in every caller.
+
 package core
 
 import "sync"

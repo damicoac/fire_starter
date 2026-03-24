@@ -1,3 +1,6 @@
+// File overview:
+// Active-testing stage node/constants for the decision tree. It structures exploit validation into small verifiable steps to reduce false positives and preserve traceability.
+
 package activetesting
 
 import (
@@ -15,8 +18,6 @@ func isActiveTestingInputProbingStage(input core.ThirdPartyInput) bool {
 }
 
 func runActiveTestingInputProbing(ctx context.Context, input core.ThirdPartyInput) (core.ToolResult, error) {
-	_ = ctx
-
 	target, err := core.RequireString(input.Payload, "target")
 	if err != nil {
 		return core.ToolResult{}, err
@@ -37,12 +38,17 @@ func runActiveTestingInputProbing(ctx context.Context, input core.ThirdPartyInpu
 		nextStage = stageActiveTestingInjection
 	}
 
+	calls := []core.ToolCall{
+		{Tool: "manual-tester", Function: "CraftInputPayloads", Purpose: "probe collected input vectors with controlled payloads"},
+		{Tool: "burp-intruder", Function: "LowRateSingleParameterMode", Purpose: "run controlled low-rate payload tests on one parameter at a time"},
+	}
+	executions := core.ExecuteToolCalls(ctx, input.Payload, calls)
+	nextPayload["last_execution_summary"] = core.ExecutionSummary(executions)
+
 	return core.ToolResult{
-		ToolName: stageActiveTestingInputProbing,
-		Calls: []core.ToolCall{
-			{Tool: "manual-tester", Function: "CraftInputPayloads", Purpose: "probe collected input vectors with controlled payloads"},
-			{Tool: "burp-intruder", Function: "LowRateSingleParameterMode", Purpose: "run controlled low-rate payload tests on one parameter at a time"},
-		},
+		ToolName:   stageActiveTestingInputProbing,
+		Calls:      calls,
+		Executions: executions,
 		Output: map[string]any{
 			"next_stage":   nextStage,
 			"next_payload": nextPayload,

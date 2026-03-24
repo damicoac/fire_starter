@@ -1,3 +1,6 @@
+// File overview:
+// Typed payload access helpers. They exist to fail fast on malformed stage payloads and avoid scattered map assertions throughout node code.
+
 package core
 
 import "fmt"

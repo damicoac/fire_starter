@@ -1,3 +1,6 @@
+// File overview:
+// Async command wiring between UI and decision-tree execution. It isolates side-effecting work behind Tea commands to keep the update loop responsive and predictable.
+
 package main
 
 import (

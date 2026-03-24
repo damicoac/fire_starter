@@ -1,3 +1,6 @@
+// File overview:
+// Default transition resolver for ToolResult output. It keeps stage handoff behavior uniform and backward-compatible when nodes emit standard transition keys.
+
 package core
 
 import "context"

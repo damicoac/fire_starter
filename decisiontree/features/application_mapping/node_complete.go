@@ -1,3 +1,6 @@
+// File overview:
+// Application-mapping stage node/constants for the decision tree. It exists to progressively build attack-surface knowledge before active exploitation checks begin.
+
 package applicationmapping
 
 import (
@@ -15,8 +18,6 @@ func isApplicationMappingCompleteStage(input core.ThirdPartyInput) bool {
 }
 
 func runApplicationMappingComplete(ctx context.Context, input core.ThirdPartyInput) (core.ToolResult, error) {
-	_ = ctx
-
 	// Confirm the module is operating against a known target.
 	target, err := core.RequireString(input.Payload, "target")
 	if err != nil {
@@ -27,11 +28,16 @@ func runApplicationMappingComplete(ctx context.Context, input core.ThirdPartyInp
 	nextPayload["target"] = target
 	nextPayload["application_mapping_complete"] = true
 
+	calls := []core.ToolCall{
+		{Tool: "reporter", Function: "SummarizeApplicationMapping", Purpose: "produce final application mapping and analysis summary"},
+	}
+	executions := core.ExecuteToolCalls(ctx, input.Payload, calls)
+	nextPayload["last_execution_summary"] = core.ExecutionSummary(executions)
+
 	return core.ToolResult{
-		ToolName: stageApplicationMappingComplete,
-		Calls: []core.ToolCall{
-			{Tool: "reporter", Function: "SummarizeApplicationMapping", Purpose: "produce final application mapping and analysis summary"},
-		},
+		ToolName:   stageApplicationMappingComplete,
+		Calls:      calls,
+		Executions: executions,
 		Output: map[string]any{
 			"next_payload": nextPayload,
 			"continue":     false,

@@ -1,3 +1,6 @@
+// File overview:
+// Application-mapping stage node/constants for the decision tree. It exists to progressively build attack-surface knowledge before active exploitation checks begin.
+
 package applicationmapping
 
 const (

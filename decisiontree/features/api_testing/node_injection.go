@@ -1,3 +1,6 @@
+// File overview:
+// API-testing stage node/constants for the decision tree. This file encodes one bounded step so API security checks remain modular, reorderable, and easy to validate.
+
 package apitesting
 
 import (
@@ -15,8 +18,6 @@ func isAPITestingInjectionStage(input core.ThirdPartyInput) bool {
 }
 
 func runAPITestingInjection(ctx context.Context, input core.ThirdPartyInput) (core.ToolResult, error) {
-	_ = ctx
-
 	ip, err := core.RequireString(input.Payload, "ip")
 	if err != nil {
 		return core.ToolResult{}, err
@@ -26,13 +27,18 @@ func runAPITestingInjection(ctx context.Context, input core.ThirdPartyInput) (co
 	nextPayload["ip"] = ip
 	nextPayload["injection_checked"] = true
 
+	calls := []core.ToolCall{
+		{Tool: "burp-suite", Function: "RunInjectionChecks", Purpose: "test sql nosql and command injection vectors"},
+		{Tool: "nikto", Function: "AuditMisconfigurations", Purpose: "detect insecure api server configurations"},
+		{Tool: "postman", Function: "JWTAbuseChecks", Purpose: "test authentication token handling flaws"},
+	}
+	executions := core.ExecuteToolCalls(ctx, input.Payload, calls)
+	nextPayload["last_execution_summary"] = core.ExecutionSummary(executions)
+
 	return core.ToolResult{
-		ToolName: stageAPITestingInjection,
-		Calls: []core.ToolCall{
-			{Tool: "burp-suite", Function: "RunInjectionChecks", Purpose: "test sql nosql and command injection vectors"},
-			{Tool: "nikto", Function: "AuditMisconfigurations", Purpose: "detect insecure api server configurations"},
-			{Tool: "postman", Function: "JWTAbuseChecks", Purpose: "test authentication token handling flaws"},
-		},
+		ToolName:   stageAPITestingInjection,
+		Calls:      calls,
+		Executions: executions,
 		Output: map[string]any{
 			"next_stage":   stageAPITestingGraphQL,
 			"next_payload": nextPayload,

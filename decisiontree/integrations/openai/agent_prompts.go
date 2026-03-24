@@ -1,3 +1,6 @@
+// File overview:
+// Stage-aware prompt planning rules. It encodes why each module asks for different guidance so model output stays aligned with analyst goals and evidence quality.
+
 package openai
 
 import (
@@ -137,11 +140,12 @@ func promptPlanForStage(stage string) PromptPlan {
 // buildStageContextJSON serializes stage execution context for deterministic prompt grounding.
 func buildStageContextJSON(input core.ThirdPartyInput, result core.ToolResult) (string, error) {
 	contextPayload := map[string]any{
-		"stage":         input.Stage,
-		"input_payload": input.Payload,
-		"tool_name":     result.ToolName,
-		"tool_calls":    result.Calls,
-		"output":        result.Output,
+		"stage":           input.Stage,
+		"input_payload":   input.Payload,
+		"tool_name":       result.ToolName,
+		"tool_calls":      result.Calls,
+		"tool_executions": result.Executions,
+		"output":          result.Output,
 	}
 	encoded, err := json.MarshalIndent(contextPayload, "", "  ")
 	if err != nil {

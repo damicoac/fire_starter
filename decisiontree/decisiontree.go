@@ -1,3 +1,6 @@
+// File overview:
+// Public package facade that re-exports core, feature, and OpenAI integration types/functions. It exists to provide one stable import surface for consumers while allowing internal package organization to evolve.
+
 package decisiontree
 
 import (
@@ -36,6 +39,9 @@ type JSONLLMToolPlanner = core.JSONLLMToolPlanner
 type ReinforcementLearner = core.ReinforcementLearner
 type TransitionStats = core.TransitionStats
 type SQLiteReinforcementLearner = core.SQLiteReinforcementLearner
+type AuditLogger = core.AuditLogger
+type AuditEvent = core.AuditEvent
+type SQLiteAuditLogger = core.SQLiteAuditLogger
 type StageGuidanceGenerator = openaiintegration.StageGuidanceGenerator
 type OpenAIResponsesClient = openaiintegration.OpenAIResponsesClient
 type OpenAIStageObserver = openaiintegration.OpenAIStageObserver
@@ -46,6 +52,10 @@ func NewTree(logger *log.Logger, tools []ToolDefinition) (*Tree, error) {
 
 func NewTreeFromRegistry(logger *log.Logger) (*Tree, error) {
 	return core.NewTreeFromRegistry(logger)
+}
+
+func NewTreeWithAuditLogger(logger *log.Logger, tools []ToolDefinition, auditLogger AuditLogger) (*Tree, error) {
+	return core.NewTreeWithAuditLogger(logger, tools, auditLogger)
 }
 
 func RegisterTool(tool ToolDefinition) error {
@@ -78,6 +88,10 @@ func NewJSONLLMToolPlanner(model LLMDecisionModel) (*JSONLLMToolPlanner, error) 
 
 func NewSQLiteReinforcementLearner(databasePath string) (*SQLiteReinforcementLearner, error) {
 	return core.NewSQLiteReinforcementLearner(databasePath)
+}
+
+func NewSQLiteAuditLogger(databasePath string) (*SQLiteAuditLogger, error) {
+	return core.NewSQLiteAuditLogger(databasePath)
 }
 
 func NewOpenAIResponsesClient(apiKey string, model string) (*OpenAIResponsesClient, error) {

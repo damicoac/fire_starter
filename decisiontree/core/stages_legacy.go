@@ -1,3 +1,6 @@
+// File overview:
+// Legacy stage constants maintained for compatibility in tests and external integrations that still reference historical names.
+
 package core
 
 const (

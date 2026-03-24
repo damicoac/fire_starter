@@ -1,3 +1,6 @@
+// File overview:
+// API-testing stage node/constants for the decision tree. This file encodes one bounded step so API security checks remain modular, reorderable, and easy to validate.
+
 package apitesting
 
 const (

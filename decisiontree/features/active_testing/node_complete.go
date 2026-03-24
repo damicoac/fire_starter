@@ -1,3 +1,6 @@
+// File overview:
+// Active-testing stage node/constants for the decision tree. It structures exploit validation into small verifiable steps to reduce false positives and preserve traceability.
+
 package activetesting
 
 import (
@@ -15,8 +18,6 @@ func isActiveTestingCompleteStage(input core.ThirdPartyInput) bool {
 }
 
 func runActiveTestingComplete(ctx context.Context, input core.ThirdPartyInput) (core.ToolResult, error) {
-	_ = ctx
-
 	target, err := core.RequireString(input.Payload, "target")
 	if err != nil {
 		return core.ToolResult{}, err
@@ -26,11 +27,16 @@ func runActiveTestingComplete(ctx context.Context, input core.ThirdPartyInput) (
 	nextPayload["target"] = target
 	nextPayload["active_testing_complete"] = true
 
+	calls := []core.ToolCall{
+		{Tool: "reporter", Function: "SummarizeActiveTestingFindings", Purpose: "produce final active testing summary and prioritized findings"},
+	}
+	executions := core.ExecuteToolCalls(ctx, input.Payload, calls)
+	nextPayload["last_execution_summary"] = core.ExecutionSummary(executions)
+
 	return core.ToolResult{
-		ToolName: stageActiveTestingComplete,
-		Calls: []core.ToolCall{
-			{Tool: "reporter", Function: "SummarizeActiveTestingFindings", Purpose: "produce final active testing summary and prioritized findings"},
-		},
+		ToolName:   stageActiveTestingComplete,
+		Calls:      calls,
+		Executions: executions,
 		Output: map[string]any{
 			"next_payload": nextPayload,
 			"continue":     false,

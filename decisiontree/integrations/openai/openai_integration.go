@@ -1,3 +1,6 @@
+// File overview:
+// OpenAI Responses API client and observer integration. It exists to inject model guidance into stage results while keeping HTTP concerns isolated from core runtime logic.
+
 package openai
 
 import (
@@ -17,12 +20,16 @@ import (
 
 const defaultOpenAIResponsesEndpoint = "https://api.openai.com/v1/responses"
 
-// StageGuidanceGenerator abstracts model-backed guidance generation for testability.
+// StageGuidanceGenerator abstracts model-backed guidance generation.
+// This interface exists so observer behavior can be tested with deterministic
+// fakes instead of requiring live network/model dependencies.
 type StageGuidanceGenerator interface {
 	GenerateStageGuidance(ctx context.Context, instructions string, userPrompt string) (string, error)
 }
 
-// OpenAIResponsesClient calls the OpenAI Responses API using raw HTTP.
+// OpenAIResponsesClient encapsulates auth, model, endpoint, and transport.
+// Grouping these fields in one struct keeps request construction consistent and
+// makes environment/test overrides straightforward.
 type OpenAIResponsesClient struct {
 	apiKey     string
 	model      string
@@ -153,28 +160,37 @@ func (o *OpenAIStageObserver) OnStageCompleted(ctx context.Context, input core.T
 	return nil
 }
 
+// openAIResponsesRequest mirrors the outbound API payload shape.
+// A typed request struct is used to prevent accidental key drift and to keep
+// request fixtures clear in integration tests.
 type openAIResponsesRequest struct {
 	Model        string               `json:"model"`
 	Instructions string               `json:"instructions,omitempty"`
 	Input        []openAIInputMessage `json:"input"`
 }
 
+// openAIInputMessage represents one chat-style input message entry.
 type openAIInputMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
+// openAIResponsesResponse captures the response fields we depend on.
+// It includes both the shortcut output_text field and structured output blocks
+// because providers may populate either form.
 type openAIResponsesResponse struct {
 	OutputText string                     `json:"output_text"`
 	Output     []openAIOutputResponseItem `json:"output"`
 }
 
+// openAIOutputResponseItem is one response output item returned by the API.
 type openAIOutputResponseItem struct {
 	Type    string                     `json:"type"`
 	Role    string                     `json:"role"`
 	Content []openAIOutputContentBlock `json:"content"`
 }
 
+// openAIOutputContentBlock holds text-bearing segments inside output items.
 type openAIOutputContentBlock struct {
 	Type string `json:"type"`
 	Text string `json:"text"`

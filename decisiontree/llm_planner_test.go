@@ -1,3 +1,6 @@
+// File overview:
+// Test coverage for this module. These tests exist to lock expected behavior and prevent regressions in stage routing, payload handling, and integration boundaries.
+
 package decisiontree
 
 import (

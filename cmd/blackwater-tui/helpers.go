@@ -1,3 +1,6 @@
+// File overview:
+// Formatting and payload helper functions used by the TUI. These helpers reduce duplication and keep display/output shaping consistent across screens.
+
 package main
 
 import (

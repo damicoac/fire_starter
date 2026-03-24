@@ -1,3 +1,6 @@
+// File overview:
+// LLM planning adapter and strict JSON prompt/response handling. It exists to constrain model output into deterministic next-step decisions the runtime can safely execute.
+
 package core
 
 import (
@@ -110,6 +113,9 @@ func normalizeToolCatalog(tools []ToolDescriptor) []ToolDescriptor {
 	return normalized
 }
 
+// llmDecisionPrompt is a strict wire format sent to the model.
+// A concrete struct is used instead of ad-hoc maps so required fields stay
+// stable across refactors and prompt changes remain testable.
 type llmDecisionPrompt struct {
 	Task           string            `json:"task"`
 	ResponseSchema map[string]string `json:"response_schema"`
@@ -117,6 +123,9 @@ type llmDecisionPrompt struct {
 	AvailableTools []ToolDescriptor  `json:"available_tools"`
 }
 
+// llmDecisionResponse is the minimal accepted planner output schema.
+// Keeping this narrow intentionally limits model freedom to reduce ambiguous
+// routing and prevent malformed continuation decisions.
 type llmDecisionResponse struct {
 	Continue    bool           `json:"continue"`
 	NextTool    string         `json:"next_tool"`

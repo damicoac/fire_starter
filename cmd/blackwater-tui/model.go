@@ -1,3 +1,6 @@
+// File overview:
+// TUI construction and rendering logic. It centralizes UI setup so the runtime state, data flow, and operator feedback remain consistent across all stages.
+
 package main
 
 import (

@@ -1,3 +1,6 @@
+// File overview:
+// Target intake/classification stage logic. It exists to normalize initial scope data so downstream modules can assume valid and consistent target context.
+
 package target
 
 import (
@@ -29,11 +32,15 @@ func runTargetReceived(ctx context.Context, input core.ThirdPartyInput) (core.To
 	nextPayload := core.CopyPayload(input.Payload)
 	nextPayload["ip"] = ip
 
+	calls := []core.ToolCall{
+		{Tool: "input", Function: "parseIP", Purpose: "validate target ip syntax"},
+	}
+	executions := core.ExecuteToolCalls(ctx, input.Payload, calls)
+
 	return core.ToolResult{
-		ToolName: stageTargetReceived,
-		Calls: []core.ToolCall{
-			{Tool: "input", Function: "parseIP", Purpose: "validate target ip syntax"},
-		},
+		ToolName:   stageTargetReceived,
+		Calls:      calls,
+		Executions: executions,
 		Output: map[string]any{
 			"next_stage":   stageTargetClassify,
 			"next_payload": nextPayload,

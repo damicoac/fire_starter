@@ -1,3 +1,6 @@
+// File overview:
+// API-testing stage node/constants for the decision tree. This file encodes one bounded step so API security checks remain modular, reorderable, and easy to validate.
+
 package apitesting
 
 import (
@@ -15,8 +18,6 @@ func isAPITestingRateLimitStage(input core.ThirdPartyInput) bool {
 }
 
 func runAPITestingRateLimit(ctx context.Context, input core.ThirdPartyInput) (core.ToolResult, error) {
-	_ = ctx
-
 	ip, err := core.RequireString(input.Payload, "ip")
 	if err != nil {
 		return core.ToolResult{}, err
@@ -26,12 +27,17 @@ func runAPITestingRateLimit(ctx context.Context, input core.ThirdPartyInput) (co
 	nextPayload["ip"] = ip
 	nextPayload["rate_limit_checked"] = true
 
+	calls := []core.ToolCall{
+		{Tool: "wfuzz", Function: "BurstRequestFuzz", Purpose: "probe request throttling and bypasses"},
+		{Tool: "zap", Function: "RunRateLimitScan", Purpose: "verify resource exhaustion controls"},
+	}
+	executions := core.ExecuteToolCalls(ctx, input.Payload, calls)
+	nextPayload["last_execution_summary"] = core.ExecutionSummary(executions)
+
 	return core.ToolResult{
-		ToolName: stageAPITestingRateLimit,
-		Calls: []core.ToolCall{
-			{Tool: "wfuzz", Function: "BurstRequestFuzz", Purpose: "probe request throttling and bypasses"},
-			{Tool: "zap", Function: "RunRateLimitScan", Purpose: "verify resource exhaustion controls"},
-		},
+		ToolName:   stageAPITestingRateLimit,
+		Calls:      calls,
+		Executions: executions,
 		Output: map[string]any{
 			"next_stage":   stageAPITestingInjection,
 			"next_payload": nextPayload,

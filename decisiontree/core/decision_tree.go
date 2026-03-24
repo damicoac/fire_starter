@@ -1,3 +1,6 @@
+// File overview:
+// Core engine data contracts and tool-selection logic. It defines canonical runtime structures so every module follows the same input/output shape and selection behavior.
+
 package core
 
 import (
@@ -13,21 +16,37 @@ var (
 	ErrUnknownTool    = errors.New("unknown tool")
 )
 
+// ThirdPartyInput is the canonical stage invocation envelope.
+// Keeping stage and payload together lets every node share one contract,
+// which reduces adapter code and makes stage transitions composable.
 type ThirdPartyInput struct {
 	Stage   string
 	Payload map[string]any
 }
 
+// ToolResult is the canonical output contract from any stage node.
+// It intentionally includes both machine-routing output and human/audit trace
+// calls so orchestration and reporting can use the same artifact.
 type ToolResult struct {
-	ToolName string
-	Output   map[string]any
-	Calls    []ToolCall
+	ToolName   string
+	Output     map[string]any
+	Calls      []ToolCall
+	Executions []ToolExecution
 }
 
+// ToolFunc is the execution unit for a stage.
+// This function type keeps stage behavior swappable for tests and integration
+// while preserving context-aware cancellation and deadlines.
 type ToolFunc func(ctx context.Context, input ThirdPartyInput) (ToolResult, error)
 
+// ToolCondition maps input state to node eligibility.
+// Separating matching from execution keeps routing logic declarative and allows
+// new stages to register without modifying central switch statements.
 type ToolCondition func(input ThirdPartyInput) bool
 
+// ToolDefinition binds stage identity, selection logic, and execution logic.
+// This struct exists so registry/tree code can reason about nodes uniformly,
+// regardless of feature module boundaries.
 type ToolDefinition struct {
 	Name        string
 	Description string
@@ -35,6 +54,9 @@ type ToolDefinition struct {
 	Run         ToolFunc
 }
 
+// NextInputResolver translates tool output into the next loop input.
+// This indirection allows different transition policies (default, strict,
+// experimental) without rewriting stage node implementations.
 type NextInputResolver func(ctx context.Context, result ToolResult) (next ThirdPartyInput, continueFlow bool, err error)
 
 // ToolDescriptor is the minimal tool metadata exposed to LLM routing.
@@ -43,9 +65,13 @@ type ToolDescriptor struct {
 	Description string
 }
 
+// Tree holds the ordered tool catalog and shared logger.
+// Order matters because first-match selection is used to keep precedence
+// deterministic when conditions overlap.
 type Tree struct {
-	tools  []ToolDefinition
-	logger *log.Logger
+	tools       []ToolDefinition
+	logger      *log.Logger
+	auditLogger AuditLogger
 }
 
 func NewTree(logger *log.Logger, tools []ToolDefinition) (*Tree, error) {
@@ -67,6 +93,22 @@ func NewTree(logger *log.Logger, tools []ToolDefinition) (*Tree, error) {
 
 func NewTreeFromRegistry(logger *log.Logger) (*Tree, error) {
 	return NewTree(logger, RegisteredTools())
+}
+
+func NewTreeWithAuditLogger(logger *log.Logger, tools []ToolDefinition, auditLogger AuditLogger) (*Tree, error) {
+	tree, err := NewTree(logger, tools)
+	if err != nil {
+		return nil, err
+	}
+	tree.auditLogger = auditLogger
+	return tree, nil
+}
+
+func (t *Tree) SetAuditLogger(auditLogger AuditLogger) {
+	if t == nil {
+		return
+	}
+	t.auditLogger = auditLogger
 }
 
 func (t *Tree) SelectTool(input ThirdPartyInput) (ToolDefinition, error) {

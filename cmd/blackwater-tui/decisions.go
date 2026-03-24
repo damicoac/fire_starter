@@ -1,3 +1,6 @@
+// File overview:
+// Decision candidate generation and parsing helpers. It exists to produce resilient next-step options even when LLM output is missing or malformed.
+
 package main
 
 import (
