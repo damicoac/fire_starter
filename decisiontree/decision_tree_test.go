@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/log"
@@ -410,6 +411,9 @@ func TestAPITestingFlow_InvalidIP(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected invalid ip error")
 	}
+	if !strings.Contains(err.Error(), "invalid ip address") {
+		t.Fatalf("expected invalid ip address error, got %v", err)
+	}
 }
 
 func TestApplicationMappingFlow_FullPath(t *testing.T) {
@@ -496,6 +500,9 @@ func TestApplicationMappingFlow_InvalidPayload(t *testing.T) {
 	}, DefaultNextInputResolver)
 	if err == nil {
 		t.Fatalf("expected missing target payload error")
+	}
+	if !strings.Contains(err.Error(), "missing payload key \"target\"") {
+		t.Fatalf("expected missing target payload error, got %v", err)
 	}
 }
 
@@ -593,20 +600,19 @@ func TestActiveTestingFlow_InvalidPayload(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected missing target payload error")
 	}
+	if !strings.Contains(err.Error(), "missing payload key \"target\"") {
+		t.Fatalf("expected missing target payload error, got %v", err)
+	}
 }
 
 func withTemporaryRegistry(t *testing.T, run func()) {
 	t.Helper()
 
-	registryMu.Lock()
-	original := append([]ToolDefinition(nil), registeredSet...)
-	registeredSet = nil
-	registryMu.Unlock()
+	original := snapshotRegisteredTools()
+	replaceRegisteredTools(nil)
 
 	defer func() {
-		registryMu.Lock()
-		registeredSet = original
-		registryMu.Unlock()
+		replaceRegisteredTools(original)
 	}()
 
 	run()
