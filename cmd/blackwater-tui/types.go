@@ -92,6 +92,7 @@ type model struct {
 	tree                *decisiontree.Tree
 	llm                 decisiontree.StageGuidanceGenerator
 	reinforcement       decisiontree.ReinforcementLearner
+	auditLogger         decisiontree.AuditLogger
 	pendingReinforcement pendingTransition
 	automation          bool
 	ip                  string

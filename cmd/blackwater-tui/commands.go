@@ -14,6 +14,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+type stageObserverFunc func(ctx context.Context, input decisiontree.ThirdPartyInput, result *decisiontree.ToolResult) error
+
+func (f stageObserverFunc) OnStageCompleted(ctx context.Context, input decisiontree.ThirdPartyInput, result *decisiontree.ToolResult) error {
+	return f(ctx, input, result)
+}
+
 func runStageCmd(tree *decisiontree.Tree, input decisiontree.ThirdPartyInput) tea.Cmd {
 	return func() tea.Msg {
 		if tree == nil {
@@ -22,25 +28,37 @@ func runStageCmd(tree *decisiontree.Tree, input decisiontree.ThirdPartyInput) te
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
-		tool, err := tree.SelectTool(input)
-		if err != nil {
+		var capturedResult decisiontree.ToolResult
+		capturedInput := input
+		nextInput := decisiontree.ThirdPartyInput{}
+		continueFlow := false
+		observer := stageObserverFunc(func(ctx context.Context, current decisiontree.ThirdPartyInput, result *decisiontree.ToolResult) error {
+			_ = ctx
+			capturedInput = current
+			if result != nil {
+				capturedResult = *result
+			}
+			return nil
+		})
+		if err := tree.RunWithObserver(ctx, input, func(ctx context.Context, result decisiontree.ToolResult) (decisiontree.ThirdPartyInput, bool, error) {
+			next, shouldContinue, err := decisiontree.DefaultNextInputResolver(ctx, result)
+			if err != nil {
+				return decisiontree.ThirdPartyInput{}, false, err
+			}
+			nextInput = next
+			continueFlow = shouldContinue
+			return next, false, nil
+		}, observer); err != nil {
 			return stageExecutedMsg{errorMessage: err.Error()}
 		}
-		result, err := tool.Run(ctx, input)
-		if err != nil {
-			return stageExecutedMsg{errorMessage: err.Error()}
-		}
-		next, continueFlow, err := decisiontree.DefaultNextInputResolver(ctx, result)
-		if err != nil {
-			return stageExecutedMsg{errorMessage: err.Error()}
-		}
+
 		return stageExecutedMsg{
-			toolName:      result.ToolName,
-			result:        result,
-			nextInput:     next,
+			toolName:      capturedResult.ToolName,
+			result:        capturedResult,
+			nextInput:     nextInput,
 			continueFlow:  continueFlow,
-			currentInput:  input,
-			finishedStage: input.Stage,
+			currentInput:  capturedInput,
+			finishedStage: capturedInput.Stage,
 		}
 	}
 }

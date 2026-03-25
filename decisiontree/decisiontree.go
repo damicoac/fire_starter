@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/log"
 
 	"blackwater/decisiontree/core"
+	"blackwater/decisiontree/database"
 	openaiintegration "blackwater/decisiontree/integrations/openai"
 
 	_ "blackwater/decisiontree/features/active_testing"
@@ -36,12 +37,12 @@ type LLMToolPlanner = core.LLMToolPlanner
 type NextToolDecision = core.NextToolDecision
 type LLMDecisionModel = core.LLMDecisionModel
 type JSONLLMToolPlanner = core.JSONLLMToolPlanner
-type ReinforcementLearner = core.ReinforcementLearner
-type TransitionStats = core.TransitionStats
-type SQLiteReinforcementLearner = core.SQLiteReinforcementLearner
-type AuditLogger = core.AuditLogger
-type AuditEvent = core.AuditEvent
-type SQLiteAuditLogger = core.SQLiteAuditLogger
+type ReinforcementLearner = database.ReinforcementLearner
+type TransitionStats = database.TransitionStats
+type SQLiteReinforcementLearner = database.SQLiteReinforcementLearner
+type AuditLogger = database.AuditLogger
+type AuditEvent = database.AuditEvent
+type SQLiteAuditLogger = database.SQLiteAuditLogger
 type StageGuidanceGenerator = openaiintegration.StageGuidanceGenerator
 type OpenAIResponsesClient = openaiintegration.OpenAIResponsesClient
 type OpenAIStageObserver = openaiintegration.OpenAIStageObserver
@@ -87,11 +88,11 @@ func NewJSONLLMToolPlanner(model LLMDecisionModel) (*JSONLLMToolPlanner, error) 
 }
 
 func NewSQLiteReinforcementLearner(databasePath string) (*SQLiteReinforcementLearner, error) {
-	return core.NewSQLiteReinforcementLearner(databasePath)
+	return database.NewSQLiteReinforcementLearner(databasePath)
 }
 
 func NewSQLiteAuditLogger(databasePath string) (*SQLiteAuditLogger, error) {
-	return core.NewSQLiteAuditLogger(databasePath)
+	return database.NewSQLiteAuditLogger(databasePath)
 }
 
 func NewOpenAIResponsesClient(apiKey string, model string) (*OpenAIResponsesClient, error) {

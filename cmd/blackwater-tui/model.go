@@ -43,6 +43,14 @@ func initialModel() model {
 
 	var generator decisiontree.StageGuidanceGenerator
 	var reinforcement decisiontree.ReinforcementLearner
+	var auditLogger decisiontree.AuditLogger
+	if treeErr == nil {
+		auditPath := strings.TrimSpace(os.Getenv("BLACKWATER_AUDIT_DB"))
+		auditLogger, treeErr = decisiontree.NewSQLiteAuditLogger(auditPath)
+		if treeErr == nil {
+			tree.SetAuditLogger(auditLogger)
+		}
+	}
 	if treeErr == nil {
 		modelName := strings.TrimSpace(os.Getenv("BLACKWATER_OPENAI_MODEL"))
 		if modelName == "" {
@@ -67,6 +75,7 @@ func initialModel() model {
 		tree:            tree,
 		llm:             generator,
 		reinforcement:   reinforcement,
+		auditLogger:     auditLogger,
 		resultsViewport: vp,
 		decisionList:    decisionList,
 		statusMessage:   "Enter target IP and optional port, then press Enter.",
@@ -82,6 +91,17 @@ func initialModel() model {
 
 func (m model) Init() tea.Cmd {
 	return textinput.Blink
+}
+
+func (m *model) closeResources() {
+	if m.auditLogger != nil {
+		_ = m.auditLogger.Close()
+		m.auditLogger = nil
+	}
+	if m.reinforcement != nil {
+		_ = m.reinforcement.Close()
+		m.reinforcement = nil
+	}
 }
 
 func (m *model) runSelectedDecisionCmd(index int) tea.Cmd {

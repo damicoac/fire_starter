@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"blackwater/decisiontree/database"
 )
 
 // StageObserver is an extension hook invoked after each stage execution.
@@ -46,9 +48,9 @@ func newRunAuditState(mode string) runAuditState {
 	}
 }
 
-func (s *runAuditState) nextEvent(action string, stage string, toolName string, status string, details map[string]any) AuditEvent {
+func (s *runAuditState) nextEvent(action string, stage string, toolName string, status string, details map[string]any) database.AuditEvent {
 	s.sequence++
-	return AuditEvent{
+	return database.AuditEvent{
 		RunID:    s.runID,
 		Sequence: s.sequence,
 		Mode:     s.mode,
@@ -139,14 +141,14 @@ func (t *Tree) RunWithPlanner(ctx context.Context, initial ThirdPartyInput, plan
 	return t.runWithPlanner(ctx, initial, planner, observer, nil)
 }
 
-func (t *Tree) RunWithPlannerAndReinforcement(ctx context.Context, initial ThirdPartyInput, planner LLMToolPlanner, observer StageObserver, learner ReinforcementLearner) error {
+func (t *Tree) RunWithPlannerAndReinforcement(ctx context.Context, initial ThirdPartyInput, planner LLMToolPlanner, observer StageObserver, learner database.ReinforcementLearner) error {
 	if learner == nil {
 		return errors.New("reinforcement learner is required")
 	}
 	return t.runWithPlanner(ctx, initial, planner, observer, learner)
 }
 
-func (t *Tree) runWithPlanner(ctx context.Context, initial ThirdPartyInput, planner LLMToolPlanner, observer StageObserver, learner ReinforcementLearner) error {
+func (t *Tree) runWithPlanner(ctx context.Context, initial ThirdPartyInput, planner LLMToolPlanner, observer StageObserver, learner database.ReinforcementLearner) error {
 	if planner == nil {
 		return errors.New("llm tool planner is required")
 	}

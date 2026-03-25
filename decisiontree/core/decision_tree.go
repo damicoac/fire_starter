@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 
+	"blackwater/decisiontree/database"
+
 	"github.com/charmbracelet/log"
 )
 
@@ -71,7 +73,7 @@ type ToolDescriptor struct {
 type Tree struct {
 	tools       []ToolDefinition
 	logger      *log.Logger
-	auditLogger AuditLogger
+	auditLogger database.AuditLogger
 }
 
 func NewTree(logger *log.Logger, tools []ToolDefinition) (*Tree, error) {
@@ -95,7 +97,7 @@ func NewTreeFromRegistry(logger *log.Logger) (*Tree, error) {
 	return NewTree(logger, RegisteredTools())
 }
 
-func NewTreeWithAuditLogger(logger *log.Logger, tools []ToolDefinition, auditLogger AuditLogger) (*Tree, error) {
+func NewTreeWithAuditLogger(logger *log.Logger, tools []ToolDefinition, auditLogger database.AuditLogger) (*Tree, error) {
 	tree, err := NewTree(logger, tools)
 	if err != nil {
 		return nil, err
@@ -104,7 +106,7 @@ func NewTreeWithAuditLogger(logger *log.Logger, tools []ToolDefinition, auditLog
 	return tree, nil
 }
 
-func (t *Tree) SetAuditLogger(auditLogger AuditLogger) {
+func (t *Tree) SetAuditLogger(auditLogger database.AuditLogger) {
 	if t == nil {
 		return
 	}
