@@ -1,249 +1,284 @@
 {
-  "decisions":
-   [
+  "decisions": [
     {
       "use_case": "Network reconnaissance to identify active services",
       "technique": "port_scanning",
       "function": "identify open ports on a target system and the applications running on them",
-      "problem_the_tool_solves": "Helps testers identify the operating system and find potential attack vectors in large-scale environments,,."
+      "problem_the_tool_solves": "Helps testers identify the operating system and find potential attack vectors in large-scale environments,,.",
+      "identifier": "0000"
     },
     {
       "use_case": "Probing database-backed applications for unauthorized data access",
       "technique": "sql_injection_testing",
       "function": "inject malicious SQL statements into user input fields to manipulate database queries",
-      "problem_the_tool_solves": "Uncovers vulnerabilities that allow attackers to bypass authentication or extract sensitive records from backend databases,,."
+      "problem_the_tool_solves": "Uncovers vulnerabilities that allow attackers to bypass authentication or extract sensitive records from backend databases,,.",
+      "identifier": "0001"
     },
     {
       "use_case": "Attacking web users through their browser interface",
       "technique": "cross_site_scripting_injection",
       "function": "inject executable scripts into web pages that are subsequently run by the victim's browser",
-      "problem_the_tool_solves": "Identifies flaws where attackers can steal session tokens, log keystrokes, or impersonate other users,,."
+      "problem_the_tool_solves": "Identifies flaws where attackers can steal session tokens, log keystrokes, or impersonate other users,,.",
+      "identifier": "0002"
     },
     {
       "use_case": "Bypassing authorization to access restricted user resources",
       "technique": "idor_manipulation",
       "function": "modify identifiers in URL parameters or request bodies to access data belonging to other accounts",
-      "problem_the_tool_solves": "Prevents unauthorized access to private documents, messages, and account settings when the system fails to verify user permissions,,."
+      "problem_the_tool_solves": "Prevents unauthorized access to private documents, messages, and account settings when the system fails to verify user permissions,,.",
+      "identifier": "0003"
     },
     {
       "use_case": "Automated discovery of unhandled application exceptions",
       "technique": "replacive_fuzzing",
       "function": "systematically submit large sets of unexpected 'naughty strings' to all data entry points",
-      "problem_the_tool_solves": "Efficiently identifies input validation flaws and potential overflows that are difficult to discover through manual analysis alone,,."
+      "problem_the_tool_solves": "Efficiently identifies input validation flaws and potential overflows that are difficult to discover through manual analysis alone,,.",
+      "identifier": "0004"
     },
     {
       "use_case": "Gathering intelligence through advanced search engine operators",
       "technique": "google_dorking",
       "function": "use specialized search queries to locate hidden portals, leaked credentials, or vulnerable systems",
-      "problem_the_tool_solves": "Discovers sensitive information exposed on the public internet without direct interaction with the target network,,."
+      "problem_the_tool_solves": "Discovers sensitive information exposed on the public internet without direct interaction with the target network,,.",
+      "identifier": "0005"
     },
     {
       "use_case": "Mapping the entire schema of a modern web service",
       "technique": "graphql_introspection",
       "function": "query the API node for detailed information about all supported queries, mutations, and data types",
-      "problem_the_tool_solves": "Reveals hidden endpoints and internal structure to the tester, which can be critical for discovering sensitive data exposures,,."
+      "problem_the_tool_solves": "Reveals hidden endpoints and internal structure to the tester, which can be critical for discovering sensitive data exposures,,.",
+      "identifier": "0006"
     },
     {
       "use_case": "Expanding the attack surface during information gathering",
       "technique": "subdomain_enumeration",
       "function": "utilize automated tools and wordlists to identify all registered subdomains associated with a target",
-      "problem_the_tool_solves": "Identifies dev, test, or legacy environments that may lack standard security protections,,."
+      "problem_the_tool_solves": "Identifies dev, test, or legacy environments that may lack standard security protections,,.",
+      "identifier": "0007"
     },
     {
       "use_case": "Attacking internal infrastructure via internet-facing web servers",
       "technique": "ssrf_exploitation",
       "function": "trick a server into making unauthorized requests to internal resources or cloud metadata services",
-      "problem_the_tool_solves": "Allows attackers to access internal networks or retrieve administrative credentials that are not directly exposed to the internet,,."
+      "problem_the_tool_solves": "Allows attackers to access internal networks or retrieve administrative credentials that are not directly exposed to the internet,,.",
+      "identifier": "0008"
     },
     {
       "use_case": "Inducing unsuspecting users to perform unauthorized account actions",
       "technique": "csrf_testing",
       "function": "craft requests that trick an authenticated user into unknowingly submitting state-changing data",
-      "problem_the_tool_solves": "Uncovers the lack of session protection mechanisms, which can lead to unauthorized password changes or funds transfers,,."
+      "problem_the_tool_solves": "Uncovers the lack of session protection mechanisms, which can lead to unauthorized password changes or funds transfers,,.",
+      "identifier": "0009"
     },
     {
       "use_case": "Exploiting concurrent state updates to manipulate application logic",
       "technique": "race_condition_testing",
       "function": "send multiple simultaneous requests to an endpoint to trigger state changes before the system can complete its initial update",
-      "problem_the_tool_solves": "Identifies flaws in payments, bookings, or balance transfers where attackers can perform actions like double-withdrawals"
+      "problem_the_tool_solves": "Identifies flaws in payments, bookings, or balance transfers where attackers can perform actions like double-withdrawals",
+      "identifier": "0010"
     },
     {
       "use_case": "Accessing unauthorized resource instances via API endpoints",
       "technique": "broken_object_level_authorization_bola",
       "function": "manipulate resource identifiers in URI paths, request bodies, or headers to access data belonging to other users",
-      "problem_the_tool_solves": "Reveals critical authorization flaws in API-heavy architectures where systems fail to verify if the requester owns the resource"
+      "problem_the_tool_solves": "Reveals critical authorization flaws in API-heavy architectures where systems fail to verify if the requester owns the resource",
+      "identifier": "0011"
     },
     {
       "use_case": "Executing unauthorized administrative functions in an application",
       "technique": "broken_function_level_authorization_bfla",
       "function": "send requests to administrative or restricted endpoints using a low-privileged account to see if the server enforces permission checks",
-      "problem_the_tool_solves": "Detects instances where administrative functionality is only hidden in the UI but remains accessible to any authenticated user"
+      "problem_the_tool_solves": "Detects instances where administrative functionality is only hidden in the UI but remains accessible to any authenticated user",
+      "identifier": "0012"
     },
     {
       "use_case": "Manipulating backend database queries through XML data structures",
       "technique": "xml_external_entity_injection_xxe",
       "function": "inject malicious external entity references into XML input to be processed by a weakly configured XML parser",
-      "problem_the_tool_solves": "Allows for the disclosure of local server files, internal port scanning, or triggering server-side request forgery (SSRF)"
+      "problem_the_tool_solves": "Allows for the disclosure of local server files, internal port scanning, or triggering server-side request forgery (SSRF)",
+      "identifier": "0013"
     },
     {
       "use_case": "Modifying internal object properties to elevate privileges",
       "technique": "mass_assignment_injection",
       "function": "include unexpected parameters in a request to update sensitive object fields that the developer did not intend to expose",
-      "problem_the_tool_solves": "Prevents attackers from escalating their own privileges by adding fields like 'is_admin: true' to account registration or profile update requests"
+      "problem_the_tool_solves": "Prevents attackers from escalating their own privileges by adding fields like 'is_admin: true' to account registration or profile update requests",
+      "identifier": "0014"
     },
     {
       "use_case": "Taking control of a web server by injecting code into templates",
       "technique": "server_side_template_injection_ssti",
       "function": "inject template engine syntax into user input fields that are later evaluated on the server",
-      "problem_the_tool_solves": "Identifies vulnerabilities that can lead to full remote code execution (RCE) by escaping the template sandbox"
+      "problem_the_tool_solves": "Identifies vulnerabilities that can lead to full remote code execution (RCE) by escaping the template sandbox",
+      "identifier": "0015"
     },
     {
       "use_case": "Tricking a user's browser into executing unauthorized scripts",
       "technique": "dom_based_xss_analysis",
       "function": "manually review or fuzz client-side JavaScript for 'sinks' that process data from controllable 'sources' like the URL fragment",
-      "problem_the_tool_solves": "Finds vulnerabilities that occur entirely on the client side, bypassing server-side input filters"
+      "problem_the_tool_solves": "Finds vulnerabilities that occur entirely on the client side, bypassing server-side input filters",
+      "identifier": "0016"
     },
     {
       "use_case": "Gaining unauthorized access by hijacking an existing session",
       "technique": "session_fixation_testing",
       "function": "attempt to force a known session identifier on a victim before they authenticate",
-      "problem_the_tool_solves": "Prevents attackers from accessing a user's account by using a pre-determined session ID that remains valid after the victim logs in"
+      "problem_the_tool_solves": "Prevents attackers from accessing a user's account by using a pre-determined session ID that remains valid after the victim logs in",
+      "identifier": "0017"
     },
     {
       "use_case": "Bypassing authentication by testing for weak token randomness",
       "technique": "token_entropy_analysis",
       "function": "capture a large sample of session tokens and use statistical tests to determine if they contain predictable patterns",
-      "problem_the_tool_solves": "Identifies custom session management implementations that use predictable sequences, allowing attackers to hijack active sessions"
+      "problem_the_tool_solves": "Identifies custom session management implementations that use predictable sequences, allowing attackers to hijack active sessions",
+      "identifier": "0018"
     },
     {
       "use_case": "Retrieving sensitive data from non-production environments",
       "technique": "cloud_storage_fuzzing",
       "function": "brute-force permutations of company and project names to locate publicly accessible S3 buckets or cloud storage containers",
-      "problem_the_tool_solves": "Discovers exposed backups, source code, or configuration files that are often unintentionally left open in the cloud"
+      "problem_the_tool_solves": "Discovers exposed backups, source code, or configuration files that are often unintentionally left open in the cloud",
+      "identifier": "0019"
     },
     {
       "use_case": "Evading account lockout protections during credential testing",
       "technique": "password_spraying",
       "function": "test a single common password against a high volume of usernames rather than many passwords against one account",
-      "problem_the_tool_solves": "Allows testers to gain access to accounts with weak credentials without triggering threshold-based security alerts"
+      "problem_the_tool_solves": "Allows testers to gain access to accounts with weak credentials without triggering threshold-based security alerts",
+      "identifier": "0020"
     },
     {
       "use_case": "Identifying hidden endpoints and parameters via search engine logic",
       "technique": "google_dorking_for_apis",
       "function": "use advanced search operators like 'inurl:/api/v1/' or 'intitle:index.of api.txt' to find exposed documentation or keys",
-      "problem_the_tool_solves": "Efficiently maps the target's external attack surface by finding unlinked or deprecated assets indexed by search engines"
+      "problem_the_tool_solves": "Efficiently maps the target's external attack surface by finding unlinked or deprecated assets indexed by search engines",
+      "identifier": "0021"
     },
     {
       "use_case": "Manipulating server-side logic by duplicating HTTP parameters",
       "technique": "http_parameter_pollution_hpp",
       "function": "submit multiple parameters with the same name to observe how the backend web server and application server prioritize them",
-      "problem_the_tool_solves": "Bypasses web application firewalls (WAFs) or input validation filters that may only check the first instance of a parameter"
+      "problem_the_tool_solves": "Bypasses web application firewalls (WAFs) or input validation filters that may only check the first instance of a parameter",
+      "identifier": "0022"
     },
     {
       "use_case": "Bypassing access controls through alternative HTTP methods",
       "technique": "http_verb_tampering",
       "function": "test if restricted resources are accessible by using less common methods like PUT, DELETE, or HEAD instead of GET/POST",
-      "problem_the_tool_solves": "Reveals misconfigurations where security rules are applied only to specific HTTP verbs, leaving others wide open"
+      "problem_the_tool_solves": "Reveals misconfigurations where security rules are applied only to specific HTTP verbs, leaving others wide open",
+      "identifier": "0023"
     },
     {
       "use_case": "Detecting unauthorized data leakage through malformed requests",
       "technique": "error_message_analysis",
       "function": "intentionally trigger application exceptions to see if the resulting error reveals stack traces, database versions, or internal file paths",
-      "problem_the_tool_solves": "Prevents information disclosure that helps an attacker refine further exploits by understanding the backend architecture"
+      "problem_the_tool_solves": "Prevents information disclosure that helps an attacker refine further exploits by understanding the backend architecture",
+      "identifier": "0024"
     },
-    To ensure this list is detailed and comprehensive based on the sources, I have expanded it to include advanced exploitation methods, specialized API attacks, and infrastructure-level reconnaissance techniques.
-
-```json
-[
     {
       "use_case": "Gaining initial server access via serialized data processing",
       "technique": "insecure_deserialization_testing",
       "function": "identify and manipulate large blobs of encoded data that represent serialized objects in languages like Java, PHP, or Python",
-      "problem_the_tool_solves": "Uncovers vulnerabilities where untrusted input can be used to instantiate arbitrary classes, often leading to full Remote Code Execution (RCE)"
+      "problem_the_tool_solves": "Uncovers vulnerabilities where untrusted input can be used to instantiate arbitrary classes, often leading to full Remote Code Execution (RCE)",
+      "identifier": "0025"
     },
     {
       "use_case": "Accessing sensitive system files via file API manipulation",
       "technique": "path_traversal_attack",
       "function": "inject traversal sequences like '../' into parameters that determine file paths or names",
-      "problem_the_tool_solves": "Detects flaws that allow attackers to disclose critical configuration files, password hashes, or application source code from the underlying server"
+      "problem_the_tool_solves": "Detects flaws that allow attackers to disclose critical configuration files, password hashes, or application source code from the underlying server",
+      "identifier": "0026"
     },
     {
       "use_case": "Hijacking legitimate subdomains through DNS misconfigurations",
       "technique": "subdomain_takeover_analysis",
       "function": "identify CNAME records pointing to expired or unregistered third-party services like S3 buckets or Zendesk instances",
-      "problem_the_tool_solves": "Prevents attackers from hosting malicious phishing content or stealing cookies on the target's trusted subdomain"
+      "problem_the_tool_solves": "Prevents attackers from hosting malicious phishing content or stealing cookies on the target's trusted subdomain",
+      "identifier": "0027"
     },
     {
       "use_case": "Testing the security of cross-domain data sharing",
       "technique": "cors_misconfiguration_analysis",
       "function": "examine 'Access-Control-Allow-Origin' headers for wildcards or 'NULL' values paired with credential support",
-      "problem_the_tool_solves": "Identifies weak policies that allow unauthorized websites to read private data from the application via the victim's browser"
+      "problem_the_tool_solves": "Identifies weak policies that allow unauthorized websites to read private data from the application via the victim's browser",
+      "identifier": "0028"
     },
     {
       "use_case": "Bypassing authentication by compromising token integrity",
       "technique": "jwt_security_audit",
       "function": "test JSON Web Tokens for the 'none' algorithm, weak HMAC secrets, or signature removal",
-      "problem_the_tool_solves": "Reveals flaws in token signing that allow an attacker to forge identity tokens and take over any user account"
+      "problem_the_tool_solves": "Reveals flaws in token signing that allow an attacker to forge identity tokens and take over any user account",
+      "identifier": "0029"
     },
     {
       "use_case": "Bypassing Single Sign-On (SSO) authentication",
       "technique": "saml_assertion_testing",
       "function": "attempt signature removal, XML comment injection, or Signature Wrapping (XSW) on SAML responses",
-      "problem_the_tool_solves": "Identifies logic flaws in the assertion process that grant unauthorized access to enterprise applications"
+      "problem_the_tool_solves": "Identifies logic flaws in the assertion process that grant unauthorized access to enterprise applications",
+      "identifier": "0030"
     },
     {
       "use_case": "Testing for complete server compromise via system calls",
       "technique": "os_command_injection",
       "function": "inject shell command separators like ';' or '&&' into input fields passed to system execution functions",
-      "problem_the_tool_solves": "Detects high-impact vulnerabilities that allow attackers to run arbitrary system-level commands on the host server"
+      "problem_the_tool_solves": "Detects high-impact vulnerabilities that allow attackers to run arbitrary system-level commands on the host server",
+      "identifier": "0031"
     },
     {
       "use_case": "Probing modern non-relational databases for data leaks",
       "technique": "nosql_injection_testing",
       "function": "use NoSQL-specific operators like '$gt' or '$where' in JSON request bodies to bypass logic or extract records",
-      "problem_the_tool_solves": "Uncovers vulnerabilities in MongoDB or other NoSQL stores that allow unauthorized data extraction or authentication bypass"
+      "problem_the_tool_solves": "Uncovers vulnerabilities in MongoDB or other NoSQL stores that allow unauthorized data extraction or authentication bypass",
+      "identifier": "0032"
     },
     {
       "use_case": "Manipulating HTTP traffic to perform cache poisoning",
       "technique": "crlf_injection_testing",
       "function": "inject URL-encoded carriage-return and line-feed characters (%0D%0A) into HTTP headers",
-      "problem_the_tool_solves": "Identifies risks for HTTP response splitting and cross-site scripting (XSS) via header manipulation"
+      "problem_the_tool_solves": "Identifies risks for HTTP response splitting and cross-site scripting (XSS) via header manipulation",
+      "identifier": "0033"
     },
     {
       "use_case": "Determining the effectiveness of automated defense thresholds",
       "technique": "rate_limit_probing",
       "function": "systematically issue high volumes of requests to sensitive endpoints using multiple user accounts or IP rotations",
-      "problem_the_tool_solves": "Uncovers the lack of protection against automated brute-force attacks and resource exhaustion"
+      "problem_the_tool_solves": "Uncovers the lack of protection against automated brute-force attacks and resource exhaustion",
+      "identifier": "0034"
     },
     {
       "use_case": "Stealing sensitive data from cross-domain JSON responses",
       "technique": "json_hijacking_test",
       "function": "use a malicious site to override the JavaScript array constructor and include a sensitive JSON source via a script tag",
-      "problem_the_tool_solves": "Identifies data exposure risks where sensitive user information is leaked if standard Same-Origin Policy (SOP) defenses are missing"
+      "problem_the_tool_solves": "Identifies data exposure risks where sensitive user information is leaked if standard Same-Origin Policy (SOP) defenses are missing",
+      "identifier": "0035"
     },
     {
       "use_case": "Testing for code execution via server-side include directives",
       "technique": "ssi_injection_testing",
       "function": "inject strings like '<!--#echo var=\"DATE_LOCAL\" -->' into input points and check for server-processed output",
-      "problem_the_tool_solves": "Detects vulnerabilities where an attacker can leak environment variables or achieve remote code execution on misconfigured servers"
+      "problem_the_tool_solves": "Detects vulnerabilities where an attacker can leak environment variables or achieve remote code execution on misconfigured servers",
+      "identifier": "0036"
     },
     {
       "use_case": "Gaining unauthorized access to internal directory services",
       "technique": "ldap_injection_testing",
       "function": "manipulate LDAP filters using characters like '*' or parentheses to alter query logic",
-      "problem_the_tool_solves": "Uncovers flaws that allow attackers to bypass login credentials or expose entire organizational directory structures"
+      "problem_the_tool_solves": "Uncovers flaws that allow attackers to bypass login credentials or expose entire organizational directory structures",
+      "identifier": "0037"
     },
     {
       "use_case": "Navigating and extracting data from back-end XML documents",
       "technique": "xpath_injection_testing",
       "function": "inject characters that interfere with the construction of XPath queries to retrieve unlinked XML nodes",
-      "problem_the_tool_solves": "Prevents full data disclosure of back-end XML databases when the application fails to properly sanitize query input"
+      "problem_the_tool_solves": "Prevents full data disclosure of back-end XML databases when the application fails to properly sanitize query input",
+      "identifier": "0038"
     },
     {
       "use_case": "Identifying critical memory corruption flaws in native code",
       "technique": "buffer_overflow_probing",
       "function": "submit a range of extremely long strings to input fields to trigger uncontrolled memory exceptions",
-      "problem_the_tool_solves": "Discovers low-level vulnerabilities in compiled components that can lead to application crashes or arbitrary code execution"
+      "problem_the_tool_solves": "Discovers low-level vulnerabilities in compiled components that can lead to application crashes or arbitrary code execution",
+      "identifier": "0039"
     }
   ]
 }
