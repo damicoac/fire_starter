@@ -22,6 +22,7 @@ type SQLInjectionTestingResult struct {
 // Description: inject malicious SQL statements into user input fields to manipulate database queries
 type SQLInjectionTesting struct {
 	Target     string
+	Cookies    string
 	maxThreads int
 	mu         sync.Mutex
 	results    []SQLInjectionTestingResult
@@ -40,6 +41,11 @@ func NewSQLInjectionTesting(target string) *SQLInjectionTesting {
 			Timeout: 10 * time.Second,
 		},
 	}
+}
+
+// SetCookies sets the Cookie header value for the requests.
+func (m *SQLInjectionTesting) SetCookies(cookies string) {
+	m.Cookies = cookies
 }
 
 // SetThreads sets the number of concurrent execution threads.
@@ -144,6 +150,10 @@ func (m *SQLInjectionTesting) testPayload(ctx context.Context, u *url.URL, paylo
 	req, err := http.NewRequestWithContext(ctx, "GET", testURL.String(), nil)
 	if err != nil {
 		return
+	}
+
+	if m.Cookies != "" {
+		req.Header.Set("Cookie", m.Cookies)
 	}
 
 	resp, err := m.client.Do(req)

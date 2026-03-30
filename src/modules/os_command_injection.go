@@ -20,6 +20,7 @@ type OSCommandInjectionResult struct {
 // OSCommandInjection executes the os_command_injection security technique.
 type OSCommandInjection struct {
 	Target     string
+	Cookies    string
 	maxThreads int
 	mu         sync.Mutex
 	results    []OSCommandInjectionResult
@@ -33,6 +34,11 @@ func NewOSCommandInjection(target string) *OSCommandInjection {
 		maxThreads: 5,
 		client:     NewHTTPClient(10 * time.Second),
 	}
+}
+
+// SetCookies sets the Cookie header value for the requests.
+func (m *OSCommandInjection) SetCookies(cookies string) {
+	m.Cookies = cookies
 }
 
 func (m *OSCommandInjection) SetThreads(count int) {
@@ -118,6 +124,10 @@ func (m *OSCommandInjection) testPayload(ctx context.Context, u *url.URL, payloa
 	req, err := http.NewRequestWithContext(ctx, "GET", testURL.String(), nil)
 	if err != nil {
 		return
+	}
+
+	if m.Cookies != "" {
+		req.Header.Set("Cookie", m.Cookies)
 	}
 
 	resp, err := m.client.Do(req)

@@ -20,6 +20,7 @@ type CrossSiteScriptingInjectionResult struct {
 // CrossSiteScriptingInjection executes the cross_site_scripting_injection security technique.
 type CrossSiteScriptingInjection struct {
 	Target     string
+	Cookies    string
 	maxThreads int
 	mu         sync.Mutex
 	results    []CrossSiteScriptingInjectionResult
@@ -33,6 +34,11 @@ func NewCrossSiteScriptingInjection(target string) *CrossSiteScriptingInjection 
 		maxThreads: 5,
 		client:     NewHTTPClient(10 * time.Second),
 	}
+}
+
+// SetCookies sets the Cookie header value for the requests.
+func (m *CrossSiteScriptingInjection) SetCookies(cookies string) {
+	m.Cookies = cookies
 }
 
 func (m *CrossSiteScriptingInjection) SetThreads(count int) {
@@ -116,6 +122,10 @@ func (m *CrossSiteScriptingInjection) testPayload(ctx context.Context, u *url.UR
 	req, err := http.NewRequestWithContext(ctx, "GET", testURL.String(), nil)
 	if err != nil {
 		return
+	}
+
+	if m.Cookies != "" {
+		req.Header.Set("Cookie", m.Cookies)
 	}
 
 	resp, err := m.client.Do(req)
