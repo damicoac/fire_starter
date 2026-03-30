@@ -1,8 +1,11 @@
 package matrix
 
 import (
+	"context"
 	"fmt"
 	"strings"
+
+	"blackwater/src/modules"
 )
 
 type RealExecutor struct {
@@ -74,6 +77,55 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 		"next_stage":          "none",
 		"payload":             payload,
 	}
+
+	// Execute real port scan for port_scanning technique
+	if strings.Contains(strings.ToLower(decision.Technique), "port_scanning") {
+		ip := payload["ip"].(string)
+		onLog(fmt.Sprintf("Starting port scan on target: %s", ip))
+
+		scanner := modules.NewPortScanner(ip, nil)
+		scanner.SetThreads(50)
+
+		results, err := scanner.ScanCommonPorts(context.Background())
+		if err != nil {
+			return fmt.Sprintf("Port scan failed: %v", err), err
+		}
+
+		onLog(fmt.Sprintf("Port scan completed. Found %d open ports", len(results)))
+
+		// Build results map for output
+		openPorts := make([]int, 0)
+		for _, r := range results {
+			if r.State == "open" {
+				openPorts = append(openPorts, r.Port)
+			}
+		}
+		resultOutput["open_ports"] = openPorts
+		resultOutput["scan_results"] = results
+	}
+
+	// Execute subdomain enumeration for subdomain_enumeration technique
+	if strings.Contains(strings.ToLower(decision.Technique), "subdomain_enumeration") {
+		domain := payload["url"].(string)
+		domain = strings.TrimPrefix(domain, "http://")
+		domain = strings.TrimPrefix(domain, "https://")
+		parts := strings.Split(domain, "/")
+		domain = parts[0]
+
+		onLog(fmt.Sprintf("Starting subdomain enumeration on: %s", domain))
+
+		enumerator := modules.NewSubdomainEnumerator(domain)
+
+		results, err := enumerator.EnumerateWithPorts(context.Background())
+		if err != nil {
+			return fmt.Sprintf("Subdomain enumeration failed: %v", err), err
+		}
+
+		onLog(fmt.Sprintf("Subdomain enumeration completed. Found %d subdomains", len(results)))
+
+		resultOutput["subdomain_results"] = results
+	}
+
 	onLog("Module execution completed. Predicted next stage: none")
 
 	return fmt.Sprintf("Module Executed Successfully. \nCalls made: %d \nOutput Data: %v", 1, resultOutput), nil
