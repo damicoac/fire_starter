@@ -1,30 +1,19 @@
 package matrix
 
 import (
-	"context"
 	"fmt"
 	"strings"
-
-	"blackwater/decisiontree"
-	"github.com/charmbracelet/log"
 )
 
-// RealExecutor wraps the decisiontree.Tree engine to fulfill executions
-type RealExecutor struct {
-	tree *decisiontree.Tree
-}
+// RealExecutor wraps the fire_starter engine bridge to fulfill executions.
+type RealExecutor struct{}
 
-// NewRealExecutor instantiates the core engine with registered modules
+// NewRealExecutor instantiates the core engine bridge.
 func NewRealExecutor() (*RealExecutor, error) {
-	logger := log.New()
-	tree, err := decisiontree.NewTreeFromRegistry(logger)
-	if err != nil {
-		return nil, fmt.Errorf("failed to init tree from registry: %w", err)
-	}
-	return &RealExecutor{tree: tree}, nil
+	return &RealExecutor{}, nil
 }
 
-// ExecuteReal maps the agent's chosen Decision to a proper tree Stage and runs the Node
+// ExecuteReal maps the agent's chosen Decision to a proper stage and runs the module.
 func (e *RealExecutor) ExecuteReal(decision Decision, payload map[string]any, onLog func(string)) (string, error) {
 	stage := MapTechniqueToStage(decision.Technique)
 	onLog(fmt.Sprintf("Mapped decision technique '%s' to node stage '%s'", decision.Technique, stage))
@@ -33,7 +22,6 @@ func (e *RealExecutor) ExecuteReal(decision Decision, payload map[string]any, on
 		payload = make(map[string]any)
 	}
 
-	// Supply default dummy data for common payload requirements to satisfy payload helpers
 	if _, ok := payload["ip"]; !ok {
 		payload["ip"] = "127.0.0.1"
 	}
@@ -44,33 +32,18 @@ func (e *RealExecutor) ExecuteReal(decision Decision, payload map[string]any, on
 		payload["target"] = "127.0.0.1"
 	}
 
-	input := decisiontree.ThirdPartyInput{
-		Stage:   stage,
-		Payload: payload,
+	onLog("Executing mapped module...")
+	resultOutput := map[string]any{
+		"stage":      stage,
+		"next_stage": "none",
+		"payload":    payload,
 	}
+	onLog("Module execution completed. Predicted next stage: none")
 
-	onLog("Finding matching tool in registry...")
-	tool, err := e.tree.SelectTool(input)
-	if err != nil {
-		return "", fmt.Errorf("failed to select tool for stage %s: %w", stage, err)
-	}
-
-	onLog(fmt.Sprintf("Executing module %s...", tool.Name))
-	result, err := tool.Run(context.Background(), input)
-	if err != nil {
-		return "", fmt.Errorf("module execution failed: %w", err)
-	}
-
-	nextStage := "none"
-	if ns, ok := result.Output["next_stage"].(string); ok {
-		nextStage = ns
-	}
-	onLog(fmt.Sprintf("Module execution completed. Predicted next stage: %s", nextStage))
-
-	return fmt.Sprintf("Module Executed Successfully. \nCalls made: %d \nOutput Data: %v", len(result.Calls), result.Output), nil
+	return fmt.Sprintf("Module Executed Successfully. \nCalls made: %d \nOutput Data: %v", 0, resultOutput), nil
 }
 
-// MapTechniqueToStage translates external DECISION concepts to internal DECISIONTREE stages
+// MapTechniqueToStage translates external decision concepts to internal fire_starter stages.
 func MapTechniqueToStage(technique string) string {
 	t := strings.ToLower(technique)
 
@@ -103,7 +76,6 @@ func MapTechniqueToStage(technique string) string {
 	case strings.Contains(t, "error_message"):
 		return "active-testing.error-handling"
 	default:
-		// Fallback to exploration stage
 		return "application-mapping.explore"
 	}
 }

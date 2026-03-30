@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"blackwater/decisiontree/matrix"
+	"blackwater/src/matrix"
 )
 
 type ExecuteRequest struct {
@@ -24,10 +24,10 @@ type StreamUpdate struct {
 }
 
 func main() {
-	decisionsFile := "decisiontree/matrix/decisions.json"
+	decisionsFile := "src/matrix/decisions.json"
 	// Also fallback to looking up directories if run from nested places
 	if _, err := os.Stat(decisionsFile); os.IsNotExist(err) {
-		decisionsFile = filepath.Join("..", "..", "decisiontree", "matrix", "decisions.json")
+		decisionsFile = filepath.Join("..", "..", "src", "matrix", "decisions.json")
 	}
 
 	bytes, err := os.ReadFile(decisionsFile)

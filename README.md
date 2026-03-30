@@ -1,6 +1,6 @@
 # Blackwater Streamable Matrix Server
 
-This directory contains a custom standalone Streamable HTTP Server (`cmd/http-server`) designed to bridge LLM agents with the `decisiontree` framework natively.
+This directory contains a custom standalone Streamable HTTP Server (`cmd/http-server`) designed to bridge LLM agents with the `fire_starter` framework natively.
 
 Instead of utilizing standard MCP (stdio or SSE), this server opts for raw HTTP POST streaming utilizing chunked responses and **NDJSON** (Newline Delimited JSON). This allows an associated AI agent to observe real-time module execution and automatically retrieve the decision matrix once execution is finalized.
 
@@ -9,9 +9,9 @@ Instead of utilizing standard MCP (stdio or SSE), this server opts for raw HTTP 
 - `cmd/http-server/main.go`
   - Long-lived Go HTTP server (`:8080`) that streams updates block-by-block.
   - Bundles the execution logs natively alongside the completion Matrix tree to minimize agent roundtrips.
-- `decisiontree/matrix/real_executor.go`
-  - Represents the real translation layer between `Decisions.json` logic strings (e.g., `port_scanning`) and actual `decisiontree.Tree` executable stages (e.g., `api-testing.recon`).
-- `decisiontree/matrix/decisions.json`
+- `fire_starter/matrix/real_executor.go`
+  - Represents the real translation layer between `Decisions.json` logic strings (e.g., `port_scanning`) and actual `fire_starter.Tree` executable stages (e.g., `api-testing.recon`).
+- `fire_starter/matrix/decisions.json`
   - Stored file holding all available autonomous tool decisions provided to the agent for execution.
 
 ---
@@ -49,7 +49,7 @@ The stream emits logs sequentially as NDJSON lines.
 When extending the decision tree or the AI agent logic, you must carefully map new tool techniques so the Server knows how to trigger the underlying codebase.
 
 ### 1. Adding a new Tool to the Agent
-Edit `decisiontree/matrix/decisions.json` and append a new `Decision` struct.
+Edit `fire_starter/matrix/decisions.json` and append a new `Decision` struct.
 ```json
 {
   "use_case": "Harvesting specific internal logs",
@@ -60,9 +60,9 @@ Edit `decisiontree/matrix/decisions.json` and append a new `Decision` struct.
 ```
 
 ### 2. Wiring Execution Mapping
-Open `decisiontree/matrix/real_executor.go`.
+Open `fire_starter/matrix/real_executor.go`.
 Scroll to the `MapTechniqueToStage()` switch statement.
-You must update the string matching logic to map your new `technique` to a valid internal `Stage` constant used by the `decisiontree` library.
+You must update the string matching logic to map your new `technique` to a valid internal `Stage` constant used by the `fire_starter` library.
 
 ```go
 case strings.Contains(t, "log_extraction"):
@@ -72,4 +72,4 @@ If you do not map your new `technique`, the executor will gracefully default to 
 
 ### 3. Payload Requirements 
 The `execute` POST allows the agent to provide unstructured inputs into `{"payload": { ... }}`. 
-In `decisiontree/matrix/real_executor.go` within `ExecuteReal()`, we ensure that standard required parameters such as `ip` and `url` populate successfully. If your new nodes strictly require new context variables (like `{"bucketName": "test-12"}`), verify your AI agent is capable of providing it through the `POST` interface payload schema.
+In `fire_starter/matrix/real_executor.go` within `ExecuteReal()`, we ensure that standard required parameters such as `ip` and `url` populate successfully. If your new nodes strictly require new context variables (like `{"bucketName": "test-12"}`), verify your AI agent is capable of providing it through the `POST` interface payload schema.
