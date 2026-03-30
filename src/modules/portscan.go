@@ -10,12 +10,12 @@ import (
 
 // PortScanner performs TCP port scanning on a target host
 type PortScanner struct {
-	Target    string
-	Ports     []int
-	Timeout   time.Duration
-	Threads   int
-	results   map[int]portResult
-	mu        sync.Mutex
+	Target  string
+	Ports   []int
+	Timeout time.Duration
+	Threads int
+	results map[int]portResult
+	mu      sync.Mutex
 }
 
 type portResult struct {
@@ -110,7 +110,7 @@ func (ps *PortScanner) scanPort(ctx context.Context, port int) portResult {
 	conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 	buffer := make([]byte, 1024)
 	n, _ := conn.Read(buffer)
-	
+
 	if n > 0 {
 		banner := string(buffer[:n])
 		// Clean up banner for display
@@ -129,7 +129,7 @@ func (ps *PortScanner) sortAndReturnResults() {
 	for port := range ps.results {
 		sorted = append(sorted, port)
 	}
-	
+
 	// Simple insertion sort for efficiency on typically small datasets
 	for i := 1; i < len(sorted); i++ {
 		key := sorted[i]
@@ -140,13 +140,13 @@ func (ps *PortScanner) sortAndReturnResults() {
 		}
 		sorted[j+1] = key
 	}
-	
+
 	// Convert to ordered results slice for consistent output
 	orderedResults := make([]portResult, len(sorted))
 	for i, port := range sorted {
 		orderedResults[i] = ps.results[port]
 	}
-	
+
 	// Update results with ordered data for JSON marshaling consistency
 	ps.results = make(map[int]portResult)
 	for i, result := range orderedResults {
@@ -160,7 +160,7 @@ func (ps *PortScanner) getPartialResults() []portResult {
 	for port := range ps.results {
 		ports = append(ports, port)
 	}
-	
+
 	// Sort ports
 	for i := 1; i < len(ports); i++ {
 		key := ports[i]
@@ -171,12 +171,12 @@ func (ps *PortScanner) getPartialResults() []portResult {
 		}
 		ports[j+1] = key
 	}
-	
+
 	resultSlice := make([]portResult, len(ports))
 	for i, port := range ports {
 		resultSlice[i] = ps.results[port]
 	}
-	
+
 	return resultSlice
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"blackwater/src/modules"
 )
@@ -65,9 +66,6 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	if _, ok := payload["url"]; !ok {
 		payload["url"] = "http://127.0.0.1"
 	}
-	if _, ok := payload["target"]; !ok {
-		payload["target"] = "127.0.0.1"
-	}
 
 	onLog("Executing mapped module...")
 	resultOutput := map[string]any{
@@ -104,6 +102,17 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 		resultOutput["scan_results"] = results
 	}
 
+	if strings.Contains(strings.ToLower(decision.Technique), "google_dorking_for_apis") {
+		target, _ := payload["target"].(string)
+		onLog(fmt.Sprintf("Generating Google dork API queries for: %s", target))
+
+		dorker := modules.NewGoogleDorkingForAPIs(target)
+		results := dorker.Generate()
+
+		onLog(fmt.Sprintf("Google dork API query generation completed. Generated %d queries", len(results)))
+		resultOutput["google_dorking_for_apis_results"] = results
+	}
+
 	// Execute subdomain enumeration for subdomain_enumeration technique
 	if strings.Contains(strings.ToLower(decision.Technique), "subdomain_enumeration") {
 		domain := payload["url"].(string)
@@ -116,7 +125,10 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 
 		enumerator := modules.NewSubdomainEnumerator(domain)
 
-		results, err := enumerator.EnumerateWithPorts(context.Background())
+		enumCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		results, err := enumerator.EnumerateWithPorts(enumCtx)
 		if err != nil {
 			return fmt.Sprintf("Subdomain enumeration failed: %v", err), err
 		}

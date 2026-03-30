@@ -11,13 +11,13 @@ import (
 
 // SubdomainEnumerator performs subdomain enumeration via brute-force and DNS queries
 type SubdomainEnumerator struct {
-	Target      string
-	Wordlist    []string
-	Results     map[string]bool
-	done        chan struct{}
-	mu          sync.Mutex
-	maxThreads  int
-	results     []SubdomainResult
+	Target     string
+	Wordlist   []string
+	Results    map[string]bool
+	done       chan struct{}
+	mu         sync.Mutex
+	maxThreads int
+	results    []SubdomainResult
 }
 
 // SubdomainResult holds enumeration results
@@ -29,11 +29,11 @@ type SubdomainResult struct {
 // NewSubdomainEnumerator creates a new subdomain enumerator instance
 func NewSubdomainEnumerator(target string) *SubdomainEnumerator {
 	return &SubdomainEnumerator{
-		Target:      target,
-		Wordlist:    getDefaultWordlist(),
-		Results:     make(map[string]bool),
-		done:        make(chan struct{}),
-		maxThreads:  50,
+		Target:     target,
+		Wordlist:   getDefaultWordlist(),
+		Results:    make(map[string]bool),
+		done:       make(chan struct{}),
+		maxThreads: 50,
 	}
 }
 
@@ -55,6 +55,7 @@ func (se *SubdomainEnumerator) SetWordlist(words []string) {
 // Enumerate performs the subdomain enumeration and returns results
 func (se *SubdomainEnumerator) Enumerate(ctx context.Context) ([]SubdomainResult, error) {
 	se.results = make([]SubdomainResult, 0)
+	se.done = make(chan struct{})
 	done := make(chan struct{})
 
 	jobs := make(chan string, len(se.Wordlist))
@@ -91,15 +92,20 @@ func (se *SubdomainEnumerator) Enumerate(ctx context.Context) ([]SubdomainResult
 		}()
 	}
 
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
 	select {
 	case <-done:
-		wg.Wait()
 		sort.Slice(se.results, func(i, j int) bool {
 			return se.results[i].Subdomain < se.results[j].Subdomain
 		})
 		return se.results, nil
 	case <-ctx.Done():
 		close(se.done)
+		<-done
 		return se.results, ctx.Err()
 	}
 }
@@ -240,7 +246,7 @@ func (se *SubdomainEnumerator) EnumerateWithPorts(ctx context.Context) ([]Subdom
 
 			n := SubdomainResult{
 				Subdomain: r.Subdomain,
-				IPs: append(openPorts, ip),
+				IPs:       append(openPorts, ip),
 			}
 			extendedResults = append(extendedResults, n)
 		}
