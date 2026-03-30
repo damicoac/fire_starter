@@ -19,3 +19,11 @@ type ExecutionResult struct {
 	ResultData       string
 	Timestamp        time.Time
 }
+
+type ToolDefinition struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Identifier  string         `json:"identifier"`
+	Technique   string         `json:"technique"`
+	InputSchema map[string]any `json:"input_schema"`
+}
