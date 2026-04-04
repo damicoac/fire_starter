@@ -3,11 +3,12 @@ package matrix
 import "time"
 
 type Decision struct {
-	UseCase              string `json:"use_case"`
-	Technique            string `json:"technique"`
-	Function             string `json:"function"`
-	ProblemTheToolSolves string `json:"problem_the_tool_solves"`
-	Identifier           string `json:"identifier"`
+	UseCase              string         `json:"use_case"`
+	Technique            string         `json:"technique"`
+	Function             string         `json:"function"`
+	ProblemTheToolSolves string         `json:"problem_the_tool_solves"`
+	Identifier           string         `json:"identifier"`
+	Payload              map[string]any `json:"payload,omitempty"`
 }
 
 type DecisionData struct {

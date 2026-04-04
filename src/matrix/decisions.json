@@ -279,6 +279,13 @@
       "function": "submit a range of extremely long strings to input fields to trigger uncontrolled memory exceptions",
       "problem_the_tool_solves": "Discovers low-level vulnerabilities in compiled components that can lead to application crashes or arbitrary code execution",
       "identifier": "0039"
+    },
+    {
+      "use_case": "Automated extraction of session cookies to enable authenticated testing",
+      "technique": "login_cookie_extractor",
+      "function": "submit credentials to a login endpoint and extract the resulting Set-Cookie headers for subsequent tools",
+      "problem_the_tool_solves": "Enables the agent to bypass initial authentication boundaries and test protected endpoints by harvesting valid session identifiers",
+      "identifier": "0040"
     }
   ]
 }

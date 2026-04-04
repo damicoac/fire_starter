@@ -2,9 +2,9 @@ package matrix
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"blackwater/src/modules"
 )
@@ -12,6 +12,25 @@ import (
 type RealExecutor struct {
 	registry   *ToolRegistry
 	toolByName map[string]ToolDefinition
+}
+
+func payloadString(payload map[string]any, key, fallback string) string {
+	v, ok := payload[key]
+	if !ok || v == nil {
+		return fallback
+	}
+	if s, ok := v.(string); ok {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return fallback
+		}
+		return s
+	}
+	s := strings.TrimSpace(fmt.Sprint(v))
+	if s == "" {
+		return fallback
+	}
+	return s
 }
 
 func NewRealExecutor(decisions []Decision) (*RealExecutor, error) {
@@ -28,7 +47,11 @@ func (e *RealExecutor) Tools() []ToolDefinition {
 }
 
 func (e *RealExecutor) Execute(decision Decision) (string, error) {
-	return e.executeDecision(decision, map[string]any{}, func(string) {})
+	payload := decision.Payload
+	if payload == nil {
+		payload = make(map[string]any)
+	}
+	return e.executeDecision(decision, payload, func(string) {})
 }
 
 func (e *RealExecutor) ExecuteByIdentifier(identifier string, payload map[string]any, onLog func(string)) (string, error) {
@@ -78,7 +101,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 
 	// Execute real port scan for port_scanning technique
 	if strings.Contains(strings.ToLower(decision.Technique), "port_scanning") {
-		ip := payload["ip"].(string)
+		ip := payloadString(payload, "ip", "127.0.0.1")
 		onLog(fmt.Sprintf("Starting port scan on target: %s", ip))
 
 		scanner := modules.NewPortScanner(ip, nil)
@@ -113,33 +136,8 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 		resultOutput["google_dorking_for_apis_results"] = results
 	}
 
-	// Execute subdomain enumeration for subdomain_enumeration technique
-	if strings.Contains(strings.ToLower(decision.Technique), "subdomain_enumeration") {
-		domain := payload["url"].(string)
-		domain = strings.TrimPrefix(domain, "http://")
-		domain = strings.TrimPrefix(domain, "https://")
-		parts := strings.Split(domain, "/")
-		domain = parts[0]
-
-		onLog(fmt.Sprintf("Starting subdomain enumeration on: %s", domain))
-
-		enumerator := modules.NewSubdomainEnumerator(domain)
-
-		enumCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		results, err := enumerator.EnumerateWithPorts(enumCtx)
-		if err != nil {
-			return fmt.Sprintf("Subdomain enumeration failed: %v", err), err
-		}
-
-		onLog(fmt.Sprintf("Subdomain enumeration completed. Found %d subdomains", len(results)))
-
-		resultOutput["subdomain_results"] = results
-	}
-
 	if strings.Contains(strings.ToLower(decision.Technique), "http_parameter_pollution_hpp") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting HttpParameterPollutionHpp on: %s", target))
 
 		tester := modules.NewHttpParameterPollutionHpp(target)
@@ -153,7 +151,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "cors_misconfiguration_analysis") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting CorsMisconfigurationAnalysis on: %s", target))
 
 		tester := modules.NewCorsMisconfigurationAnalysis(target)
@@ -167,7 +165,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "google_dorking") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting GoogleDorking on: %s", target))
 
 		tester := modules.NewGoogleDorking(target)
@@ -181,7 +179,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "x_m_l_external_entity_injection_xxe") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting XMLExternalEntityInjectionXxe on: %s", target))
 
 		tester := modules.NewXMLExternalEntityInjectionXxe(target)
@@ -195,7 +193,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "j_w_t_security_audit") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting JWTSecurityAudit on: %s", target))
 
 		tester := modules.NewJWTSecurityAudit(target)
@@ -209,7 +207,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "http_verb_tampering") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting HttpVerbTampering on: %s", target))
 
 		tester := modules.NewHttpVerbTampering(target)
@@ -223,7 +221,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "rate_limit_probing") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting RateLimitProbing on: %s", target))
 
 		tester := modules.NewRateLimitProbing(target)
@@ -237,7 +235,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "nosql_injection_testing") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting NosqlInjectionTesting on: %s", target))
 
 		tester := modules.NewNosqlInjectionTesting(target)
@@ -251,7 +249,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "xpath_injection_testing") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting XpathInjectionTesting on: %s", target))
 
 		tester := modules.NewXpathInjectionTesting(target)
@@ -265,7 +263,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "server_side_template_injection_ssti") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting ServerSideTemplateInjectionSsti on: %s", target))
 
 		tester := modules.NewServerSideTemplateInjectionSsti(target)
@@ -279,7 +277,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "crlf_injection_testing") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting CrlfInjectionTesting on: %s", target))
 
 		tester := modules.NewCrlfInjectionTesting(target)
@@ -293,7 +291,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "insecure_deserialization_testing") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting InsecureDeserializationTesting on: %s", target))
 
 		tester := modules.NewInsecureDeserializationTesting(target)
@@ -307,7 +305,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "buffer_overflow_probing") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting BufferOverflowProbing on: %s", target))
 
 		tester := modules.NewBufferOverflowProbing(target)
@@ -321,7 +319,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "race_condition_testing") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting RaceConditionTesting on: %s", target))
 
 		tester := modules.NewRaceConditionTesting(target)
@@ -335,7 +333,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "path_traversal_attack") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting PathTraversalAttack on: %s", target))
 
 		tester := modules.NewPathTraversalAttack(target)
@@ -349,7 +347,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "graphql_introspection") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting GraphqlIntrospection on: %s", target))
 
 		tester := modules.NewGraphqlIntrospection(target)
@@ -363,7 +361,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "error_message_analysis") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting ErrorMessageAnalysis on: %s", target))
 
 		tester := modules.NewErrorMessageAnalysis(target)
@@ -377,7 +375,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "cross_site_scripting_injection") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting CrossSiteScriptingInjection on: %s", target))
 
 		tester := modules.NewCrossSiteScriptingInjection(target)
@@ -394,7 +392,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "session_fixation_testing") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting SessionFixationTesting on: %s", target))
 
 		tester := modules.NewSessionFixationTesting(target)
@@ -408,7 +406,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "cloud_storage_fuzzing") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting CloudStorageFuzzing on: %s", target))
 
 		tester := modules.NewCloudStorageFuzzing(target)
@@ -422,7 +420,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "subdomain_enumeration") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting SubdomainEnumeration on: %s", target))
 
 		tester := modules.NewSubdomainEnumeration(target)
@@ -436,7 +434,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "os_command_injection") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting OSCommandInjection on: %s", target))
 
 		tester := modules.NewOSCommandInjection(target)
@@ -453,7 +451,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "subdomain_takeover_analysis") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting SubdomainTakeoverAnalysis on: %s", target))
 
 		tester := modules.NewSubdomainTakeoverAnalysis(target)
@@ -467,7 +465,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "csrf_testing") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting CSRFTesting on: %s", target))
 
 		tester := modules.NewCSRFTesting(target)
@@ -481,7 +479,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "d_o_m_based_xss_analysis") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting DOMBasedXSSAnalysis on: %s", target))
 
 		tester := modules.NewDOMBasedXSSAnalysis(target)
@@ -495,7 +493,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "idor_manipulation") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting IDORManipulation on: %s", target))
 
 		tester := modules.NewIDORManipulation(target)
@@ -509,7 +507,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "port_scanning") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting PortScanning on: %s", target))
 
 		tester := modules.NewPortScanning(target)
@@ -523,7 +521,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "s_a_m_l_assertion_testing") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting SAMLAssertionTesting on: %s", target))
 
 		tester := modules.NewSAMLAssertionTesting(target)
@@ -537,7 +535,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "sql_injection_testing") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting SQLInjectionTesting on: %s", target))
 
 		tester := modules.NewSQLInjectionTesting(target)
@@ -554,7 +552,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "mass_assignment_injection") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting MassAssignmentInjection on: %s", target))
 
 		tester := modules.NewMassAssignmentInjection(target)
@@ -568,7 +566,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "token_entropy_analysis") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting TokenEntropyAnalysis on: %s", target))
 
 		tester := modules.NewTokenEntropyAnalysis(target)
@@ -582,7 +580,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "ssrf_exploitation") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting SSRFExploitation on: %s", target))
 
 		tester := modules.NewSSRFExploitation(target)
@@ -596,7 +594,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "replacive_fuzzing") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting ReplaciveFuzzing on: %s", target))
 
 		tester := modules.NewReplaciveFuzzing(target)
@@ -610,7 +608,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "ldap_injection_testing") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting LDAPInjectionTesting on: %s", target))
 
 		tester := modules.NewLDAPInjectionTesting(target)
@@ -624,7 +622,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "ssi_injection_testing") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting SsiInjectionTesting on: %s", target))
 
 		tester := modules.NewSsiInjectionTesting(target)
@@ -638,7 +636,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "broken_object_level_authorization_bola") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting BrokenObjectLevelAuthorizationBola on: %s", target))
 
 		tester := modules.NewBrokenObjectLevelAuthorizationBola(target)
@@ -652,7 +650,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "password_spraying") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting PasswordSpraying on: %s", target))
 
 		tester := modules.NewPasswordSpraying(target)
@@ -666,7 +664,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 	}
 
 	if strings.Contains(strings.ToLower(decision.Technique), "broken_function_level_authorization_bfla") {
-		target := payload["url"].(string)
+		target := payloadString(payload, "url", "http://127.0.0.1")
 		onLog(fmt.Sprintf("Starting BrokenFunctionLevelAuthorizationBfla on: %s", target))
 
 		tester := modules.NewBrokenFunctionLevelAuthorizationBfla(target)
@@ -679,9 +677,44 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 		resultOutput["broken_function_level_authorization_bfla_results"] = results
 	}
 
+	if strings.Contains(strings.ToLower(decision.Technique), "login_cookie_extractor") {
+		target := payloadString(payload, "url", "http://127.0.0.1")
+		username, _ := payload["username"].(string)
+		password, _ := payload["password"].(string)
+		onLog(fmt.Sprintf("Starting LoginCookieExtractor on: %s", target))
+
+		tester := modules.NewLoginCookieExtractor(target, username, password)
+		results, err := tester.Execute(context.Background())
+		if err != nil {
+			return fmt.Sprintf("LoginCookieExtractor failed: %v", err), err
+		}
+
+		onLog(fmt.Sprintf("LoginCookieExtractor completed. Found %d results", len(results)))
+		resultOutput["login_cookie_extractor_results"] = results
+	}
+
+	if strings.Contains(strings.ToLower(decision.Technique), "json_hijacking_test") {
+		target := payloadString(payload, "url", "http://127.0.0.1")
+		onLog(fmt.Sprintf("Starting JsonHijackingTest on: %s", target))
+
+		tester := modules.NewJsonHijackingTest(target)
+		results, err := tester.Execute(context.Background())
+		if err != nil {
+			return fmt.Sprintf("JsonHijackingTest failed: %v", err), err
+		}
+
+		onLog(fmt.Sprintf("JsonHijackingTest completed. Found %d results", len(results)))
+		resultOutput["json_hijacking_test_results"] = results
+	}
+
 	onLog("Module execution completed. Predicted next stage: none")
 
-	return fmt.Sprintf("Module Executed Successfully. \nCalls made: %d \nOutput Data: %v", 1, resultOutput), nil
+	jsonData, err := json.MarshalIndent(resultOutput, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("Module Executed Successfully. \nCalls made: %d \nOutput Data: %v", 1, resultOutput), nil
+	}
+
+	return string(jsonData), nil
 }
 
 func MapTechniqueToStage(technique string) string {

@@ -7,7 +7,7 @@ import (
 
 // Agent defines the interface for an MCP client proposing actions.
 type Agent interface {
-	ProposeDecisions(history []ExecutionResult, available []Decision, count int) []Decision
+	ProposeDecisions(history []ExecutionResult, available []Decision, count int, kg *KnowledgeGraph) []Decision
 }
 
 // MockAgent provides a simulated implementation for early runloop testing.
@@ -22,7 +22,7 @@ func NewMockAgent() *MockAgent {
 }
 
 // ProposeDecisions creates a randomized list of count decisions to simulate an LLM's proposals.
-func (m *MockAgent) ProposeDecisions(history []ExecutionResult, available []Decision, count int) []Decision {
+func (m *MockAgent) ProposeDecisions(history []ExecutionResult, available []Decision, count int, kg *KnowledgeGraph) []Decision {
 	if len(available) == 0 {
 		return nil
 	}
