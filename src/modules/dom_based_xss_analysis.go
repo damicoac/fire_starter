@@ -102,7 +102,7 @@ func (m *DOMBasedXSSAnalysis) Execute(ctx context.Context) ([]DOMBasedXSSAnalysi
 	for _, match := range matches {
 		if len(match) > 1 {
 			src := match[1]
-			
+
 			// Resolve relative URLs
 			scriptURL, err := parsedTarget.Parse(src)
 			if err != nil {
@@ -196,10 +196,10 @@ func (m *DOMBasedXSSAnalysis) analyzeContent(sourceURL, content string) {
 		sinkMatch := sinksRegex.FindString(line)
 		if sinkMatch != "" {
 			sourceMatch := sourcesRegex.FindString(line)
-			
+
 			// To reduce false positives, we mainly care if both a source and sink are near each other,
 			// or if a major sink is present. Let's report any sink found, but note the source if present.
-			
+
 			m.mu.Lock()
 			m.results = append(m.results, DOMBasedXSSAnalysisResult{
 				Target:    m.Target,

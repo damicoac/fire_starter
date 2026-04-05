@@ -57,7 +57,7 @@ var sstiPayloads = []sstiPayload{
 
 func (m *ServerSideTemplateInjectionSsti) Execute(ctx context.Context) ([]ServerSideTemplateInjectionSstiResult, error) {
 	m.results = make([]ServerSideTemplateInjectionSstiResult, 0)
-	
+
 	parsedURL, err := url.Parse(m.Target)
 	if err != nil {
 		return m.results, err
@@ -104,7 +104,7 @@ func (m *ServerSideTemplateInjectionSsti) Execute(ctx context.Context) ([]Server
 func (m *ServerSideTemplateInjectionSsti) testPayload(ctx context.Context, u *url.URL, sp sstiPayload) {
 	query := u.Query()
 	hasParams := len(query) > 0
-	
+
 	testURL := *u
 	if hasParams {
 		for key, vals := range query {

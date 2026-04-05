@@ -2,10 +2,10 @@ package modules
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
-	"fmt"
 )
 
 // RaceConditionTestingResult holds the result of the RaceConditionTesting module execution.

@@ -95,7 +95,7 @@ func (m *CSRFTesting) Execute(ctx context.Context) ([]CSRFTestingResult, error) 
 }
 
 func (m *CSRFTesting) testEndpoint(ctx context.Context, targetURL string) {
-	// A simple test for CSRF is checking if state-changing requests (POST/PUT) 
+	// A simple test for CSRF is checking if state-changing requests (POST/PUT)
 	// require anti-CSRF tokens. We send a bare POST without tokens.
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, strings.NewReader("dummy=data"))
 	if err != nil {
@@ -114,9 +114,9 @@ func (m *CSRFTesting) testEndpoint(ctx context.Context, targetURL string) {
 	bodyStr := string(bodyBytes)
 
 	// If the server accepts it (200 OK) without complaining about a missing token
-	if resp.StatusCode == http.StatusOK && 
-	   !strings.Contains(strings.ToLower(bodyStr), "csrf") && 
-	   !strings.Contains(strings.ToLower(bodyStr), "token") {
+	if resp.StatusCode == http.StatusOK &&
+		!strings.Contains(strings.ToLower(bodyStr), "csrf") &&
+		!strings.Contains(strings.ToLower(bodyStr), "token") {
 		m.mu.Lock()
 		m.results = append(m.results, CSRFTestingResult{
 			Target: m.Target,

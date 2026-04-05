@@ -55,7 +55,7 @@ var errorSignatures = map[string]string{
 
 func (m *ErrorMessageAnalysis) Execute(ctx context.Context) ([]ErrorMessageAnalysisResult, error) {
 	m.results = make([]ErrorMessageAnalysisResult, 0)
-	
+
 	// Create bad payloads to append to path
 	payloads := []string{
 		"'", "%00", "/%2e%2e%2f", "/.git/config", "/invalid-url-12345",
@@ -83,7 +83,7 @@ func (m *ErrorMessageAnalysis) Execute(ctx context.Context) ([]ErrorMessageAnaly
 					if err != nil {
 						continue
 					}
-					
+
 					resp, err := m.client.Do(req)
 					if err != nil {
 						continue

@@ -55,7 +55,7 @@ var desPayloads = []deserializationPayload{
 
 func (m *InsecureDeserializationTesting) Execute(ctx context.Context) ([]InsecureDeserializationTestingResult, error) {
 	m.results = make([]InsecureDeserializationTestingResult, 0)
-	
+
 	jobs := make(chan deserializationPayload, len(desPayloads))
 	for _, p := range desPayloads {
 		jobs <- p
@@ -99,7 +99,7 @@ func (m *InsecureDeserializationTesting) testPayload(ctx context.Context, p dese
 	if err != nil {
 		return
 	}
-	
+
 	// Inject serialized object into a common session cookie
 	req.AddCookie(&http.Cookie{Name: p.cookie, Value: p.payload})
 
@@ -113,9 +113,9 @@ func (m *InsecureDeserializationTesting) testPayload(ctx context.Context, p dese
 	bodyStr := string(bodyBytes)
 
 	// Check for deserialization stack traces or errors
-	if strings.Contains(bodyStr, "java.io.ObjectInputStream") || 
-	   strings.Contains(bodyStr, "unserialize(): Error") || 
-	   strings.Contains(bodyStr, "_pickle.UnpicklingError") {
+	if strings.Contains(bodyStr, "java.io.ObjectInputStream") ||
+		strings.Contains(bodyStr, "unserialize(): Error") ||
+		strings.Contains(bodyStr, "_pickle.UnpicklingError") {
 		m.mu.Lock()
 		m.results = append(m.results, InsecureDeserializationTestingResult{
 			Target: m.Target,

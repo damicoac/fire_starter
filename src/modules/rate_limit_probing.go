@@ -66,12 +66,12 @@ func (m *RateLimitProbing) Execute(ctx context.Context) ([]RateLimitProbingResul
 					if err != nil {
 						continue
 					}
-					
+
 					resp, err := m.client.Do(req)
 					if err != nil {
 						continue
 					}
-					
+
 					if resp.StatusCode == http.StatusTooManyRequests {
 						m.mu.Lock()
 						got429 = true
