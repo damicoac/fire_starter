@@ -31,7 +31,7 @@ func NewCrlfInjectionTesting(target string) *CrlfInjectionTesting {
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		return http.ErrUseLastResponse // Don't follow redirects
 	}
-	
+
 	return &CrlfInjectionTesting{
 		Target:     EnsureHTTPPrefix(target),
 		maxThreads: 5,

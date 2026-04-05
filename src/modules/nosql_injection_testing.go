@@ -51,7 +51,7 @@ var noSqlPayloads = []map[string]interface{}{
 
 func (m *NosqlInjectionTesting) Execute(ctx context.Context) ([]NosqlInjectionTestingResult, error) {
 	m.results = make([]NosqlInjectionTestingResult, 0)
-	
+
 	jobs := make(chan map[string]interface{}, len(noSqlPayloads))
 	for _, p := range noSqlPayloads {
 		jobs <- p

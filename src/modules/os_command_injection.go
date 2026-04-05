@@ -59,7 +59,7 @@ var osCmdPayloads = []string{
 
 func (m *OSCommandInjection) Execute(ctx context.Context) ([]OSCommandInjectionResult, error) {
 	m.results = make([]OSCommandInjectionResult, 0)
-	
+
 	parsedURL, err := url.Parse(m.Target)
 	if err != nil {
 		return m.results, err
@@ -106,7 +106,7 @@ func (m *OSCommandInjection) Execute(ctx context.Context) ([]OSCommandInjectionR
 func (m *OSCommandInjection) testPayload(ctx context.Context, u *url.URL, payload string) {
 	query := u.Query()
 	hasParams := len(query) > 0
-	
+
 	testURL := *u
 	if hasParams {
 		for key, vals := range query {

@@ -127,11 +127,11 @@ func (m *SQLInjectionTesting) Execute(ctx context.Context) ([]SQLInjectionTestin
 func (m *SQLInjectionTesting) testPayload(ctx context.Context, u *url.URL, payload string) {
 	// Create a new URL with the payload appended to the query
 	query := u.Query()
-	
+
 	// Inject payload into every existing query parameter
 	// Or just append it if there are no parameters
 	hasParams := len(query) > 0
-	
+
 	testURL := *u
 	if hasParams {
 		for key, vals := range query {

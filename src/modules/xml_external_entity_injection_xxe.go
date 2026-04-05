@@ -50,7 +50,7 @@ var xxePayloads = []string{
 
 func (m *XMLExternalEntityInjectionXxe) Execute(ctx context.Context) ([]XMLExternalEntityInjectionXxeResult, error) {
 	m.results = make([]XMLExternalEntityInjectionXxeResult, 0)
-	
+
 	jobs := make(chan string, len(xxePayloads))
 	for _, p := range xxePayloads {
 		jobs <- p
@@ -106,9 +106,9 @@ func (m *XMLExternalEntityInjectionXxe) testPayload(ctx context.Context, payload
 	bodyStr := string(bodyBytes)
 
 	// Signatures for successful LFI or SSRF via XXE
-	if strings.Contains(bodyStr, "root:x:0:0:") || 
-	   strings.Contains(strings.ToLower(bodyStr), "[extensions]") ||
-	   strings.Contains(bodyStr, "ami-id") { // AWS metadata indicator
+	if strings.Contains(bodyStr, "root:x:0:0:") ||
+		strings.Contains(strings.ToLower(bodyStr), "[extensions]") ||
+		strings.Contains(bodyStr, "ami-id") { // AWS metadata indicator
 		m.mu.Lock()
 		m.results = append(m.results, XMLExternalEntityInjectionXxeResult{
 			Target: m.Target,

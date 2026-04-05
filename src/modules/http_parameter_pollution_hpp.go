@@ -98,7 +98,7 @@ func (m *HttpParameterPollutionHpp) Execute(ctx context.Context) ([]HttpParamete
 func (m *HttpParameterPollutionHpp) testParameter(ctx context.Context, u *url.URL, originalQuery url.Values, paramToPollute string) {
 	testURL := *u
 	q := url.Values{}
-	
+
 	// Copy original
 	for k, v := range originalQuery {
 		q[k] = v

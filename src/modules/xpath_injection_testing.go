@@ -97,7 +97,7 @@ func (m *XpathInjectionTesting) Execute(ctx context.Context) ([]XpathInjectionTe
 func (m *XpathInjectionTesting) testPayload(ctx context.Context, u *url.URL, payload string) {
 	query := u.Query()
 	hasParams := len(query) > 0
-	
+
 	testURL := *u
 	if hasParams {
 		for key, vals := range query {

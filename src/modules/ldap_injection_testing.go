@@ -98,7 +98,7 @@ func (m *LDAPInjectionTesting) Execute(ctx context.Context) ([]LDAPInjectionTest
 func (m *LDAPInjectionTesting) testPayload(ctx context.Context, u *url.URL, payload string) {
 	query := u.Query()
 	hasParams := len(query) > 0
-	
+
 	testURL := *u
 	if hasParams {
 		for key, vals := range query {

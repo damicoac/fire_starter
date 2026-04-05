@@ -42,7 +42,7 @@ func (m *SAMLAssertionTesting) SetThreads(count int) {
 
 var samlPayloads = []string{
 	// Stripped signature payload
-	"PHNhbWxwOlJlc3BvbnNlIHhtbG5zOnNhbWxwPSJ1cm46b2FzaXM6bmFtZXM6dGM6U0FNTDoyLjA6cHJvdG9jb2wiPjxTYW1sQXV0aD5BZG1pbjwvU2FtbEF1dGg+PC9zYW1scDpSZXNwb25zZT4=", 
+	"PHNhbWxwOlJlc3BvbnNlIHhtbG5zOnNhbWxwPSJ1cm46b2FzaXM6bmFtZXM6dGM6U0FNTDoyLjA6cHJvdG9jb2wiPjxTYW1sQXV0aD5BZG1pbjwvU2FtbEF1dGg+PC9zYW1scDpSZXNwb25zZT4=",
 }
 
 func (m *SAMLAssertionTesting) Execute(ctx context.Context) ([]SAMLAssertionTestingResult, error) {
