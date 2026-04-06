@@ -53,7 +53,7 @@ var assignmentPayloads = []map[string]interface{}{
 
 func (m *MassAssignmentInjection) Execute(ctx context.Context) ([]MassAssignmentInjectionResult, error) {
 	m.results = make([]MassAssignmentInjectionResult, 0)
-	
+
 	jobs := make(chan map[string]interface{}, len(assignmentPayloads))
 	for _, p := range assignmentPayloads {
 		jobs <- p
@@ -115,7 +115,7 @@ func (m *MassAssignmentInjection) testPayload(ctx context.Context, payload map[s
 	payloadStr, _ := json.Marshal(payload)
 	// Strip curlies for simple string search
 	searchStr := strings.Trim(string(payloadStr), "{}")
-	
+
 	if resp.StatusCode == 200 || resp.StatusCode == 201 {
 		if strings.Contains(strings.ToLower(respStr), strings.ToLower(searchStr)) {
 			m.mu.Lock()

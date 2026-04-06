@@ -44,7 +44,7 @@ var idorIds = []string{"1", "001", "admin", "1000"}
 
 func (m *IDORManipulation) Execute(ctx context.Context) ([]IDORManipulationResult, error) {
 	m.results = make([]IDORManipulationResult, 0)
-	
+
 	parsedURL, err := url.Parse(m.Target)
 	if err != nil {
 		return m.results, err
@@ -91,7 +91,7 @@ func (m *IDORManipulation) Execute(ctx context.Context) ([]IDORManipulationResul
 func (m *IDORManipulation) testPayload(ctx context.Context, u *url.URL, payload string) {
 	query := u.Query()
 	hasParams := len(query) > 0
-	
+
 	testURL := *u
 	if hasParams {
 		for key := range query {

@@ -46,9 +46,9 @@ func (m *SessionFixationTesting) Execute(ctx context.Context) ([]SessionFixation
 	// Since we don't have real credentials, we just simulate the flow:
 	// 1. Send a request with a fake predetermined session ID
 	// 2. See if the server accepts it or forces a new one
-	
+
 	sessionNames := []string{"PHPSESSID", "JSESSIONID", "session_id", "ASP.NET_SessionId"}
-	
+
 	jobs := make(chan string, len(sessionNames))
 	for _, s := range sessionNames {
 		jobs <- s
@@ -89,7 +89,7 @@ func (m *SessionFixationTesting) Execute(ctx context.Context) ([]SessionFixation
 
 func (m *SessionFixationTesting) testCookie(ctx context.Context, cookieName string) {
 	fakeSessionID := "1234567890abcdef1234567890abcdef"
-	
+
 	// Simulate login request (or any request)
 	req, err := http.NewRequestWithContext(ctx, "POST", m.Target, strings.NewReader("username=test&password=test"))
 	if err != nil {
@@ -121,7 +121,7 @@ func (m *SessionFixationTesting) testCookie(ctx context.Context, cookieName stri
 			}
 		}
 	}
-	
+
 	if !replaced && resp.StatusCode == 200 {
 		// Server didn't issue any cookies, might just be accepting ours silently
 		m.mu.Lock()

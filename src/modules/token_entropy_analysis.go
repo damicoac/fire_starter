@@ -60,7 +60,7 @@ func calcEntropy(data string) float64 {
 
 func (m *TokenEntropyAnalysis) Execute(ctx context.Context) ([]TokenEntropyAnalysisResult, error) {
 	m.results = make([]TokenEntropyAnalysisResult, 0)
-	
+
 	req, err := http.NewRequestWithContext(ctx, "GET", m.Target, nil)
 	if err != nil {
 		return m.results, err
@@ -76,7 +76,7 @@ func (m *TokenEntropyAnalysis) Execute(ctx context.Context) ([]TokenEntropyAnaly
 	for _, cookie := range resp.Cookies() {
 		entropy := calcEntropy(cookie.Value)
 		// Arbitrary low entropy threshold, and string > 5 chars to avoid tiny values like "1"
-		if len(cookie.Value) > 5 && entropy < 2.5 { 
+		if len(cookie.Value) > 5 && entropy < 2.5 {
 			m.results = append(m.results, TokenEntropyAnalysisResult{
 				Target: m.Target,
 				Status: "vulnerable",

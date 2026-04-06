@@ -99,7 +99,7 @@ func (m *PathTraversalAttack) Execute(ctx context.Context) ([]PathTraversalAttac
 func (m *PathTraversalAttack) testPayload(ctx context.Context, u *url.URL, payload string) {
 	query := u.Query()
 	hasParams := len(query) > 0
-	
+
 	testURL := *u
 	if hasParams {
 		for key := range query {

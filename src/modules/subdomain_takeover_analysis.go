@@ -53,7 +53,7 @@ func (m *SubdomainTakeoverAnalysis) Execute(ctx context.Context) ([]SubdomainTak
 
 	// In a real run, this would be a full wordlist, but we'll use a small set for simulation
 	testSubs := []string{"help", "docs", "blog", "app", "dev", "status"}
-	
+
 	jobs := make(chan string, len(testSubs))
 	for _, sub := range testSubs {
 		jobs <- fmt.Sprintf("%s.%s", sub, m.Target)

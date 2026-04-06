@@ -31,7 +31,7 @@ func (e *LoginCookieExtractor) Execute(ctx context.Context) ([]map[string]any, e
 		"username": e.Username,
 		"password": e.Password,
 	}
-	
+
 	jsonPayload, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal JSON: %w", err)
@@ -57,13 +57,13 @@ func (e *LoginCookieExtractor) Execute(ctx context.Context) ([]map[string]any, e
 	defer resp.Body.Close()
 
 	cookies := resp.Header.Values("Set-Cookie")
-	
+
 	// If no cookies found with JSON, attempt with Form data
 	if len(cookies) == 0 {
 		formData := url.Values{}
 		formData.Set("username", e.Username)
 		formData.Set("password", e.Password)
-		
+
 		reqForm, err := http.NewRequestWithContext(ctx, "POST", e.TargetURL, strings.NewReader(formData.Encode()))
 		if err == nil {
 			reqForm.Header.Set("Content-Type", "application/x-www-form-urlencoded")

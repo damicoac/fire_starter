@@ -96,7 +96,7 @@ func (m *SsiInjectionTesting) Execute(ctx context.Context) ([]SsiInjectionTestin
 func (m *SsiInjectionTesting) testPayload(ctx context.Context, u *url.URL, payload string) {
 	query := u.Query()
 	hasParams := len(query) > 0
-	
+
 	testURL := *u
 	if hasParams {
 		for key, vals := range query {
@@ -130,8 +130,8 @@ func (m *SsiInjectionTesting) testPayload(ctx context.Context, u *url.URL, paylo
 	bodyStr := string(bodyBytes)
 
 	// Signatures for SSI execution
-	if strings.Contains(bodyStr, "uid=") && strings.Contains(bodyStr, "gid=") || 
-	   (strings.Contains(bodyStr, "19") && strings.Contains(bodyStr, ":") && !strings.Contains(bodyStr, "DATE_LOCAL")) { // Date output check
+	if strings.Contains(bodyStr, "uid=") && strings.Contains(bodyStr, "gid=") ||
+		(strings.Contains(bodyStr, "19") && strings.Contains(bodyStr, ":") && !strings.Contains(bodyStr, "DATE_LOCAL")) { // Date output check
 		m.mu.Lock()
 		m.results = append(m.results, SsiInjectionTestingResult{
 			Target: m.Target,
