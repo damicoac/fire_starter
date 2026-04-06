@@ -169,7 +169,8 @@ func main() {
 			writeJSONRPCResult(w, rpcReq.ID, map[string]any{
 				"protocolVersion": protocolVersion,
 				"capabilities": map[string]any{
-					"tools": map[string]any{},
+					"tools":   map[string]any{},
+					"prompts": map[string]any{},
 				},
 				"serverInfo": map[string]any{
 					"name":    "fire_starter",
@@ -178,6 +179,39 @@ func main() {
 			})
 		case "notifications/initialized":
 			w.WriteHeader(http.StatusAccepted)
+		case "prompts/list":
+			writeJSONRPCResult(w, rpcReq.ID, map[string]any{
+				"prompts": []map[string]any{
+					{
+						"name":        "system_prompt",
+						"description": "System instructions emphasizing the recon, probe, test, repeat loop, lateral movement context, and automatic state persistence.",
+					},
+				},
+			})
+		case "prompts/get":
+			var params struct {
+				Name string `json:"name"`
+			}
+			if err := json.Unmarshal(rpcReq.Params, &params); err != nil {
+				writeJSONRPCError(w, rpcReq.ID, -32602, "Invalid params")
+				return
+			}
+			if params.Name == "system_prompt" {
+				writeJSONRPCResult(w, rpcReq.ID, map[string]any{
+					"description": "System instructions emphasizing the recon, probe, test, repeat loop, lateral movement context, and automatic state persistence.",
+					"messages": []map[string]any{
+						{
+							"role": "user",
+							"content": map[string]any{
+								"type": "text",
+								"text": "You are an intelligent security testing agent. Your execution loop must strictly follow a pattern of: recon, probe, test, repeat. All security testing is oriented around lateral movement within the network. You have the freedom to select tools as appropriate for this loop. Note that this MCP server automatically persists state such as cookies across tool calls—do not assume otherwise; you do not need to manually manage session tokens across executions.",
+							},
+						},
+					},
+				})
+			} else {
+				writeJSONRPCError(w, rpcReq.ID, -32602, "Prompt not found")
+			}
 		case "tools/list":
 			tools := make([]map[string]any, 0, len(toolDefs))
 			for _, tool := range toolDefs {

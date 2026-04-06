@@ -17,9 +17,14 @@ func NewToolRegistry(decisions []Decision) *ToolRegistry {
 
 	for _, decision := range decisions {
 		name := toolNameFromDecision(decision)
+		description := fmt.Sprintf(
+			"Use Case: %s\nFunction: %s\nProblem Solved: %s\nContext: Select this tool when applicable for lateral movement and the recon, probe, test, repeat loop. Feel free to use this dynamically as needed. Note that state/cookies are persisted automatically.",
+			decision.UseCase, decision.Function, decision.ProblemTheToolSolves,
+		)
+
 		tool := ToolDefinition{
 			Name:        name,
-			Description: decision.ProblemTheToolSolves,
+			Description: description,
 			Identifier:  decision.Identifier,
 			Technique:   decision.Technique,
 			InputSchema: map[string]any{
@@ -27,7 +32,7 @@ func NewToolRegistry(decisions []Decision) *ToolRegistry {
 				"properties": map[string]any{
 					"payload": map[string]any{
 						"type":        "object",
-						"description": "Execution context for the selected module.",
+						"description": "Execution context or target parameters for the selected module (e.g. url, target, etc.). Cookies/State are handled automatically.",
 					},
 				},
 				"required": []string{},
