@@ -2,5 +2,6 @@
 .DS_Store
 .crush/
 .superpowers/
+.antigravitycli
 docs/superpowers/
 .worktrees/
