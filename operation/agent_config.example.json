@@ -1,0 +1,23 @@
+{
+  "target": "http://192.168.1.100",
+  "provider": "openai",
+  "model": "gpt-4o",
+  "base_url": "",
+  "max_iters": 50,
+  "verbose": false,
+  "ip_whitelist": [
+    "192.168.1.100",
+    "192.168.1.101"
+  ],
+  "rules_of_engagement": "Only test systems explicitly authorized by this engagement. Do not perform denial-of-service activity. Stop and report immediately if unintended impact is observed.",
+  "credentials": [
+    {
+      "username": "admin",
+      "password": "admin123"
+    },
+    {
+      "username": "analyst",
+      "password": "TempPass!2026"
+    }
+  ]
+}
