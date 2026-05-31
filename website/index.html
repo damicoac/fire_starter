@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fire Starter | Open Source Autonomous Security Assessment Agent for Developers</title>
+    <meta name="description" content="A 100% open source, self-hosted autonomous security agent in Go. Scan perimeters, write modular checks in pure Go, and audit findings locally.">
+    <link rel="stylesheet" href="style.css">
+    
+    <!-- Premium Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+
+    <!-- Header Navigation -->
+    <header id="nav-header">
+        <nav>
+            <a href="#" class="logo-container">
+                <span class="logo-fire">🔥 Fire Starter</span>
+            </a>
+            <ul class="nav-links">
+                <li><a href="#features">Features</a></li>
+                <li><a href="#loop">Pentesting Loop</a></li>
+                <li><a href="#coverage">Test Coverage</a></li>
+                <li><a href="#reports">Reports</a></li>
+                <li><a href="#architecture">Architecture</a></li>
+            </ul>
+            <div class="nav-actions">
+                <!-- Theme Toggle Button -->
+                <button class="theme-toggle-btn" id="theme-toggle" aria-label="Toggle light/dark theme">
+                    <!-- Sun Icon (visible in Dark theme) -->
+                    <svg class="sun-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+                    <!-- Moon Icon (visible in Light theme) -->
+                    <svg class="moon-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+                </button>
+                <a href="https://github.com/username/fire_starter" target="_blank" class="btn btn-secondary nav-github-btn" style="padding: 0.5rem 1rem; font-size: 0.85rem; display: flex; align-items: center; gap: 0.5rem;">
+                    <svg class="github-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                    <span>Star on GitHub</span>
+                </a>
+            </div>
+        </nav>
+    </header>
+
+    <main>
+        <!-- Hero Section -->
+        <section class="hero-section">
+            <div class="hero-pill">
+                <span class="pulse-dot"></span>
+                <span>100% Free & Open Source Go Agent</span>
+            </div>
+            <div class="hero-content">
+                <div class="hero-info">
+                    <h1>Open-Source, Autonomous<br><span class="gradient-text">Security Testing Agent.</span></h1>
+                    <p class="subtitle">An intelligent security agent in Go. Run it locally, inspect the source, and extend it with custom Go test modules. Complete privacy with local logs and zero telemetry.</p>
+                    
+                    <!-- Terminal Command Box -->
+                    <div class="terminal-container">
+                        <div class="terminal-header">
+                            <div class="terminal-dots">
+                                <span class="terminal-dot red"></span>
+                                <span class="terminal-dot yellow"></span>
+                                <span class="terminal-dot green"></span>
+                            </div>
+                            <span class="terminal-title">bash — fire_starter</span>
+                        </div>
+                        <div class="terminal-body">
+                            <div class="terminal-line">
+                                <div>
+                                    <span class="terminal-prompt">~</span>
+                                    <span class="terminal-command">go run ./cmd/fire_starter -target <span class="highlight">127.0.0.1</span></span>
+                                </div>
+                                <button class="btn-copy-command" id="btn-copy-command" aria-label="Copy command">
+                                    <svg class="copy-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="hero-actions">
+                        <a href="#features" class="btn btn-primary">Features</a>
+                        <a href="https://github.com/username/fire_starter" target="_blank" class="btn btn-secondary">Clone on GitHub</a>
+                    </div>
+                </div>
+
+                <!-- Showcase Mockup Window -->
+                <div class="hero-dashboard-preview">
+                    <div class="dashboard-window">
+                        <div class="window-header">
+                            <div class="window-dots">
+                                <span class="window-dot red"></span>
+                                <span class="window-dot yellow"></span>
+                                <span class="window-dot green"></span>
+                            </div>
+                            <span class="window-title">fire_starter — agent dashboard (reconnaissance phase)</span>
+                            <div class="window-dots-spacer" style="width: 42px;"></div>
+                        </div>
+                        <div class="window-body">
+                            <img src="dashboard-preview.png" alt="Fire Starter Terminal Dashboard" class="dashboard-img">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Features Grid Section (Outcome-Focused) -->
+        <section id="features">
+            <div class="section-header">
+                <span class="section-tag">Platform Features</span>
+                <h2 class="section-title">Designed for Developers & Engineers</h2>
+                <p class="section-subtitle">A command-line-driven, customizable security agent that runs inside your environment. Complete transparency, zero vendor lock-in.</p>
+            </div>
+
+            <div class="features-grid">
+                <!-- Feature 1: 100% Free & Open Source -->
+                <div class="feature-card">
+                    <div class="feature-icon-wrapper">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+                    </div>
+                    <h3>100% Free & Self-Hosted</h3>
+                    <p>Run it locally with no accounts required. Run Fire Starter entirely on your laptop, private subnet, or CI/CD pipelines. No telemetry, no third-party cloud data access—your scans are kept completely private.</p>
+                </div>
+                <!-- Feature 2: Modular Construction -->
+                <div class="feature-card">
+                    <div class="feature-icon-wrapper">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="9" x2="15" y2="9"></line><line x1="9" y1="13" x2="15" y2="13"></line><line x1="9" y1="17" x2="15" y2="17"></line></svg>
+                    </div>
+                    <h3>Modular Construction</h3>
+                    <p>Designed to be extended in minutes. Add a technique definition to `decisions.json` and drop a Go file implementing the `ExecutableModule` interface inside `src/modules/community/`. The model's runloop handles routing automatically.</p>
+                </div>
+                <!-- Feature 3: Forensic Audit Logging -->
+                <div class="feature-card">
+                    <div class="feature-icon-wrapper">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                    </div>
+                    <h3>Local Auditing & PoCs</h3>
+                    <p>No black box behavior. Fire Starter logs all transitions, payloads, execution outputs, and reinforcement learning scores into structured local directories. Generates clean markdown proof-of-concepts with copy-pasteable curl commands.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Pentesting Loop & Knowledge Graph Section -->
+        <section id="loop">
+            <div class="section-header">
+                <span class="section-tag">Autonomous Intelligence</span>
+                <h2 class="section-title">The Pentesting Phase Loop</h2>
+                <p class="section-subtitle">Watch how the agent dynamically cycles through standardized pentesting phases, actively constructing an interactive Knowledge Graph to plan its next pivots.</p>
+            </div>
+
+            <div class="pipeline-layout">
+                <!-- Timeline of Phases -->
+                <div class="phases-timeline">
+                    <div class="timeline-step active">
+                        <h4>1. Reconnaissance</h4>
+                        <p>Leverages Google Dorking and subdomain enumeration to map host boundaries and passive footprints.</p>
+                    </div>
+                    <div class="timeline-step">
+                        <h4>2. Scanning & Enumeration</h4>
+                        <p>Crawls routes, scans exposed ports, and analyzes application HTTP error responses to discover active vectors.</p>
+                    </div>
+                    <div class="timeline-step">
+                        <h4>3. Vulnerability Analysis</h4>
+                        <p>Probes function and object authorization states (BOLA, IDOR, BFLA) and parses API configuration limits.</p>
+                    </div>
+                    <div class="timeline-step">
+                        <h4>4. Exploitation</h4>
+                        <p>Injects active payloads targeting injection flaws (SQL, command, LDAP), JWT key validation, and CORS wildcard leakage.</p>
+                    </div>
+                    <div class="timeline-step">
+                        <h4>5. Post-Exploitation & Reporting</h4>
+                        <p>Validates lateral pivots, analyzes local privilege boundaries, and generates structured markdown POC proof logs.</p>
+                    </div>
+                </div>
+
+                <!-- Knowledge Graph Card -->
+                <div class="knowledge-graph-card">
+                    <div class="graph-header">
+                        <h3>Dynamic Knowledge Graph</h3>
+                        <p>Centralized state updated after each tool execution</p>
+                    </div>
+                    <div class="graph-items">
+                        <div class="graph-item">
+                            <div class="graph-item-icon">🌐</div>
+                            <div class="graph-item-content">
+                                <div class="graph-item-title">Base Target Domain</div>
+                                <div class="graph-item-value">sandbox.local</div>
+                            </div>
+                        </div>
+                        <div class="graph-item">
+                            <div class="graph-item-icon">🖥️</div>
+                            <div class="graph-item-content">
+                                <div class="graph-item-title">Discovered IPs & Ports</div>
+                                <div class="graph-item-value">192.168.1.102</div>
+                                <div class="graph-item-pills">
+                                    <span class="graph-item-pill">80/TCP</span>
+                                    <span class="graph-item-pill">443/TCP</span>
+                                    <span class="graph-item-pill">8080/TCP</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="graph-item">
+                            <div class="graph-item-icon">🔗</div>
+                            <div class="graph-item-content">
+                                <div class="graph-item-title">Mapped API Endpoints</div>
+                                <div class="graph-item-pills">
+                                    <span class="graph-item-pill">/api/v1/users/login</span>
+                                    <span class="graph-item-pill">/admin/config</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="graph-item">
+                            <div class="graph-item-icon">🔑</div>
+                            <div class="graph-item-content">
+                                <div class="graph-item-title">Harvested Tokens & Context</div>
+                                <div class="graph-item-pills">
+                                    <span class="graph-item-pill">session_cookie</span>
+                                    <span class="graph-item-pill">bearer_jwt_auth</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="graph-item">
+                            <div class="graph-item-icon">⚠️</div>
+                            <div class="graph-item-content">
+                                <div class="graph-item-title">Vulnerabilities Registered</div>
+                                <div class="graph-item-pills">
+                                    <span class="graph-item-pill danger">Broken Object Auth (BOLA)</span>
+                                    <span class="graph-item-pill danger">CORS Origin Leak</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Test Coverage Section (What it tests for) -->
+        <section id="coverage" class="card-glass-wrapper">
+            <div class="section-header">
+                <span class="section-tag">Test Scope</span>
+                <h2 class="section-title">Extensible Out-Of-The-Box Coverage</h2>
+                <p class="section-subtitle">Fire Starter provides over 30 default modules covering critical vectors. You can write your own community modules to probe custom endpoints.</p>
+            </div>
+
+            <div class="coverage-layout">
+                <div class="coverage-grid">
+                    <div class="coverage-card">
+                        <h4>🔑 API Authorization & Logic</h4>
+                        <ul>
+                            <li><strong>Broken Object-Level Authorization (BOLA):</strong> Validates resource isolation across active API paths.</li>
+                            <li><strong>Broken Function-Level Authorization (BFLA):</strong> Tests access boundary controls between varying privilege tiers.</li>
+                            <li><strong>Insecure Direct Object References (IDOR):</strong> Probes resource parameters for traversal vulnerabilities.</li>
+                        </ul>
+                    </div>
+                    <div class="coverage-card">
+                        <h4>🌐 CORS & Headers Sanitization</h4>
+                        <ul>
+                            <li><strong>Cross-Origin Access:</strong> Tests for wildcard CORS leaks allowing credential exposures.</li>
+                            <li><strong>Header Integrity:</strong> Verifies caching setups, HSTS, and frame protection headers.</li>
+                            <li><strong>CRLF Injection:</strong> Audits header inputs against carriage return/line feed control insertions.</li>
+                        </ul>
+                    </div>
+                    <div class="coverage-card">
+                        <h4>🛡️ Data Injection Control</h4>
+                        <ul>
+                            <li><strong>SQL/NoSQL Audits:</strong> Evaluates database inputs against query manipulation testing.</li>
+                            <li><strong>GraphQL Introspection:</strong> Checks endpoint queries for schema dump exposures.</li>
+                            <li><strong>LDAP and Shell Inputs:</strong> Runs active probing against back-end command triggers.</li>
+                        </ul>
+                    </div>
+                    <div class="coverage-card">
+                        <h4>🍪 Auth & Session Hygiene</h4>
+                        <ul>
+                            <li><strong>JWT Secret Validation:</strong> Verifies signature algorithms and key strength setups.</li>
+                            <li><strong>Cross-Site Request Forgery (CSRF):</strong> Audits state-modifying requests for secure token mandates.</li>
+                            <li><strong>Cookie Safety Parameters:</strong> Scans cookie definitions for Secure, HttpOnly, and SameSite tags.</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Actionable Reports Section (Report output presentation) -->
+        <section id="reports">
+            <div class="section-header">
+                <span class="section-tag">Local Reports</span>
+                <h2 class="section-title">Actionable Proof-of-Concepts</h2>
+                <p class="section-subtitle">No proprietary SaaS dashboards. Fire Starter dumps readable markdown reports with copy-pasteable curl commands straight to your terminal and local directories, so you can debug vulnerabilities instantly.</p>
+            </div>
+
+            <div class="report-demo-preview">
+                <div class="report-card">
+                    <div class="report-card-title">
+                        <span>⚠️ High Vulnerability Verified: CORS Origin Leakage</span>
+                    </div>
+                    <div class="report-markdown">
+<pre style="background: transparent; border: none; padding: 0; color: #f8fafc;"><code style="color: #61afef;"># Actionable CORS Replication PoC
+
+**Vulnerability:** CORS Wildcard Policy with Credentials Allowed
+**Target Domain:** dev.sandbox.local
+**Severity:** High
+
+To replicate validation, execute this curl command:
+<span style="color: #e5c07b;">curl -i -X OPTIONS "https://dev.sandbox.local/api/sensitive" \
+  -H "Origin: https://malicious-attacker.xyz" \
+  -H "Access-Control-Request-Method: GET"</span>
+
+**Expected Response headers confirming flaw:**
+Access-Control-Allow-Origin: https://malicious-attacker.xyz
+Access-Control-Allow-Credentials: true</code></pre>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Technical Architecture Overview Section -->
+        <section id="architecture">
+            <div class="section-header">
+                <span class="section-tag">Under the Hood</span>
+                <h2 class="section-title">Extend with Go Modules</h2>
+                <p class="section-subtitle">Adding custom scanning checks is simple. Fire Starter decouples agent decision-making from test execution, allowing developers to plug in custom Go modules.</p>
+            </div>
+
+            <div class="tech-architecture">
+                <div class="tech-details">
+                    <h3>Modular Architecture Overview</h3>
+                    <p>Fire Starter separates the autonomous reasoning loop from raw security actions. The agent decides <em>what</em> techniques to execute based on active knowledge graph metrics, while stateless, isolated Go modules carry out the <em>how</em>. This decoupling ensures custom test modules remain completely side-effect free and decoupled from LLM routing logic.</p>
+                    
+                    <h4 class="tech-steps-title">Workflow for Adding Checks</h4>
+                    <p class="tech-steps-intro">Extend the agent's capabilities in three simple steps:</p>
+                    
+                    <div class="workflow-steps">
+                        <div class="workflow-step">
+                            <div class="step-badge">1</div>
+                            <div class="step-body">
+                                <span class="step-title">Define the Technique</span>
+                                <span class="step-desc">Add the new security technique metadata entry to <code class="code-highlight">src/matrix/decisions.json</code>.</span>
+                            </div>
+                        </div>
+                        <div class="workflow-step">
+                            <div class="step-badge">2</div>
+                            <div class="step-body">
+                                <span class="step-title">Implement the Module</span>
+                                <span class="step-desc">Write a custom struct inheriting from <code class="code-highlight">BaseModule</code> that performs your scan or probe logic.</span>
+                            </div>
+                        </div>
+                        <div class="workflow-step">
+                            <div class="step-badge">3</div>
+                            <div class="step-body">
+                                <span class="step-title">Register the Module</span>
+                                <span class="step-desc">Call <code class="code-highlight">RegisterModule</code> in your package's <code class="code-highlight">init()</code> function inside <code class="code-highlight">src/modules/core/</code> for automatic compilation and runtime registration.</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="tech-code-container">
+                    <div class="tech-code-title">Module Registration</div>
+                    <pre style="background: transparent; border: none; padding: 0;"><code style="color: #61afef;"><span style="color: #c678dd;">package</span> core
+
+<span style="color: #5c6370;">// 1. Implement scanning probe</span>
+<span style="color: #c678dd;">type</span> MyCustomCheck <span style="color: #c678dd;">struct</span> {
+    BaseModule
+    Target <span style="color: #d19a66;">string</span>
+}
+
+<span style="color: #c678dd;">func</span> (m *MyCustomCheck) Execute(ctx context.Context) (any, <span style="color: #d19a66;">error</span>) {
+    <span style="color: #5c6370;">// Custom HTTP/network scanning logic here...</span>
+    m.RecordPoC(<span style="color: #d19a66;">nil</span>, <span style="color: #d19a66;">nil</span>, <span style="color: #98c379;">"Vulnerability verified!"</span>)
+    <span style="color: #c678dd;">return</span> map[<span style="color: #d19a66;">string</span>]any{<span style="color: #98c379;">"status"</span>: <span style="color: #98c379;">"vulnerable"</span>}, <span style="color: #d19a66;">nil</span>
+}
+
+<span style="color: #5c6370;">// 2. Register with runtime registry</span>
+<span style="color: #c678dd;">func</span> init() {
+    RegisterModule(<span style="color: #98c379;">"my_custom_check"</span>, <span style="color: #c678dd;">func</span>(
+        payload <span style="color: #c678dd;">map</span>[<span style="color: #d19a66;">string</span>]any,
+        onLog <span style="color: #c678dd;">func</span>(<span style="color: #d19a66;">string</span>),
+    ) (ExecutableModule, <span style="color: #d19a66;">error</span>) {
+        target := PayloadString(payload, <span style="color: #98c379;">"url"</span>, <span style="color: #98c379;">"http://127.0.0.1"</span>)
+        tester := &amp;MyCustomCheck{Target: target}
+        <span style="color: #c678dd;">return</span> ModuleWrapper{
+            Module: tester,
+            ExecuteFunc: <span style="color: #c678dd;">func</span>(ctx context.Context) (any, <span style="color: #d19a66;">error</span>) {
+                <span style="color: #c678dd;">return</span> tester.Execute(ctx)
+            },
+        }, <span style="color: #d19a66;">nil</span>
+    })
+}</code></pre>
+                </div>
+            </div>
+        </section>
+
+        <!-- Bottom CTA -->
+        <section class="cta-banner">
+            <div class="cta-card">
+                <h2>Build, Inspect, & Extend</h2>
+                <p>Fire Starter is open source, licensed under MIT, and runs entirely local. Clone the code, read the decisions loop, and contribute custom modules to the community.</p>
+                <div class="hero-actions" style="margin-top: 2rem;">
+                    <a href="https://github.com/username/fire_starter" target="_blank" class="btn btn-primary">Star on GitHub</a>
+                    <a href="#architecture" class="btn btn-secondary">Writing Modules Guide</a>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer>
+        <div class="footer-content">
+            <div class="footer-copyright">
+                <p style="font-weight: 700; color: var(--text-primary);">🔥 Fire Starter Security</p>
+                <p style="font-size: 0.75rem;">&copy; 2026 Fire Starter Project. MIT Licensed. Open Source.</p>
+            </div>
+            <div class="footer-links">
+                <a href="#features">Features</a>
+                <a href="#coverage">Test Coverage</a>
+                <a href="#reports">Reports</a>
+                <a href="#architecture">Architecture</a>
+                <a href="https://github.com/username/fire_starter" target="_blank">GitHub</a>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Script File -->
+    <script src="script.js"></script>
+</body>
+</html>
