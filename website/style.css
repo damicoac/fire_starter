@@ -706,7 +706,19 @@ html[data-theme="light"] .terminal-header {
     align-items: center;
     justify-content: space-between;
     gap: 1rem;
-    word-break: break-all;
+}
+
+.terminal-command-wrapper {
+    display: flex;
+    align-items: center;
+    flex-grow: 1;
+    overflow-x: auto;
+    white-space: nowrap;
+    scrollbar-width: none; /* Firefox */
+}
+
+.terminal-command-wrapper::-webkit-scrollbar {
+    display: none; /* Safari and Chrome */
 }
 
 .terminal-prompt {
@@ -718,6 +730,7 @@ html[data-theme="light"] .terminal-header {
 .terminal-command {
     color: #cbd5e1;
     flex-grow: 1;
+    white-space: nowrap;
 }
 
 .terminal-command .highlight {
