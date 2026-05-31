@@ -30,7 +30,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const copyBtn = document.getElementById('btn-copy-command');
     if (copyBtn) {
         copyBtn.addEventListener('click', () => {
-            const commandText = 'go run ./cmd/fire_starter -target 127.0.0.1';
+            const commandText = 'go run ./cmd/fire_starter -config config.json';
             navigator.clipboard.writeText(commandText).then(() => {
                 const originalSVG = copyBtn.innerHTML;
                 copyBtn.innerHTML = 'Copied! ✓';
