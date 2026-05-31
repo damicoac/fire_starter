@@ -1302,7 +1302,7 @@ html[data-theme="light"] .workflow-step:hover .step-body {
         max-width: 100%;
     }
     
-    .hero-actions {
+    .hero-info .hero-actions {
         justify-content: flex-start;
     }
 }
