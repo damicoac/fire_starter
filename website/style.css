@@ -1319,3 +1319,236 @@ html[data-theme="light"] .workflow-step:hover .step-body {
         justify-content: flex-start;
     }
 }
+
+/* ==========================================================================
+   Responsive & Mobile Navigation Styles
+   ========================================================================== */
+
+/* Default hidden for mobile menu toggle on desktop */
+.mobile-menu-toggle {
+    display: none;
+}
+
+/* Ensure code blocks have overflow scrolling by default on all screens */
+pre, code {
+    overflow-x: auto;
+}
+
+@media (max-width: 768px) {
+    /* Section padding */
+    section {
+        padding: 2.5rem 1.25rem;
+    }
+
+    /* Mobile Header Layout */
+    nav {
+        padding: 0 1.25rem;
+    }
+
+    .mobile-menu-toggle {
+        display: flex;
+        background: transparent;
+        border: 1px solid var(--border-color);
+        color: var(--text-secondary);
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        transition: all 0.2s ease;
+    }
+
+    .mobile-menu-toggle:hover {
+        color: var(--text-primary);
+        border-color: var(--border-focus);
+        background: rgba(255, 255, 255, 0.05);
+    }
+    
+    html[data-theme="light"] .mobile-menu-toggle:hover {
+        background: rgba(15, 23, 42, 0.05);
+    }
+
+    /* Hamburger to X Micro-animations */
+    .mobile-menu-toggle svg line {
+        transition: transform 0.25s ease, opacity 0.25s ease;
+        transform-origin: center;
+    }
+
+    .mobile-menu-toggle.active .line-1 {
+        transform: translateY(6px) rotate(45deg);
+    }
+
+    .mobile-menu-toggle.active .line-2 {
+        opacity: 0;
+    }
+
+    .mobile-menu-toggle.active .line-3 {
+        transform: translateY(-6px) rotate(-45deg);
+    }
+
+    /* Mobile Dropdown Menu */
+    .nav-links {
+        display: none;
+        position: absolute;
+        top: var(--nav-height);
+        left: 0;
+        width: 100%;
+        background: rgba(8, 12, 20, 0.96);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        border-bottom: 1px solid var(--border-color);
+        flex-direction: column;
+        padding: 1.5rem 2rem;
+        gap: 1.5rem;
+        align-items: flex-start;
+        z-index: 999;
+        box-shadow: 0 10px 20px rgba(0, 0, 0, 0.3);
+    }
+
+    html[data-theme="light"] .nav-links {
+        background: rgba(248, 250, 252, 0.96);
+        box-shadow: 0 10px 20px rgba(15, 23, 42, 0.05);
+    }
+
+    .nav-links.active {
+        display: flex;
+    }
+
+    /* Hero Section Scaling */
+    .hero-section {
+        padding: 3rem 1.25rem 2.5rem;
+    }
+
+    .hero-content h1 {
+        font-size: 2.6rem;
+        line-height: 1.15;
+        letter-spacing: -1px;
+    }
+
+    .hero-content .subtitle {
+        font-size: 1.05rem;
+        margin-bottom: 1.5rem;
+        padding: 0 0.5rem;
+    }
+
+    /* Grid Layouts Stacked */
+    .features-grid {
+        grid-template-columns: 1fr;
+        gap: 1.25rem;
+    }
+
+    .feature-card {
+        padding: 1.5rem;
+    }
+
+    .coverage-grid {
+        grid-template-columns: 1fr;
+        gap: 1.25rem;
+    }
+
+    .coverage-card {
+        padding: 1.25rem;
+    }
+
+    /* Technical Architecture */
+    .tech-architecture {
+        grid-template-columns: 1fr;
+        gap: 1.5rem;
+    }
+
+    .tech-details h3 {
+        font-size: 1.5rem;
+        margin-bottom: 1rem;
+    }
+
+    /* CTA Card */
+    .cta-card {
+        padding: 2rem 1.25rem;
+        border-radius: 16px;
+        margin: 0 1rem;
+    }
+
+    .cta-card h2 {
+        font-size: 1.8rem;
+    }
+
+    .cta-card p {
+        font-size: 1rem;
+        margin-bottom: 1.5rem;
+    }
+}
+
+@media (max-width: 640px) {
+    /* Compact GitHub button in Header navigation */
+    .nav-github-btn span {
+        display: none;
+    }
+    
+    .nav-github-btn {
+        padding: 0.5rem !important;
+        width: 38px;
+        height: 38px;
+        border-radius: 50% !important;
+        justify-content: center;
+    }
+    
+    .nav-github-btn svg {
+        margin: 0;
+    }
+    
+    .nav-actions {
+        gap: 0.75rem;
+    }
+}
+
+@media (max-width: 480px) {
+    /* Extra Small Screen Hero Tuning */
+    .hero-content h1 {
+        font-size: 2.1rem;
+        line-height: 1.2;
+    }
+
+    .hero-actions {
+        flex-direction: column;
+        width: 100%;
+        gap: 0.75rem;
+    }
+
+    .hero-actions .btn {
+        width: 100%;
+    }
+
+    /* Command & Dashboard Mockup Adjustments */
+    .terminal-container {
+        margin: 1.5rem 0;
+        width: 100%;
+    }
+
+    .terminal-body {
+        padding: 1rem;
+        font-size: 0.85rem;
+    }
+
+    .knowledge-graph-card {
+        padding: 1.25rem;
+        border-radius: 16px;
+    }
+
+    .graph-item {
+        gap: 0.75rem;
+    }
+
+    .workflow-steps::before {
+        left: 18px; /* Adj line center */
+    }
+
+    .step-body {
+        padding: 0.75rem 1rem;
+    }
+    
+    /* Code container padding */
+    .tech-code-container {
+        padding: 1rem;
+    }
+}
