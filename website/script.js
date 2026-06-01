@@ -45,4 +45,25 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         });
     }
+
+    // -----------------------------------------------------------------
+    // Part 3: Mobile Navigation Menu Toggle Logic
+    // -----------------------------------------------------------------
+    const mobileToggle = document.getElementById('mobile-menu-toggle');
+    const navLinks = document.querySelector('.nav-links');
+    
+    if (mobileToggle && navLinks) {
+        mobileToggle.addEventListener('click', () => {
+            mobileToggle.classList.toggle('active');
+            navLinks.classList.toggle('active');
+        });
+        
+        // Close mobile nav when clicking a link
+        navLinks.querySelectorAll('a').forEach(link => {
+            link.addEventListener('click', () => {
+                mobileToggle.classList.remove('active');
+                navLinks.classList.remove('active');
+            });
+        });
+    }
 });
