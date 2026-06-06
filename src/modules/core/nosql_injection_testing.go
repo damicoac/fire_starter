@@ -50,8 +50,35 @@ var noSqlPayloads = []map[string]interface{}{
 	{"$where": "1==1"},
 }
 
+func (m *NosqlInjectionTesting) getBaselineAuthBypass(ctx context.Context) bool {
+	body := map[string]interface{}{
+		"username": "invalid_user_12345",
+		"password": "invalid_password_12345",
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", m.Target, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := m.Client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	respStr := strings.ToLower(string(respBody))
+
+	return resp.StatusCode >= 200 && resp.StatusCode < 300 && (strings.Contains(respStr, "\"token\":") || strings.Contains(respStr, "\"access_token\":"))
+}
+
 func (m *NosqlInjectionTesting) Execute(ctx context.Context) ([]NosqlInjectionTestingResult, error) {
 	m.results = make([]NosqlInjectionTestingResult, 0)
+
+	baselineAuthBypass := m.getBaselineAuthBypass(ctx)
 
 	jobs := make(chan map[string]interface{}, len(noSqlPayloads))
 	for _, p := range noSqlPayloads {
@@ -70,7 +97,7 @@ func (m *NosqlInjectionTesting) Execute(ctx context.Context) ([]NosqlInjectionTe
 				case <-ctx.Done():
 					return
 				default:
-					m.testPayload(ctx, payload)
+					m.testPayload(ctx, payload, baselineAuthBypass)
 				}
 			}
 		}()
@@ -91,7 +118,7 @@ func (m *NosqlInjectionTesting) Execute(ctx context.Context) ([]NosqlInjectionTe
 	}
 }
 
-func (m *NosqlInjectionTesting) testPayload(ctx context.Context, payload map[string]interface{}) {
+func (m *NosqlInjectionTesting) testPayload(ctx context.Context, payload map[string]interface{}, baselineAuthBypass bool) {
 	// Attempt to send a JSON payload pretending to be a login or search body
 	body := map[string]interface{}{
 		"username": payload,
@@ -117,6 +144,10 @@ func (m *NosqlInjectionTesting) testPayload(ctx context.Context, payload map[str
 	// Some common indicators of NoSQLi success: DB errors or auth bypass
 	isErrorLeak := strings.Contains(respStr, "mongoerror") || strings.Contains(respStr, "mongodb")
 	isAuthBypass := resp.StatusCode >= 200 && resp.StatusCode < 300 && (strings.Contains(respStr, "\"token\":") || strings.Contains(respStr, "\"access_token\":"))
+
+	if isAuthBypass && baselineAuthBypass {
+		isAuthBypass = false
+	}
 
 	if isErrorLeak || isAuthBypass {
 		payloadStr, _ := json.Marshal(payload)

@@ -193,20 +193,21 @@ func (m *DOMBasedXSSAnalysis) analyzeContent(sourceURL, content string) {
 		if sinkMatch != "" {
 			sourceMatch := sourcesRegex.FindString(line)
 
-			// To reduce false positives, we mainly care if both a source and sink are near each other,
-			// or if a major sink is present. Let's report any sink found, but note the source if present.
-
-			m.Mu.Lock()
-			m.RecordPoC(nil, nil, "")
-			m.results = append(m.results, DOMBasedXSSAnalysisResult{
-				Target:    m.Target,
-				ScriptURL: sourceURL,
-				Line:      i + 1,
-				Match:     strings.TrimSpace(line),
-				Sink:      sinkMatch,
-				Source:    sourceMatch,
-			})
-			m.Mu.Unlock()
+			// To avoid massive false positives (since innerHTML is everywhere),
+			// only flag as vulnerable if BOTH a sink and a controllable source are found on the same line.
+			if sourceMatch != "" {
+				m.Mu.Lock()
+				m.RecordPoC(nil, nil, "DOM XSS Sink ("+sinkMatch+") and Source ("+sourceMatch+") found on the same line.")
+				m.results = append(m.results, DOMBasedXSSAnalysisResult{
+					Target:    m.Target,
+					ScriptURL: sourceURL,
+					Line:      i + 1,
+					Match:     strings.TrimSpace(line),
+					Sink:      sinkMatch,
+					Source:    sourceMatch,
+				})
+				m.Mu.Unlock()
+			}
 		}
 	}
 }
