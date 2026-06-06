@@ -161,11 +161,13 @@ func (m *CrossSiteScriptingInjection) testContextPayload(ctx context.Context, u 
 	// 4. Verify reflection of the payload (unescaped) in the response using the validator.
 	if validator.IsVulnerable(bodyStr, payload) {
 		m.Mu.Lock()
+		detail := fmt.Sprintf("XSS found in %s parameter '%s' (Context: %s). Payload reflected unescaped: %s",
+			vector.Type, vector.Key, payload.Context, payload.Value)
+		m.RecordPoC(req, nil, detail)
 		m.results = append(m.results, CrossSiteScriptingInjectionResult{
 			Target: m.Target,
 			Status: "vulnerable",
-			Detail: fmt.Sprintf("XSS found in %s parameter '%s' (Context: %s). Payload reflected unescaped: %s",
-				vector.Type, vector.Key, payload.Context, payload.Value),
+			Detail: detail,
 		})
 		m.Mu.Unlock()
 	}

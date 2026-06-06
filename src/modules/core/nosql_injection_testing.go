@@ -114,20 +114,20 @@ func (m *NosqlInjectionTesting) testPayload(ctx context.Context, payload map[str
 	respBody, _ := io.ReadAll(resp.Body)
 	respStr := strings.ToLower(string(respBody))
 
-	// Some common indicators of NoSQLi success: DB errors or auth bypass (e.g. returning a token or user profile)
-	if strings.Contains(respStr, "mongoerror") || strings.Contains(respStr, "token") || resp.StatusCode == 200 {
-		// Just a heuristic check for now
-		if len(respStr) > 0 && !strings.Contains(respStr, "invalid login") {
-			payloadStr, _ := json.Marshal(payload)
-			m.Mu.Lock()
-			m.RecordPoC(req, nil, "Potential NoSQL injection successful using payload: "+string(payloadStr))
-			m.results = append(m.results, NosqlInjectionTestingResult{
-				Target: m.Target,
-				Status: "vulnerable",
-				Detail: "Potential NoSQL injection successful using payload: " + string(payloadStr),
-			})
-			m.Mu.Unlock()
-		}
+	// Some common indicators of NoSQLi success: DB errors or auth bypass
+	isErrorLeak := strings.Contains(respStr, "mongoerror") || strings.Contains(respStr, "mongodb")
+	isAuthBypass := resp.StatusCode >= 200 && resp.StatusCode < 300 && (strings.Contains(respStr, "\"token\":") || strings.Contains(respStr, "\"access_token\":"))
+
+	if isErrorLeak || isAuthBypass {
+		payloadStr, _ := json.Marshal(payload)
+		m.Mu.Lock()
+		m.RecordPoC(req, nil, "Potential NoSQL injection successful using payload: "+string(payloadStr))
+		m.results = append(m.results, NosqlInjectionTestingResult{
+			Target: m.Target,
+			Status: "vulnerable",
+			Detail: "Potential NoSQL injection successful using payload: " + string(payloadStr),
+		})
+		m.Mu.Unlock()
 	}
 }
 

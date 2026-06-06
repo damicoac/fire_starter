@@ -505,6 +505,15 @@ func GenerateCurlCommand(req *http.Request, bodyBytes []byte) string {
 	if req == nil || req.URL == nil {
 		return ""
 	}
+	
+	// Try to get body from request if not provided
+	if len(bodyBytes) == 0 && req.GetBody != nil {
+		if bodyReadCloser, err := req.GetBody(); err == nil {
+			bodyBytes, _ = io.ReadAll(bodyReadCloser)
+			bodyReadCloser.Close()
+		}
+	}
+
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("curl -X %s '%s'", req.Method, req.URL.String()))
 	for k, vals := range req.Header {

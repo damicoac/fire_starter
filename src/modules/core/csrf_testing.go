@@ -96,7 +96,27 @@ func (m *CSRFTesting) Execute(ctx context.Context) ([]CSRFTestingResult, error) 
 }
 
 func (m *CSRFTesting) testEndpoint(ctx context.Context, targetURL string) {
-	// A simple test for CSRF is checking if state-changing requests (POST/PUT)
+	// Step 1: Perform a GET to see if this endpoint even has a form
+	getReq, err := http.NewRequestWithContext(ctx, "GET", targetURL, nil)
+	if err != nil {
+		return
+	}
+	
+	getResp, err := m.Client.Do(getReq)
+	if err != nil {
+		return
+	}
+	defer getResp.Body.Close()
+	
+	getBodyBytes, _ := io.ReadAll(getResp.Body)
+	getBodyStr := strings.ToLower(string(getBodyBytes))
+	
+	if !strings.Contains(getBodyStr, "<form") {
+		// Not a form endpoint, skip blind POST to reduce false positives
+		return
+	}
+
+	// Step 2: A simple test for CSRF is checking if state-changing requests (POST/PUT)
 	// require anti-CSRF tokens. We send a bare POST without tokens.
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, strings.NewReader("dummy=data"))
 	if err != nil {

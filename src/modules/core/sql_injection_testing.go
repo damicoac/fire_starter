@@ -92,7 +92,6 @@ type SQLValidator struct {
 
 func (v *SQLValidator) IsVulnerable(resp *http.Response, body string, payload SQLPayload, duration time.Duration, baseBody string) bool {
 	bodyLower := strings.ToLower(body)
-	baseBodyLower := strings.ToLower(baseBody)
 
 	switch payload.Type {
 	case SQLCmdError:
@@ -107,7 +106,7 @@ func (v *SQLValidator) IsVulnerable(resp *http.Response, body string, payload SQ
 		}
 	case SQLCmdBoolean:
 		// Logic for boolean-blind (diffing body vs baseBody)
-		// Basic implementation: if bodies are significantly different in length or content
+		// Basic implementation: if bodies are significantly different in length
 		if len(body) != len(baseBody) {
 			// Significant length difference (more than 5%) could indicate a different response
 			diff := len(body) - len(baseBody)
@@ -117,10 +116,6 @@ func (v *SQLValidator) IsVulnerable(resp *http.Response, body string, payload SQ
 			if float64(diff)/float64(len(baseBody)+1) > 0.05 {
 				return true
 			}
-		}
-		// Also check if content is different
-		if bodyLower != baseBodyLower {
-			return true
 		}
 	}
 	return false
@@ -288,7 +283,7 @@ func (m *SQLInjectionTesting) testVector(ctx context.Context, u *url.URL, vector
 					// then it's a very strong indicator of SQL injection
 					if bodyVerify != body && validator.IsVulnerable(nil, body, payload, 0, bodyVerify) {
 						detail := fmt.Sprintf("Differential analysis confirmed boolean-blind injection. DB: %s", payload.DB)
-						m.RecordPoC(reqVerify, nil, detail)
+						m.RecordPoC(req, nil, detail)
 						m.addResult(vector, payload, "vulnerable", detail)
 						return
 					}

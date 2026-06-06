@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"sync"
@@ -41,6 +42,20 @@ func (m *IDORManipulation) SetThreads(count int) {
 	m.MaxThreads = count
 }
 
+func (m *IDORManipulation) getBaselineLength(ctx context.Context, u *url.URL) int {
+	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+	if err != nil {
+		return 0
+	}
+	resp, err := m.Client.Do(req)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return len(body)
+}
+
 var idorIds = []string{"1", "001", "admin", "1000"}
 
 func (m *IDORManipulation) Execute(ctx context.Context) ([]IDORManipulationResult, error) {
@@ -50,6 +65,8 @@ func (m *IDORManipulation) Execute(ctx context.Context) ([]IDORManipulationResul
 	if err != nil {
 		return m.results, err
 	}
+
+	baselineLen := m.getBaselineLength(ctx, parsedURL)
 
 	jobs := make(chan string, len(idorIds))
 	for _, p := range idorIds {
@@ -68,7 +85,7 @@ func (m *IDORManipulation) Execute(ctx context.Context) ([]IDORManipulationResul
 				case <-ctx.Done():
 					return
 				default:
-					m.testPayload(ctx, parsedURL, payload)
+					m.testPayload(ctx, parsedURL, payload, baselineLen)
 				}
 			}
 		}()
@@ -89,7 +106,7 @@ func (m *IDORManipulation) Execute(ctx context.Context) ([]IDORManipulationResul
 	}
 }
 
-func (m *IDORManipulation) testPayload(ctx context.Context, u *url.URL, payload string) {
+func (m *IDORManipulation) testPayload(ctx context.Context, u *url.URL, payload string, baselineLen int) {
 	query := u.Query()
 	hasParams := len(query) > 0
 
@@ -116,15 +133,29 @@ func (m *IDORManipulation) testPayload(ctx context.Context, u *url.URL, payload 
 	}
 	defer resp.Body.Close()
 
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	respLen := len(bodyBytes)
+
 	if resp.StatusCode == http.StatusOK {
-		m.Mu.Lock()
-		m.RecordPoC(req, nil, "Potential IDOR found. Reached object with ID "+payload+" at "+testURL.String())
-		m.results = append(m.results, IDORManipulationResult{
-			Target: m.Target,
-			Status: "vulnerable",
-			Detail: "Potential IDOR found. Reached object with ID " + payload + " at " + testURL.String(),
-		})
-		m.Mu.Unlock()
+		// Differential analysis: does it differ significantly from the baseline?
+		diff := respLen - baselineLen
+		if diff < 0 {
+			diff = -diff
+		}
+		
+		// If difference is > 10% or > 500 bytes, consider it an IDOR
+		isSignificantlyDifferent := float64(diff)/float64(baselineLen+1) > 0.1 || diff > 500
+
+		if isSignificantlyDifferent {
+			m.Mu.Lock()
+			m.RecordPoC(req, nil, "Potential IDOR found. Reached object with ID "+payload+" at "+testURL.String())
+			m.results = append(m.results, IDORManipulationResult{
+				Target: m.Target,
+				Status: "vulnerable",
+				Detail: "Potential IDOR found. Reached object with ID " + payload + " at " + testURL.String(),
+			})
+			m.Mu.Unlock()
+		}
 	}
 }
 
