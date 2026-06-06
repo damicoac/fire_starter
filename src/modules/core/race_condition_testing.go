@@ -83,7 +83,9 @@ func (m *RaceConditionTesting) Execute(ctx context.Context) ([]RaceConditionTest
 					}
 
 					respMu.Lock()
-					responses[resp.StatusCode]++
+					if resp.StatusCode != 429 && resp.StatusCode != 502 && resp.StatusCode != 503 && resp.StatusCode != 504 {
+						responses[resp.StatusCode]++
+					}
 					respMu.Unlock()
 					resp.Body.Close()
 				}

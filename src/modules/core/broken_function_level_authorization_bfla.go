@@ -3,8 +3,10 @@ package core
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
+	"time"
 )
 
 // BrokenFunctionLevelAuthorizationBflaResult holds the result of the BrokenFunctionLevelAuthorizationBfla module execution.
@@ -25,7 +27,10 @@ type BrokenFunctionLevelAuthorizationBfla struct {
 func NewBrokenFunctionLevelAuthorizationBfla(target string) *BrokenFunctionLevelAuthorizationBfla {
 	return &BrokenFunctionLevelAuthorizationBfla{
 		Target:     EnsureHTTPPrefix(target),
-		BaseModule: BaseModule{},
+		BaseModule: BaseModule{
+			Client:     NewHTTPClient(10 * time.Second),
+			MaxThreads: 5,
+		},
 	}
 }
 
@@ -45,8 +50,23 @@ var adminPaths = []string{
 	"/config",
 }
 
+func (m *BrokenFunctionLevelAuthorizationBfla) getBaselineLength(ctx context.Context) int {
+	req, err := http.NewRequestWithContext(ctx, "GET", m.Target+"/nonexistent_admin_path_12345", nil)
+	if err != nil {
+		return 0
+	}
+	resp, err := m.Client.Do(req)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return len(body)
+}
+
 func (m *BrokenFunctionLevelAuthorizationBfla) Execute(ctx context.Context) ([]BrokenFunctionLevelAuthorizationBflaResult, error) {
 	m.results = make([]BrokenFunctionLevelAuthorizationBflaResult, 0)
+	baselineLen := m.getBaselineLength(ctx)
 
 	jobs := make(chan string, len(adminPaths))
 	for _, p := range adminPaths {
@@ -65,7 +85,7 @@ func (m *BrokenFunctionLevelAuthorizationBfla) Execute(ctx context.Context) ([]B
 				case <-ctx.Done():
 					return
 				default:
-					m.testPath(ctx, path)
+					m.testPath(ctx, path, baselineLen)
 				}
 			}
 		}()
@@ -86,7 +106,7 @@ func (m *BrokenFunctionLevelAuthorizationBfla) Execute(ctx context.Context) ([]B
 	}
 }
 
-func (m *BrokenFunctionLevelAuthorizationBfla) testPath(ctx context.Context, path string) {
+func (m *BrokenFunctionLevelAuthorizationBfla) testPath(ctx context.Context, path string, baselineLen int) {
 	testURL := m.Target + path
 
 	req, err := http.NewRequestWithContext(ctx, "GET", testURL, nil)
@@ -100,16 +120,28 @@ func (m *BrokenFunctionLevelAuthorizationBfla) testPath(ctx context.Context, pat
 	}
 	defer resp.Body.Close()
 
-	// If we get a 200 OK on an admin endpoint without any auth headers, that's BFLA
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	respLen := len(bodyBytes)
+
+	// If we get a 200 OK on an admin endpoint, ensure it's not a false positive
 	if resp.StatusCode == http.StatusOK {
-		m.Mu.Lock()
-		m.RecordPoC(req, nil, "Unauthenticated access to administrative endpoint: "+testURL)
-		m.results = append(m.results, BrokenFunctionLevelAuthorizationBflaResult{
-			Target: m.Target,
-			Status: "vulnerable",
-			Detail: "Unauthenticated access to administrative endpoint: " + testURL,
-		})
-		m.Mu.Unlock()
+		diff := respLen - baselineLen
+		if diff < 0 {
+			diff = -diff
+		}
+		
+		isSignificantlyDifferent := float64(diff)/float64(baselineLen+1) > 0.1 || diff > 500
+		
+		if isSignificantlyDifferent {
+			m.Mu.Lock()
+			m.RecordPoC(req, nil, "Unauthenticated access to administrative endpoint: "+testURL)
+			m.results = append(m.results, BrokenFunctionLevelAuthorizationBflaResult{
+				Target: m.Target,
+				Status: "vulnerable",
+				Detail: "Unauthenticated access to administrative endpoint: " + testURL,
+			})
+			m.Mu.Unlock()
+		}
 	}
 }
 

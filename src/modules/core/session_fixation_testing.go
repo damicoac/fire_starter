@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -43,6 +44,26 @@ func (m *SessionFixationTesting) SetThreads(count int) {
 
 func (m *SessionFixationTesting) Execute(ctx context.Context) ([]SessionFixationTestingResult, error) {
 	m.results = make([]SessionFixationTestingResult, 0)
+
+	// Perform a GET request to see if there's a password field
+	getReq, err := http.NewRequestWithContext(ctx, "GET", m.Target, nil)
+	if err != nil {
+		return m.results, err
+	}
+	
+	getResp, err := m.Client.Do(getReq)
+	if err != nil {
+		return m.results, err
+	}
+	defer getResp.Body.Close()
+	
+	getBodyBytes, _ := io.ReadAll(getResp.Body)
+	getBodyStr := strings.ToLower(string(getBodyBytes))
+	
+	if !strings.Contains(getBodyStr, "type=\"password\"") && !strings.Contains(getBodyStr, "type='password'") {
+		// Not a login endpoint, skip blind POST to reduce false positives
+		return m.results, nil
+	}
 
 	// Since we don't have real credentials, we just simulate the flow:
 	// 1. Send a request with a fake predetermined session ID

@@ -41,7 +41,7 @@ func (m *HttpVerbTampering) SetThreads(count int) {
 }
 
 var verbsToTest = []string{
-	"PUT", "DELETE", "HEAD", "OPTIONS", "TRACE", "TRACK", "PATCH",
+	"PUT", "DELETE", "TRACE", "TRACK", "PATCH",
 }
 
 func (m *HttpVerbTampering) Execute(ctx context.Context) ([]HttpVerbTamperingResult, error) {

@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"sync"
@@ -41,8 +42,23 @@ func (m *BrokenObjectLevelAuthorizationBola) SetThreads(count int) {
 	m.MaxThreads = count
 }
 
+func (m *BrokenObjectLevelAuthorizationBola) getBaselineLength(ctx context.Context) int {
+	req, err := http.NewRequestWithContext(ctx, "GET", m.Target+"/api/users/999999999", nil)
+	if err != nil {
+		return 0
+	}
+	resp, err := m.Client.Do(req)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return len(body)
+}
+
 func (m *BrokenObjectLevelAuthorizationBola) Execute(ctx context.Context) ([]BrokenObjectLevelAuthorizationBolaResult, error) {
 	m.results = make([]BrokenObjectLevelAuthorizationBolaResult, 0)
+	baselineLen := m.getBaselineLength(ctx)
 
 	// In a real attack, we'd take a known base ID and iterate up/down. Let's just fuzz IDs 1-10.
 	jobs := make(chan string, 10)
@@ -62,7 +78,7 @@ func (m *BrokenObjectLevelAuthorizationBola) Execute(ctx context.Context) ([]Bro
 				case <-ctx.Done():
 					return
 				default:
-					m.testID(ctx, id)
+					m.testID(ctx, id, baselineLen)
 				}
 			}
 		}()
@@ -83,7 +99,7 @@ func (m *BrokenObjectLevelAuthorizationBola) Execute(ctx context.Context) ([]Bro
 	}
 }
 
-func (m *BrokenObjectLevelAuthorizationBola) testID(ctx context.Context, id string) {
+func (m *BrokenObjectLevelAuthorizationBola) testID(ctx context.Context, id string, baselineLen int) {
 	testURL := m.Target + "/api/users/" + id
 
 	req, err := http.NewRequestWithContext(ctx, "GET", testURL, nil)
@@ -97,16 +113,28 @@ func (m *BrokenObjectLevelAuthorizationBola) testID(ctx context.Context, id stri
 	}
 	defer resp.Body.Close()
 
-	// If we can read arbitrary users without auth, that's BOLA
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	respLen := len(bodyBytes)
+
+	// If we can read arbitrary users without auth, ensure it differs from baseline
 	if resp.StatusCode == http.StatusOK {
-		m.Mu.Lock()
-		m.RecordPoC(req, nil, "Unauthorized access to object at: "+testURL)
-		m.results = append(m.results, BrokenObjectLevelAuthorizationBolaResult{
-			Target: m.Target,
-			Status: "vulnerable",
-			Detail: "Unauthorized access to object at: " + testURL,
-		})
-		m.Mu.Unlock()
+		diff := respLen - baselineLen
+		if diff < 0 {
+			diff = -diff
+		}
+		
+		isSignificantlyDifferent := float64(diff)/float64(baselineLen+1) > 0.1 || diff > 500
+		
+		if isSignificantlyDifferent {
+			m.Mu.Lock()
+			m.RecordPoC(req, nil, "Unauthorized access to object at: "+testURL)
+			m.results = append(m.results, BrokenObjectLevelAuthorizationBolaResult{
+				Target: m.Target,
+				Status: "vulnerable",
+				Detail: "Unauthorized access to object at: " + testURL,
+			})
+			m.Mu.Unlock()
+		}
 	}
 }
 
