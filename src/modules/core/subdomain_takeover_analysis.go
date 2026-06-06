@@ -3,7 +3,9 @@ package core
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -43,12 +45,12 @@ func (m *SubdomainTakeoverAnalysis) SetThreads(count int) {
 	m.MaxThreads = count
 }
 
-var takeoverSignatures = []string{
-	"s3.amazonaws.com",
-	"github.io",
-	"herokuapp.com",
-	"zendesk.com",
-	"azurewebsites.net",
+var takeoverSignatures = map[string]string{
+	"s3.amazonaws.com": "NoSuchBucket",
+	"github.io": "There isn't a GitHub Pages site here",
+	"herokuapp.com": "No such app",
+	"zendesk.com": "Help Center Closed",
+	"azurewebsites.net": "404 Web Site not found",
 }
 
 func (m *SubdomainTakeoverAnalysis) Execute(ctx context.Context) ([]SubdomainTakeoverAnalysisResult, error) {
@@ -101,17 +103,33 @@ func (m *SubdomainTakeoverAnalysis) testSubdomain(ctx context.Context, sub strin
 		return
 	}
 
-	for _, sig := range takeoverSignatures {
-		if strings.Contains(cname, sig) {
-			m.Mu.Lock()
-			m.RecordPoC(nil, nil, "Subdomain "+sub+" points to vulnerable 3rd party service CNAME: "+cname)
-			m.results = append(m.results, SubdomainTakeoverAnalysisResult{
-				Target: m.Target,
-				Status: "vulnerable",
-				Detail: "Subdomain " + sub + " points to vulnerable 3rd party service CNAME: " + cname,
-			})
-			m.Mu.Unlock()
-			return
+	for cnameSig, errorSig := range takeoverSignatures {
+		if strings.Contains(cname, cnameSig) {
+			// Actually fetch the page to see if it's available for takeover
+			req, err := http.NewRequestWithContext(ctx, "GET", "http://"+sub, nil)
+			if err != nil {
+				return
+			}
+			resp, err := m.Client.Do(req)
+			if err != nil {
+				return
+			}
+			defer resp.Body.Close()
+			
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			bodyStr := string(bodyBytes)
+			
+			if strings.Contains(bodyStr, errorSig) {
+				m.Mu.Lock()
+				m.RecordPoC(req, nil, "Subdomain "+sub+" is vulnerable to takeover via "+cname)
+				m.results = append(m.results, SubdomainTakeoverAnalysisResult{
+					Target: m.Target,
+					Status: "vulnerable",
+					Detail: "Subdomain " + sub + " is vulnerable to takeover via " + cname,
+				})
+				m.Mu.Unlock()
+				return
+			}
 		}
 	}
 }

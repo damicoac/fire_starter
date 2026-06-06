@@ -46,8 +46,26 @@ var samlPayloads = []string{
 	"PHNhbWxwOlJlc3BvbnNlIHhtbG5zOnNhbWxwPSJ1cm46b2FzaXM6bmFtZXM6dGM6U0FNTDoyLjA6cHJvdG9jb2wiPjxTYW1sQXV0aD5BZG1pbjwvU2FtbEF1dGg+PC9zYW1scDpSZXNwb25zZT4=",
 }
 
+func (m *SAMLAssertionTesting) getBaselineStatus(ctx context.Context) int {
+	req, err := http.NewRequestWithContext(ctx, "POST", m.Target, strings.NewReader("SAMLResponse=invalid_baseline_data"))
+	if err != nil {
+		return 0
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := m.Client.Do(req)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+
+	return resp.StatusCode
+}
+
 func (m *SAMLAssertionTesting) Execute(ctx context.Context) ([]SAMLAssertionTestingResult, error) {
 	m.results = make([]SAMLAssertionTestingResult, 0)
+
+	baselineStatus := m.getBaselineStatus(ctx)
 
 	jobs := make(chan string, len(samlPayloads))
 	for _, p := range samlPayloads {
@@ -66,7 +84,7 @@ func (m *SAMLAssertionTesting) Execute(ctx context.Context) ([]SAMLAssertionTest
 				case <-ctx.Done():
 					return
 				default:
-					m.testPayload(ctx, payload)
+					m.testPayload(ctx, payload, baselineStatus)
 				}
 			}
 		}()
@@ -87,7 +105,7 @@ func (m *SAMLAssertionTesting) Execute(ctx context.Context) ([]SAMLAssertionTest
 	}
 }
 
-func (m *SAMLAssertionTesting) testPayload(ctx context.Context, payload string) {
+func (m *SAMLAssertionTesting) testPayload(ctx context.Context, payload string, baselineStatus int) {
 	req, err := http.NewRequestWithContext(ctx, "POST", m.Target, strings.NewReader("SAMLResponse="+payload))
 	if err != nil {
 		return
@@ -100,7 +118,7 @@ func (m *SAMLAssertionTesting) testPayload(ctx context.Context, payload string) 
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusOK {
+	if resp.StatusCode == http.StatusOK && baselineStatus != http.StatusOK {
 		m.Mu.Lock()
 		m.RecordPoC(req, nil, "Server accepted a SAML Assertion with a stripped signature.")
 		m.results = append(m.results, SAMLAssertionTestingResult{
