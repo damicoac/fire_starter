@@ -462,7 +462,7 @@ You currently only have access to tools for your current phase. When you have ex
 
 Do not make assumptions. Turn theories into testable hypotheses, then validate them by calling available tools and using tool output as evidence for your next step. If evidence is missing or stale, call another tool instead of guessing.
 
-When you have reached your goals or finished all phases, you MUST call the 'submit' tool with your final report.
+When you have reached your goals or finished all phases, you MUST call the 'submit' tool with your final report. Ensure that your final report explicitly includes any Proof-of-Concepts (PoCs) and exact reproduction steps for the vulnerabilities you discovered. You can use the 'query_knowledge_graph' tool with 'query_type': 'test_cases' to retrieve these details before submitting.
 
 CRITICAL: Do not execute the same tool against the same target more than once. The Knowledge Graph tracks 'executed_tools' for each discovered target. Always check a target's executed tools before scanning to avoid infinite loops.
 

