@@ -111,11 +111,11 @@ func (m *CloudStorageFuzzing) testBucket(ctx context.Context, bucketName string)
 	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusForbidden {
 		// Even forbidden means it exists. OK means it's publicly readable.
 		m.Mu.Lock()
-		m.RecordPoC(req, nil, "Cloud bucket found: "+bucketURL+" (HTTP "+string(rune(resp.StatusCode))+")")
+		m.RecordPoC(req, nil, fmt.Sprintf("Cloud bucket found: %s (HTTP %d)", bucketURL, resp.StatusCode))
 		m.results = append(m.results, CloudStorageFuzzingResult{
 			Target: m.Target,
 			Status: "found",
-			Detail: "Cloud bucket found: " + bucketURL + " (HTTP " + string(rune(resp.StatusCode)) + ")",
+			Detail: fmt.Sprintf("Cloud bucket found: %s (HTTP %d)", bucketURL, resp.StatusCode),
 		})
 		m.Mu.Unlock()
 	}

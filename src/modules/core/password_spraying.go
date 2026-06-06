@@ -47,8 +47,32 @@ var sprayUsernames = []string{
 
 const sprayPassword = "Password1!"
 
+func (m *PasswordSpraying) getBaselineAuthBypass(ctx context.Context) bool {
+	body := "username=invalid_user_12345&password=invalid_password_12345"
+	req, err := http.NewRequestWithContext(ctx, "POST", m.Target, strings.NewReader(body))
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := m.Client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusFound || resp.StatusCode == http.StatusSeeOther {
+		if len(resp.Cookies()) > 0 || resp.Header.Get("Location") != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *PasswordSpraying) Execute(ctx context.Context) ([]PasswordSprayingResult, error) {
 	m.results = make([]PasswordSprayingResult, 0)
+
+	baselineAuthBypass := m.getBaselineAuthBypass(ctx)
 
 	jobs := make(chan string, len(sprayUsernames))
 	for _, u := range sprayUsernames {
@@ -67,7 +91,7 @@ func (m *PasswordSpraying) Execute(ctx context.Context) ([]PasswordSprayingResul
 				case <-ctx.Done():
 					return
 				default:
-					m.testUsername(ctx, username)
+					m.testUsername(ctx, username, baselineAuthBypass)
 				}
 			}
 		}()
@@ -88,7 +112,7 @@ func (m *PasswordSpraying) Execute(ctx context.Context) ([]PasswordSprayingResul
 	}
 }
 
-func (m *PasswordSpraying) testUsername(ctx context.Context, username string) {
+func (m *PasswordSpraying) testUsername(ctx context.Context, username string, baselineAuthBypass bool) {
 	body := "username=" + username + "&password=" + sprayPassword
 	req, err := http.NewRequestWithContext(ctx, "POST", m.Target, strings.NewReader(body))
 	if err != nil {
@@ -106,14 +130,16 @@ func (m *PasswordSpraying) testUsername(ctx context.Context, username string) {
 	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusFound || resp.StatusCode == http.StatusSeeOther {
 		// Just a heuristic - if it doesn't set a cookie or redirect to dashboard, it might be a false positive
 		if len(resp.Cookies()) > 0 || resp.Header.Get("Location") != "" {
-			m.Mu.Lock()
-			m.RecordPoC(req, nil, "Successful login found via spraying: "+username+" / "+sprayPassword)
-			m.results = append(m.results, PasswordSprayingResult{
-				Target: m.Target,
-				Status: "vulnerable",
-				Detail: "Successful login found via spraying: " + username + " / " + sprayPassword,
-			})
-			m.Mu.Unlock()
+			if !baselineAuthBypass {
+				m.Mu.Lock()
+				m.RecordPoC(req, nil, "Successful login found via spraying: "+username+" / "+sprayPassword)
+				m.results = append(m.results, PasswordSprayingResult{
+					Target: m.Target,
+					Status: "vulnerable",
+					Detail: "Successful login found via spraying: " + username + " / " + sprayPassword,
+				})
+				m.Mu.Unlock()
+			}
 		}
 	}
 }

@@ -45,8 +45,23 @@ var jwtPayloads = []string{
 	"eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJhZG1pbiJ9.",
 }
 
+func (m *JWTSecurityAudit) getBaselineStatus(ctx context.Context) int {
+	req, err := http.NewRequestWithContext(ctx, "GET", m.Target, nil)
+	if err != nil {
+		return 0
+	}
+	resp, err := m.Client.Do(req)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode
+}
+
 func (m *JWTSecurityAudit) Execute(ctx context.Context) ([]JWTSecurityAuditResult, error) {
 	m.results = make([]JWTSecurityAuditResult, 0)
+
+	baselineStatus := m.getBaselineStatus(ctx)
 
 	jobs := make(chan string, len(jwtPayloads))
 	for _, p := range jwtPayloads {
@@ -65,7 +80,7 @@ func (m *JWTSecurityAudit) Execute(ctx context.Context) ([]JWTSecurityAuditResul
 				case <-ctx.Done():
 					return
 				default:
-					m.testToken(ctx, token)
+					m.testToken(ctx, token, baselineStatus)
 				}
 			}
 		}()
@@ -86,7 +101,7 @@ func (m *JWTSecurityAudit) Execute(ctx context.Context) ([]JWTSecurityAuditResul
 	}
 }
 
-func (m *JWTSecurityAudit) testToken(ctx context.Context, token string) {
+func (m *JWTSecurityAudit) testToken(ctx context.Context, token string, baselineStatus int) {
 	req, err := http.NewRequestWithContext(ctx, "GET", m.Target, nil)
 	if err != nil {
 		return
@@ -99,7 +114,7 @@ func (m *JWTSecurityAudit) testToken(ctx context.Context, token string) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusOK {
+	if resp.StatusCode == http.StatusOK && baselineStatus != http.StatusOK {
 		m.Mu.Lock()
 		m.RecordPoC(req, nil, "Server accepted JWT with 'none' algorithm")
 		m.results = append(m.results, JWTSecurityAuditResult{
