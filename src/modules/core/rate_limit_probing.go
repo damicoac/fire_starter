@@ -53,6 +53,7 @@ func (m *RateLimitProbing) Execute(ctx context.Context) ([]RateLimitProbingResul
 
 	var wg sync.WaitGroup
 	var got429 bool
+	var lastReq *http.Request
 
 	for i := 0; i < m.MaxThreads; i++ {
 		wg.Add(1)
@@ -67,6 +68,12 @@ func (m *RateLimitProbing) Execute(ctx context.Context) ([]RateLimitProbingResul
 					if err != nil {
 						continue
 					}
+
+					m.Mu.Lock()
+					if lastReq == nil {
+						lastReq = req
+					}
+					m.Mu.Unlock()
 
 					resp, err := m.Client.Do(req)
 					if err != nil {
@@ -93,14 +100,14 @@ func (m *RateLimitProbing) Execute(ctx context.Context) ([]RateLimitProbingResul
 	select {
 	case <-done:
 		if !got429 {
-			m.RecordPoC(nil, nil, "No rate limiting (HTTP 429) detected after 50 rapid requests.")
+			m.RecordPoC(lastReq, nil, "No rate limiting (HTTP 429) detected after 50 rapid requests.")
 			m.results = append(m.results, RateLimitProbingResult{
 				Target: m.Target,
 				Status: "vulnerable",
 				Detail: "No rate limiting (HTTP 429) detected after 50 rapid requests.",
 			})
 		} else {
-			m.RecordPoC(nil, nil, "Rate limiting is properly enforced (HTTP 429 received).")
+			m.RecordPoC(lastReq, nil, "Rate limiting is properly enforced (HTTP 429 received).")
 			m.results = append(m.results, RateLimitProbingResult{
 				Target: m.Target,
 				Status: "secure",

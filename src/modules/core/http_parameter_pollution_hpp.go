@@ -126,9 +126,10 @@ func (m *HttpParameterPollutionHpp) testParameter(ctx context.Context, u *url.UR
 	}
 
 	bodyStr := string(bodyBytes)
+	originalVal := originalQuery.Get(paramToPollute)
 
-	// If the server echoes back the polluted value or throws a 500 because it got an array instead of a string
-	if strings.Contains(bodyStr, "polluted_value_12345") || resp.StatusCode == http.StatusInternalServerError {
+	// If the server throws a 500 (array instead of string) or concatenates the values (ASP.NET style)
+	if resp.StatusCode == http.StatusInternalServerError || (originalVal != "" && strings.Contains(bodyStr, originalVal+",polluted_value_12345")) {
 		m.Mu.Lock()
 		m.RecordPoC(req, nil, "HTTP Parameter Pollution detected on parameter: "+paramToPollute)
 		m.results = append(m.results, HttpParameterPollutionHppResult{
