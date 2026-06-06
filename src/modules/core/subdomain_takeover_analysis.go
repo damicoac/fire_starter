@@ -46,10 +46,10 @@ func (m *SubdomainTakeoverAnalysis) SetThreads(count int) {
 }
 
 var takeoverSignatures = map[string]string{
-	"s3.amazonaws.com": "NoSuchBucket",
-	"github.io": "There isn't a GitHub Pages site here",
-	"herokuapp.com": "No such app",
-	"zendesk.com": "Help Center Closed",
+	"s3.amazonaws.com":  "NoSuchBucket",
+	"github.io":         "There isn't a GitHub Pages site here",
+	"herokuapp.com":     "No such app",
+	"zendesk.com":       "Help Center Closed",
 	"azurewebsites.net": "404 Web Site not found",
 }
 
@@ -115,10 +115,10 @@ func (m *SubdomainTakeoverAnalysis) testSubdomain(ctx context.Context, sub strin
 				return
 			}
 			defer resp.Body.Close()
-			
+
 			bodyBytes, _ := io.ReadAll(resp.Body)
 			bodyStr := string(bodyBytes)
-			
+
 			if strings.Contains(bodyStr, errorSig) {
 				m.Mu.Lock()
 				m.RecordPoC(req, nil, "Subdomain "+sub+" is vulnerable to takeover via "+cname)

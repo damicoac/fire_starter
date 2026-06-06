@@ -62,8 +62,6 @@ func TestPathTraversalAttack_ContentMatch(t *testing.T) {
 	}
 }
 
-
-
 func TestPathTraversalAttack_Execute_CanceledContext(t *testing.T) {
 	module := NewPathTraversalAttack("http://example.com")
 	ctx, cancel := context.WithCancel(context.Background())

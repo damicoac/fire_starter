@@ -142,7 +142,7 @@ func (m *IDORManipulation) testPayload(ctx context.Context, u *url.URL, payload 
 		if diff < 0 {
 			diff = -diff
 		}
-		
+
 		// If difference is > 10% or > 500 bytes, consider it an IDOR
 		isSignificantlyDifferent := float64(diff)/float64(baselineLen+1) > 0.1 || diff > 500
 
