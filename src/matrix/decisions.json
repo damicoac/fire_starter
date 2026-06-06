@@ -234,7 +234,7 @@
     {
       "use_case": "Testing for complete server compromise via system calls",
       "technique": "os_command_injection",
-      "function": "inject shell command separators like ';' or '\u0026\u0026' into input fields passed to system execution functions",
+      "function": "inject shell command separators like ';' or '&&' into input fields passed to system execution functions",
       "problem_the_tool_solves": "Detects high-impact vulnerabilities that allow attackers to run arbitrary system-level commands on the host server",
       "identifier": "0031"
     },
@@ -269,7 +269,7 @@
     {
       "use_case": "Testing for code execution via server-side include directives",
       "technique": "ssi_injection_testing",
-      "function": "inject strings like '\u003c!--#echo var=\"DATE_LOCAL\" --\u003e' into input points and check for server-processed output",
+      "function": "inject strings like '<!--#echo var=\"DATE_LOCAL\" -->' into input points and check for server-processed output",
       "problem_the_tool_solves": "Detects vulnerabilities where an attacker can leak environment variables or achieve remote code execution on misconfigured servers",
       "identifier": "0036"
     },
@@ -328,6 +328,69 @@
       "function": "Authenticate to internal hosts using SSH and establish a pivot point for further internal network discovery.",
       "problem_the_tool_solves": "Enables the agent to access network segments that are not directly exposed to the internet, fulfilling the lateral movement objective.",
       "identifier": "0048"
+    },
+    {
+      "use_case": "Testing for malicious file uploads",
+      "technique": "unrestricted_file_upload_analysis",
+      "function": "Test if the application accepts dangerous file types or bypasses MIME validation",
+      "problem_the_tool_solves": "Identifies unrestricted file upload vulnerabilities that could lead to RCE",
+      "identifier": "0049"
+    },
+    {
+      "use_case": "Testing OAuth and OIDC implementations",
+      "technique": "oauth_misconfiguration_testing",
+      "function": "Test for OAuth misconfigurations like redirect_uri manipulation",
+      "problem_the_tool_solves": "Identifies flaws in SSO/OAuth flows that could lead to account takeover",
+      "identifier": "0050"
+    },
+    {
+      "use_case": "Testing Multi-Factor Authentication logic",
+      "technique": "mfa_bypass_testing",
+      "function": "Test for MFA bypass vulnerabilities using logic flaws",
+      "problem_the_tool_solves": "Identifies weak MFA enforcement that could allow an attacker to bypass 2FA",
+      "identifier": "0051"
+    },
+    {
+      "use_case": "Testing for Open Redirect vulnerabilities",
+      "technique": "open_redirect_testing",
+      "function": "Test if the application redirects to arbitrary external domains",
+      "problem_the_tool_solves": "Identifies open redirects that can be used for phishing",
+      "identifier": "0052"
+    },
+    {
+      "use_case": "Testing for HTTP Request Smuggling",
+      "technique": "http_request_smuggling_testing",
+      "function": "Test for discrepancies in Content-Length and Transfer-Encoding parsing",
+      "problem_the_tool_solves": "Identifies request smuggling vulnerabilities",
+      "identifier": "0053"
+    },
+    {
+      "use_case": "Analyzing Security Headers",
+      "technique": "security_headers_analysis",
+      "function": "Check for missing security headers like CSP and X-Frame-Options",
+      "problem_the_tool_solves": "Identifies missing security headers that could lead to clickjacking or other client-side attacks",
+      "identifier": "0054"
+    },
+    {
+      "use_case": "Probing WebSocket endpoints",
+      "technique": "websocket_vulnerability_probing",
+      "function": "Test for Cross-Site WebSocket Hijacking (CSWSH)",
+      "problem_the_tool_solves": "Identifies missing origin validation on WebSocket connections",
+      "identifier": "0055"
+    },
+    {
+      "use_case": "Testing for Business Logic Flaws",
+      "technique": "business_logic_bypass",
+      "function": "Test if multi-step processes can be bypassed",
+      "problem_the_tool_solves": "Identifies logic flaws in workflows",
+      "identifier": "0056"
+    },
+    {
+      "use_case": "Advanced GraphQL attacks",
+      "technique": "graphql_advanced_attacks",
+      "function": "Test GraphQL endpoints for batching and deep query DoS",
+      "problem_the_tool_solves": "Identifies GraphQL vulnerabilities beyond simple introspection",
+      "identifier": "0057"
     }
   ]
 }

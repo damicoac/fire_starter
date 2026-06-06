@@ -501,16 +501,73 @@ IP whitelist policy:
 		currentPhase := kg.GetCurrentPhase()
 		snapshot := kg.Snapshot()
 		log.Infof("RED_TEAM_LOOP iteration=%d/%d %s", iter+1, cfg.MaxIters, summarizeSnapshot(snapshot))
+		
+		needsPhase := make(map[matrix.Phase]bool)
+		if kgBytes, err := kg.ToJSON(); err == nil {
+			var state struct {
+				DiscoveredIPs []struct{ Value string } `json:"discovered_ips"`
+				DiscoveredURLs []struct{ Value string } `json:"discovered_urls"`
+			}
+			if err := json.Unmarshal(kgBytes, &state); err == nil {
+				checkTarget := func(target string) {
+					if target == "" {
+						return
+					}
+					norm := normalizeTarget(target)
+					phasesToCheck := []matrix.Phase{
+						matrix.PhaseReconnaissance,
+						matrix.PhaseScanning,
+						matrix.PhaseVulnerabilityAnalysis,
+						matrix.PhaseExploitation,
+						matrix.PhasePostExploitation,
+					}
+					for _, p := range phasesToCheck {
+						if p == currentPhase {
+							break
+						}
+						if p == matrix.PhaseReconnaissance {
+							continue
+						}
+						hasCompleted := false
+						if completedByPhase[p] != nil {
+							for _, targets := range completedByPhase[p] {
+								if targets[norm] {
+									hasCompleted = true
+									break
+								}
+							}
+						}
+						if !hasCompleted {
+							needsPhase[p] = true
+							break
+						}
+					}
+				}
+				for _, ip := range state.DiscoveredIPs {
+					checkTarget(ip.Value)
+				}
+				for _, u := range state.DiscoveredURLs {
+					checkTarget(u.Value)
+				}
+			}
+		}
+
 		scored := make([]scoredTool, 0)
 		for _, t := range executor.Tools() {
 			toolStage := matrix.Phase(matrix.MapTechniqueToStage(t.Technique))
-			if toolStage == currentPhase || toolStage == matrix.PhaseReconnaissance {
+			if toolStage == currentPhase || toolStage == matrix.PhaseReconnaissance || needsPhase[toolStage] {
 				var executedTargets map[string]bool
 				if completedByPhase[toolStage] != nil {
 					executedTargets = completedByPhase[toolStage][t.Name]
 				}
 				exhausted := isToolExhausted(t, kg, target, executedTargets)
-				scored = append(scored, scoreTool(t, currentPhase, snapshot, exhausted))
+				
+				st := scoreTool(t, currentPhase, snapshot, exhausted)
+				if needsPhase[toolStage] && toolStage != currentPhase && toolStage != matrix.PhaseReconnaissance {
+					st.Score += 8
+					st.Reasons = append(st.Reasons, "unprocessed target requires this phase")
+				}
+				scored = append(scored, st)
 				continue
 			}
 			log.Debugf("Tool rejected this phase: %s stage=%s current_phase=%s", t.Name, toolStage, currentPhase)

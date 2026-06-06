@@ -50,16 +50,16 @@ func (m *SessionFixationTesting) Execute(ctx context.Context) ([]SessionFixation
 	if err != nil {
 		return m.results, err
 	}
-	
+
 	getResp, err := m.Client.Do(getReq)
 	if err != nil {
 		return m.results, err
 	}
 	defer getResp.Body.Close()
-	
+
 	getBodyBytes, _ := io.ReadAll(getResp.Body)
 	getBodyStr := strings.ToLower(string(getBodyBytes))
-	
+
 	if !strings.Contains(getBodyStr, "type=\"password\"") && !strings.Contains(getBodyStr, "type='password'") {
 		// Not a login endpoint, skip blind POST to reduce false positives
 		return m.results, nil

@@ -26,7 +26,7 @@ type BrokenFunctionLevelAuthorizationBfla struct {
 // NewBrokenFunctionLevelAuthorizationBfla creates a new instance.
 func NewBrokenFunctionLevelAuthorizationBfla(target string) *BrokenFunctionLevelAuthorizationBfla {
 	return &BrokenFunctionLevelAuthorizationBfla{
-		Target:     EnsureHTTPPrefix(target),
+		Target: EnsureHTTPPrefix(target),
 		BaseModule: BaseModule{
 			Client:     NewHTTPClient(10 * time.Second),
 			MaxThreads: 5,
@@ -129,9 +129,9 @@ func (m *BrokenFunctionLevelAuthorizationBfla) testPath(ctx context.Context, pat
 		if diff < 0 {
 			diff = -diff
 		}
-		
+
 		isSignificantlyDifferent := float64(diff)/float64(baselineLen+1) > 0.1 || diff > 500
-		
+
 		if isSignificantlyDifferent {
 			m.Mu.Lock()
 			m.RecordPoC(req, nil, "Unauthenticated access to administrative endpoint: "+testURL)

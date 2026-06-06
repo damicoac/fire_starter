@@ -122,9 +122,9 @@ func (m *BrokenObjectLevelAuthorizationBola) testID(ctx context.Context, id stri
 		if diff < 0 {
 			diff = -diff
 		}
-		
+
 		isSignificantlyDifferent := float64(diff)/float64(baselineLen+1) > 0.1 || diff > 500
-		
+
 		if isSignificantlyDifferent {
 			m.Mu.Lock()
 			m.RecordPoC(req, nil, "Unauthorized access to object at: "+testURL)

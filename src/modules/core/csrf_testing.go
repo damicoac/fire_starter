@@ -101,16 +101,16 @@ func (m *CSRFTesting) testEndpoint(ctx context.Context, targetURL string) {
 	if err != nil {
 		return
 	}
-	
+
 	getResp, err := m.Client.Do(getReq)
 	if err != nil {
 		return
 	}
 	defer getResp.Body.Close()
-	
+
 	getBodyBytes, _ := io.ReadAll(getResp.Body)
 	getBodyStr := strings.ToLower(string(getBodyBytes))
-	
+
 	if !strings.Contains(getBodyStr, "<form") {
 		// Not a form endpoint, skip blind POST to reduce false positives
 		return

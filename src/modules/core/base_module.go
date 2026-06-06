@@ -505,7 +505,7 @@ func GenerateCurlCommand(req *http.Request, bodyBytes []byte) string {
 	if req == nil || req.URL == nil {
 		return ""
 	}
-	
+
 	// Try to get body from request if not provided
 	if len(bodyBytes) == 0 && req.GetBody != nil {
 		if bodyReadCloser, err := req.GetBody(); err == nil {
