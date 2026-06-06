@@ -62,50 +62,7 @@ func TestPathTraversalAttack_ContentMatch(t *testing.T) {
 	}
 }
 
-func TestPathTraversalAttack_StatusDiff(t *testing.T) {
-	// Test status diffing (403 vs 404 baseline)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		file := r.URL.Query().Get("file")
 
-		// Baseline probing
-		if len(file) > 10 && file[:11] == "nonexistent" {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-
-		if file == "../../../../../../../../windows/win.ini" {
-			w.WriteHeader(http.StatusForbidden)
-			return
-		}
-
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer server.Close()
-
-	targetURL := server.URL + "/?file=doc.txt"
-	attack := NewPathTraversalAttack(targetURL)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	results, err := attack.Execute(ctx)
-	if err != nil {
-		t.Fatalf("Execute failed: %v", err)
-	}
-
-	found := false
-	for _, res := range results {
-		if res.Status == "vulnerable" && res.Detail != "" {
-			// Detail should mention status diff
-			found = true
-			break
-		}
-	}
-
-	if !found {
-		t.Errorf("Expected path traversal vulnerability to be found via status diff (403 vs 404)")
-	}
-}
 
 func TestPathTraversalAttack_Execute_CanceledContext(t *testing.T) {
 	module := NewPathTraversalAttack("http://example.com")

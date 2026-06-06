@@ -23,21 +23,21 @@ func TestSSTIValidator(t *testing.T) {
 	}{
 		{
 			name: "Math success",
-			body: "Result is 49",
+			body: "Result is 19749136",
 			payload: SSTIPayload{
 				Type:     SSTIMath,
-				Value:    "{{7*7}}",
-				Expected: "49",
+				Value:    "{{4444*4444}}",
+				Expected: "19749136",
 			},
 			want: true,
 		},
 		{
 			name: "Math failure (echoed)",
-			body: "Result is {{7*7}}",
+			body: "Result is {{4444*4444}}",
 			payload: SSTIPayload{
 				Type:     SSTIMath,
-				Value:    "{{7*7}}",
-				Expected: "49",
+				Value:    "{{4444*4444}}",
+				Expected: "19749136",
 			},
 			want: false,
 		},
@@ -78,8 +78,8 @@ func TestSSTI_MathReflection(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/vulnerable", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query().Get("q")
-		if strings.Contains(q, "{{7*7}}") {
-			_, _ = w.Write([]byte("Result: 49"))
+		if strings.Contains(q, "{{4444*4444}}") {
+			_, _ = w.Write([]byte("Result: 19749136"))
 			return
 		}
 		_, _ = w.Write([]byte("Hello"))
@@ -99,7 +99,7 @@ func TestSSTI_MathReflection(t *testing.T) {
 
 	found := false
 	for _, res := range results {
-		if strings.Contains(res.Detail, "math") && strings.Contains(res.Detail, "49") {
+		if strings.Contains(res.Detail, "math") && strings.Contains(res.Detail, "19749136") {
 			found = true
 		}
 	}

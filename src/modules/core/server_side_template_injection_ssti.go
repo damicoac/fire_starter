@@ -105,11 +105,11 @@ func (m *ServerSideTemplateInjectionSsti) Execute(ctx context.Context) ([]Server
 
 	var payloads []SSTIPayload
 	mathPayloads := []struct{ val, expected string }{
-		{"{{7*7}}", "49"},
-		{"${7*7}", "49"},
-		{"<%= 7*7 %>", "49"},
-		{"#{7*7}", "49"},
-		{"*{7*7}", "49"},
+		{"{{4444*4444}}", "19749136"},
+		{"${4444*4444}", "19749136"},
+		{"<%= 4444*4444 %>", "19749136"},
+		{"#{4444*4444}", "19749136"},
+		{"*{4444*4444}", "19749136"},
 	}
 	for _, p := range mathPayloads {
 		payloads = append(payloads, SSTIPayload{Type: SSTIMath, Value: p.val, Expected: p.expected})
@@ -238,6 +238,7 @@ func (m *ServerSideTemplateInjectionSsti) testVector(ctx context.Context, u *url
 		if payload.Type == SSTIMath {
 			detail += " (Result: " + payload.Expected + ")"
 		}
+		m.RecordPoC(req, nil, detail)
 		m.results = append(m.results, ServerSideTemplateInjectionSstiResult{
 			Target: m.Target,
 			Status: "vulnerable",

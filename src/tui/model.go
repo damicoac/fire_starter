@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/lipgloss/table"
 	"github.com/muesli/reflow/wordwrap"
 )
 
@@ -133,13 +134,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.kgViewport.Height = max(0, msg.Height-verticalMarginHeight)
 		}
 
-		m.logsViewport.SetContent(wordwrap.String(strings.Join(m.logs, "\n\n"), m.logsViewport.Width))
+		m.logsViewport.SetContent(wordwrap.String(strings.Join(m.logs, "\n"), m.logsViewport.Width))
 		m.kgViewport.SetContent(wordwrap.String(m.kgStateText, m.kgViewport.Width))
 
 	case LogMsg:
 		m.logs = append(m.logs, msg.Text)
 		if m.ready {
-			m.logsViewport.SetContent(wordwrap.String(strings.Join(m.logs, "\n\n"), m.logsViewport.Width))
+			m.logsViewport.SetContent(wordwrap.String(strings.Join(m.logs, "\n"), m.logsViewport.Width))
 			m.logsViewport.GotoBottom()
 		}
 
@@ -214,48 +215,103 @@ func formatKG(data []byte) (string, string) {
 	var sb strings.Builder
 	sb.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true).Render("Phase: ") + kg.CurrentPhase + "\n\n")
 
-	sb.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Bold(true).Render("Discovered IPs:") + "\n")
-	if len(kg.DiscoveredIPs) == 0 {
-		sb.WriteString("  (none)\n")
-	}
-	for _, ip := range kg.DiscoveredIPs {
-		sb.WriteString(fmt.Sprintf("  - %s (score: %d)\n", ip.Value, ip.Score))
-	}
-	sb.WriteString("\n")
+	headerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Bold(true)
+	cardStyle := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color("240")).
+		Padding(0, 1).
+		MarginBottom(1)
 
-	sb.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Bold(true).Render("Discovered URLs:") + "\n")
-	if len(kg.DiscoveredURLs) == 0 {
-		sb.WriteString("  (none)\n")
+	// IPs
+	if len(kg.DiscoveredIPs) > 0 {
+		t := table.New().
+			Border(lipgloss.HiddenBorder()).
+			Headers("IP ADDRESS", "SCORE").
+			StyleFunc(func(row, col int) lipgloss.Style {
+				if row == 0 {
+					return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Bold(true)
+				}
+				return lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
+			})
+		for _, ip := range kg.DiscoveredIPs {
+			t.Row(ip.Value, fmt.Sprintf("%d", ip.Score))
+		}
+		card := lipgloss.JoinVertical(lipgloss.Left, headerStyle.Render("Discovered IPs"), t.Render())
+		sb.WriteString(cardStyle.Render(card) + "\n")
 	}
-	for _, url := range kg.DiscoveredURLs {
-		sb.WriteString(fmt.Sprintf("  - %s\n", url.Value))
-	}
-	sb.WriteString("\n")
 
-	sb.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Bold(true).Render("Open Ports:") + "\n")
-	if len(kg.OpenPorts) == 0 {
-		sb.WriteString("  (none)\n")
+	// URLs
+	if len(kg.DiscoveredURLs) > 0 {
+		t := table.New().
+			Border(lipgloss.HiddenBorder()).
+			Headers("URL", "SCORE").
+			StyleFunc(func(row, col int) lipgloss.Style {
+				if row == 0 {
+					return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Bold(true)
+				}
+				return lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
+			})
+		for _, url := range kg.DiscoveredURLs {
+			t.Row(url.Value, fmt.Sprintf("%d", url.Score))
+		}
+		card := lipgloss.JoinVertical(lipgloss.Left, headerStyle.Render("Discovered URLs"), t.Render())
+		sb.WriteString(cardStyle.Render(card) + "\n")
 	}
-	for ip, ports := range kg.OpenPorts {
-		sb.WriteString(fmt.Sprintf("  - %s: %v\n", ip, ports))
-	}
-	sb.WriteString("\n")
 
-	sb.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Bold(true).Render("Vulnerabilities:") + "\n")
-	if len(kg.Vulnerabilities) == 0 {
-		sb.WriteString("  (none)\n")
+	// Ports
+	if len(kg.OpenPorts) > 0 {
+		t := table.New().
+			Border(lipgloss.HiddenBorder()).
+			Headers("TARGET", "OPEN PORTS").
+			StyleFunc(func(row, col int) lipgloss.Style {
+				if row == 0 {
+					return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Bold(true)
+				}
+				return lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
+			})
+		for ip, ports := range kg.OpenPorts {
+			t.Row(ip, fmt.Sprintf("%v", ports))
+		}
+		card := lipgloss.JoinVertical(lipgloss.Left, headerStyle.Render("Open Ports"), t.Render())
+		sb.WriteString(cardStyle.Render(card) + "\n")
 	}
-	for _, v := range kg.Vulnerabilities {
-		sb.WriteString(fmt.Sprintf("  - %s\n", v))
-	}
-	sb.WriteString("\n")
 
-	sb.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Bold(true).Render("Harvested Tokens:") + "\n")
-	if len(kg.HarvestedTokens) == 0 {
-		sb.WriteString("  (none)\n")
+	// Vulns
+	if len(kg.Vulnerabilities) > 0 {
+		var content string
+		for _, v := range kg.Vulnerabilities {
+			content += " • " + v + "\n"
+		}
+		card := lipgloss.JoinVertical(lipgloss.Left, headerStyle.Render("Vulnerabilities"), lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render(content))
+		sb.WriteString(cardStyle.Render(card) + "\n")
 	}
-	for _, t := range kg.HarvestedTokens {
-		sb.WriteString(fmt.Sprintf("  - %s\n", t))
+
+	// Tokens
+	if len(kg.HarvestedTokens) > 0 {
+		var content string
+		for _, t := range kg.HarvestedTokens {
+			content += " 🔑 " + t + "\n"
+		}
+		card := lipgloss.JoinVertical(lipgloss.Left, headerStyle.Render("Harvested Tokens"), lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render(content))
+		sb.WriteString(cardStyle.Render(card) + "\n")
+	}
+	
+	// Credentials
+	if len(kg.KnownCredentials) > 0 {
+		t := table.New().
+			Border(lipgloss.HiddenBorder()).
+			Headers("USERNAME", "PASSWORD").
+			StyleFunc(func(row, col int) lipgloss.Style {
+				if row == 0 {
+					return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Bold(true)
+				}
+				return lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
+			})
+		for _, cred := range kg.KnownCredentials {
+			t.Row(cred.Username, cred.Password)
+		}
+		card := lipgloss.JoinVertical(lipgloss.Left, headerStyle.Render("Known Credentials"), t.Render())
+		sb.WriteString(cardStyle.Render(card) + "\n")
 	}
 
 	return sb.String(), kg.CurrentPhase

@@ -38,10 +38,7 @@ func (v *PathValidator) Validate(resp *http.Response, body string, payload strin
 		return true, "Path traversal successful via content match (win.ini) with payload: " + payload
 	}
 
-	// Status diffing
-	if v.Baseline.statusCode != http.StatusForbidden && resp.StatusCode == http.StatusForbidden {
-		return true, fmt.Sprintf("Path traversal detected via status diff: baseline=%d, payload=%d (payload: %s)", v.Baseline.statusCode, resp.StatusCode, payload)
-	}
+	// Removed faulty 403 status diffing. A 403 means the traversal was blocked, not successful.
 
 	return false, ""
 }
@@ -221,6 +218,7 @@ func (m *PathTraversalAttack) testVector(ctx context.Context, u *url.URL, vector
 	isVulnerable, detail := validator.Validate(resp, bodyStr, payload)
 
 	if isVulnerable {
+		m.RecordPoC(req, nil, detail)
 		return &PathTraversalAttackResult{
 			Target: m.Target,
 			Status: "vulnerable",
