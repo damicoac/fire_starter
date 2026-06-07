@@ -41,18 +41,24 @@ func (m *CorsMisconfigurationAnalysis) SetThreads(count int) {
 	m.MaxThreads = count
 }
 
-var corsOrigins = []string{
-	"https://evil.com",
-	"http://evil.com",
-	"null",
-	"https://subdomain.target.com.evil.com", // Prefix bypass attempt
-}
-
 func (m *CorsMisconfigurationAnalysis) Execute(ctx context.Context) ([]CorsMisconfigurationAnalysisResult, error) {
 	m.results = make([]CorsMisconfigurationAnalysisResult, 0)
 
-	jobs := make(chan string, len(corsOrigins))
-	for _, o := range corsOrigins {
+	originsToTest := []string{
+		"https://evil.com",
+		"http://evil.com",
+		"null",
+	}
+
+	host := ExtractHostname(m.Target)
+	if host != "" {
+		originsToTest = append(originsToTest, "https://subdomain."+host+".evil.com")
+	} else {
+		originsToTest = append(originsToTest, "https://subdomain.target.com.evil.com")
+	}
+
+	jobs := make(chan string, len(originsToTest))
+	for _, o := range originsToTest {
 		jobs <- o
 	}
 	close(jobs)
@@ -82,9 +88,23 @@ func (m *CorsMisconfigurationAnalysis) Execute(ctx context.Context) ([]CorsMisco
 
 	select {
 	case <-done:
+		if len(m.results) == 0 {
+			m.results = append(m.results, CorsMisconfigurationAnalysisResult{
+				Target: m.Target,
+				Status: "safe",
+				Detail: "No CORS misconfiguration detected. All tested malicious origins were rejected.",
+			})
+		}
 		return m.results, nil
 	case <-ctx.Done():
 		<-done
+		if len(m.results) == 0 {
+			m.results = append(m.results, CorsMisconfigurationAnalysisResult{
+				Target: m.Target,
+				Status: "safe",
+				Detail: "No CORS misconfiguration detected. All tested malicious origins were rejected.",
+			})
+		}
 		return m.results, ctx.Err()
 	}
 }
