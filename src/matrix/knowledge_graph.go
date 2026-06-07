@@ -14,12 +14,6 @@ import (
 	"github.com/charmbracelet/log"
 )
 
-type TargetInfo struct {
-	Value         string   `json:"value"`
-	Score         int      `json:"score"`
-	ExecutedTools []string `json:"executed_tools"`
-}
-
 type CredentialInfo struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
@@ -39,19 +33,25 @@ type TestCase struct {
 	PoCs        []ProofOfConcept `json:"reproduction_steps,omitempty"`
 }
 
+type Target struct {
+	Value           string           `json:"value"`
+	Type            string           `json:"type"` // "ip" or "url"
+	Score           int              `json:"score"`
+	ExecutedTools   []string         `json:"executed_tools"`
+	OpenPorts       []int            `json:"open_ports,omitempty"`
+	Tokens          []string         `json:"tokens,omitempty"`
+	Vulnerabilities []string         `json:"vulnerabilities,omitempty"`
+	Credentials     []CredentialInfo `json:"credentials,omitempty"`
+	TestCases       []TestCase       `json:"test_cases,omitempty"`
+}
+
 type KnowledgeGraph struct {
-	mu              sync.RWMutex
-	BaseDomain      string           `json:"base_domain"`
-	DiscoveredIPs   []TargetInfo     `json:"discovered_ips"`
-	OpenPorts       map[string][]int `json:"open_ports"` // IP -> ports
-	DiscoveredURLs   []TargetInfo      `json:"discovered_urls"`
-	HarvestedTokens  []string          `json:"harvested_tokens"`
-	Vulnerabilities  []string          `json:"vulnerabilities"`
-	KnownCredentials []CredentialInfo  `json:"known_credentials"`
-	TestCases        []TestCase        `json:"test_cases"`
-	Context          map[string]any    `json:"context"`
-	CurrentPhase     Phase             `json:"current_phase"`
-	OnUpdate         func(*KnowledgeGraph) `json:"-"`
+	mu           sync.RWMutex
+	BaseDomain   string             `json:"base_domain"`
+	Targets      map[string]*Target `json:"targets"`
+	Context      map[string]any     `json:"context"`
+	CurrentPhase Phase              `json:"current_phase"`
+	OnUpdate     func(*KnowledgeGraph) `json:"-"`
 }
 
 type KnowledgeSnapshot struct {
@@ -65,15 +65,9 @@ type KnowledgeSnapshot struct {
 
 func NewKnowledgeGraph() *KnowledgeGraph {
 	return &KnowledgeGraph{
-		DiscoveredIPs:   make([]TargetInfo, 0),
-		OpenPorts:       make(map[string][]int),
-		DiscoveredURLs:   make([]TargetInfo, 0),
-		HarvestedTokens:  make([]string, 0),
-		Vulnerabilities:  make([]string, 0),
-		KnownCredentials: make([]CredentialInfo, 0),
-		TestCases:        make([]TestCase, 0),
-		Context:          make(map[string]any),
-		CurrentPhase:     PhaseReconnaissance,
+		Targets:      make(map[string]*Target),
+		Context:      make(map[string]any),
+		CurrentPhase: PhaseReconnaissance,
 	}
 }
 
@@ -81,6 +75,23 @@ func (kg *KnowledgeGraph) triggerUpdate() {
 	if kg.OnUpdate != nil {
 		go kg.OnUpdate(kg)
 	}
+}
+
+func (kg *KnowledgeGraph) getOrCreateTarget(value string, targetType string) *Target {
+	if kg.Targets[value] == nil {
+		kg.Targets[value] = &Target{
+			Value:           value,
+			Type:            targetType,
+			Score:           0,
+			ExecutedTools:   make([]string, 0),
+			OpenPorts:       make([]int, 0),
+			Tokens:          make([]string, 0),
+			Vulnerabilities: make([]string, 0),
+			Credentials:     make([]CredentialInfo, 0),
+			TestCases:       make([]TestCase, 0),
+		}
+	}
+	return kg.Targets[value]
 }
 
 type ExtractedIntelligence struct {
@@ -98,7 +109,6 @@ type ExtractedIntelligence struct {
 
 func (kg *KnowledgeGraph) ExtractIntelligence(ctx context.Context, model fantasy.LanguageModel, toolName, target string, payload map[string]any, resultData string) (string, error) {
 	if model == nil {
-		// Fallback for tests or missing model
 		kg.regexExtract(toolName, target, payload, resultData)
 		return "Regex extraction complete.", nil
 	}
@@ -175,10 +185,10 @@ Output:
 		kg.AddPort(p.IP, p.Port)
 	}
 	for _, t := range extracted.HarvestedTokens {
-		kg.AddToken(t)
+		kg.AddToken(target, t)
 	}
 	for _, v := range extracted.Vulnerabilities {
-		kg.AddVulnerability(v)
+		kg.AddVulnerability(target, v)
 		
 		payloadBytes, _ := json.Marshal(payload)
 		kg.AddTestCase(TestCase{
@@ -191,7 +201,7 @@ Output:
 		})
 	}
 	for _, c := range extracted.Credentials {
-		kg.AddCredential(c.Username, c.Password)
+		kg.AddCredential(target, c.Username, c.Password)
 	}
 
 	return extracted.Summary, nil
@@ -225,7 +235,7 @@ func (kg *KnowledgeGraph) regexExtract(toolName, target string, payload map[stri
 					if _, ok := signalKeys[key]; ok {
 						if strings.Contains(childText, "vulnerab") || strings.Contains(childText, "exploit") || strings.Contains(childText, "confirmed") {
 							vulnDesc := "Vulnerability signal found: " + fmt.Sprint(child)
-							kg.AddVulnerability(vulnDesc)
+							kg.AddVulnerability(target, vulnDesc)
 							
 							payloadBytes, _ := json.Marshal(payload)
 							truncatedResult := resultData
@@ -245,16 +255,16 @@ func (kg *KnowledgeGraph) regexExtract(toolName, target string, payload map[stri
 					if key == "cookies" {
 						switch cvals := child.(type) {
 						case string:
-							kg.AddToken(cvals)
+							kg.AddToken(target, cvals)
 						case []any:
 							for _, c := range cvals {
 								if cStr, ok := c.(string); ok {
-									kg.AddToken(cStr)
+									kg.AddToken(target, cStr)
 								}
 							}
 						case []string:
 							for _, c := range cvals {
-								kg.AddToken(c)
+								kg.AddToken(target, c)
 							}
 						}
 					}
@@ -284,7 +294,7 @@ func (kg *KnowledgeGraph) regexExtract(toolName, target string, payload map[stri
 
 	if strings.Contains(strings.ToLower(resultData), "vulnerability") || strings.Contains(strings.ToLower(resultData), "exploited") {
 		vulnDesc := "Generic Vulnerability Detected"
-		kg.AddVulnerability(vulnDesc)
+		kg.AddVulnerability(target, vulnDesc)
 		
 		payloadBytes, _ := json.Marshal(payload)
 		truncatedResult := resultData
@@ -315,37 +325,27 @@ func (kg *KnowledgeGraph) AddIP(ip string) {
 	defer kg.triggerUpdate()
 	kg.mu.Lock()
 	defer kg.mu.Unlock()
-	for i, existing := range kg.DiscoveredIPs {
-		if existing.Value == ip {
-			kg.DiscoveredIPs[i].Score++
-			return
-		}
-	}
-	kg.DiscoveredIPs = append(kg.DiscoveredIPs, TargetInfo{Value: ip, Score: 1, ExecutedTools: make([]string, 0)})
-	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=discovered_ips value=%s score=1", ip)
+	
+	t := kg.getOrCreateTarget(ip, "ip")
+	t.Score++
+	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=discovered_ips value=%s score=%d", ip, t.Score)
 }
 
-func (kg *KnowledgeGraph) AddPort(ip string, port int) {
+func (kg *KnowledgeGraph) AddPort(targetValue string, port int) {
 	defer kg.triggerUpdate()
 	kg.mu.Lock()
 	defer kg.mu.Unlock()
-	if _, ok := kg.OpenPorts[ip]; !ok {
-		kg.OpenPorts[ip] = make([]int, 0)
-	}
-	for _, p := range kg.OpenPorts[ip] {
+	
+	t := kg.getOrCreateTarget(targetValue, "ip") // ports imply an IP mostly, or URL
+	
+	for _, p := range t.OpenPorts {
 		if p == port {
 			return
 		}
 	}
-	kg.OpenPorts[ip] = append(kg.OpenPorts[ip], port)
-	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=open_ports ip=%s port=%d", ip, port)
-
-	for i, existing := range kg.DiscoveredIPs {
-		if existing.Value == ip {
-			kg.DiscoveredIPs[i].Score += 10
-			break
-		}
-	}
+	t.OpenPorts = append(t.OpenPorts, port)
+	t.Score += 10
+	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=open_ports target=%s port=%d", targetValue, port)
 }
 
 func (kg *KnowledgeGraph) AddURL(u string) {
@@ -364,14 +364,13 @@ func (kg *KnowledgeGraph) AddURL(u string) {
 	if kg.BaseDomain != "" {
 		parsed, err := url.Parse("https://" + u)
 		if err != nil {
-			return // Reject unparseable URLs
+			return
 		}
 
 		if parsed.Hostname() != "" {
-			// Must match exact base domain or be a subdomain (e.g. .updater.com)
 			host := parsed.Hostname()
 			if host != kg.BaseDomain && !strings.HasSuffix(host, "."+kg.BaseDomain) {
-				return // Reject URL outside of BaseDomain
+				return
 			}
 
 			if ips, err := net.LookupIP(host); err == nil && len(ips) > 0 {
@@ -383,7 +382,7 @@ func (kg *KnowledgeGraph) AddURL(u string) {
 					}
 				}
 				if allPlaceholder {
-					return // Reject URLs that resolve exclusively to placeholder IPs
+					return
 				}
 			}
 		}
@@ -395,7 +394,7 @@ func (kg *KnowledgeGraph) AddURL(u string) {
 		   strings.HasSuffix(path, ".gif") || strings.HasSuffix(path, ".woff") || 
 		   strings.HasSuffix(path, ".woff2") || strings.HasSuffix(path, ".ico") ||
 		   strings.HasSuffix(path, ".ttf") || strings.HasSuffix(path, ".eot") {
-			return // Reject static assets
+			return
 		}
 	}
 
@@ -403,69 +402,78 @@ func (kg *KnowledgeGraph) AddURL(u string) {
 	if strings.Contains(u, "?") || strings.Contains(u, "=") {
 		score += 5
 	}
-	for i, existing := range kg.DiscoveredURLs {
-		if existing.Value == u {
-			kg.DiscoveredURLs[i].Score += score
-			return
-		}
-	}
-	kg.DiscoveredURLs = append(kg.DiscoveredURLs, TargetInfo{Value: u, Score: score, ExecutedTools: make([]string, 0)})
-	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=discovered_urls value=%s score=%d", u, score)
+	
+	t := kg.getOrCreateTarget(u, "url")
+	t.Score += score
+	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=discovered_urls value=%s score=%d", u, t.Score)
 }
 
-func (kg *KnowledgeGraph) AddVulnerability(vuln string) {
+func (kg *KnowledgeGraph) AddVulnerability(targetValue string, vuln string) {
 	defer kg.triggerUpdate()
 	kg.mu.Lock()
 	defer kg.mu.Unlock()
-	for _, existing := range kg.Vulnerabilities {
+	
+	t := kg.getOrCreateTarget(targetValue, "url") // default to url, though could be IP
+	for _, existing := range t.Vulnerabilities {
 		if existing == vuln {
 			return
 		}
 	}
-	kg.Vulnerabilities = append(kg.Vulnerabilities, vuln)
-	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=vulnerabilities value=%s", vuln)
+	t.Vulnerabilities = append(t.Vulnerabilities, vuln)
+	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=vulnerabilities target=%s value=%s", targetValue, vuln)
 }
 
 func (kg *KnowledgeGraph) AddTestCase(tc TestCase) {
 	defer kg.triggerUpdate()
 	kg.mu.Lock()
 	defer kg.mu.Unlock()
-	kg.TestCases = append(kg.TestCases, tc)
-	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=test_cases tool=%s target=%s", tc.ToolName, tc.Target)
+	
+	t := kg.getOrCreateTarget(tc.Target, "url")
+	t.TestCases = append(t.TestCases, tc)
+	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=test_cases target=%s tool=%s", tc.Target, tc.ToolName)
 }
 
-func (kg *KnowledgeGraph) AddToken(token string) {
+func (kg *KnowledgeGraph) AddToken(targetValue string, token string) {
 	defer kg.triggerUpdate()
 	kg.mu.Lock()
 	defer kg.mu.Unlock()
-	for _, existing := range kg.HarvestedTokens {
+	
+	t := kg.getOrCreateTarget(targetValue, "url")
+	for _, existing := range t.Tokens {
 		if existing == token {
 			return
 		}
 	}
-	kg.HarvestedTokens = append(kg.HarvestedTokens, token)
-	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=harvested_tokens token_len=%d", len(token))
+	t.Tokens = append(t.Tokens, token)
+	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=harvested_tokens target=%s token_len=%d", targetValue, len(token))
 }
 
-func (kg *KnowledgeGraph) AddCredential(username string, password string) {
+func (kg *KnowledgeGraph) AddCredential(targetValue string, username string, password string) {
 	defer kg.triggerUpdate()
 	kg.mu.Lock()
 	defer kg.mu.Unlock()
-	for _, existing := range kg.KnownCredentials {
+	
+	// Create or get the target for credential storage. 
+	// If it's a completely generic credential (e.g. baseline), we could use a dummy target.
+	// But usually they belong to something.
+	t := kg.getOrCreateTarget(targetValue, "url")
+	for _, existing := range t.Credentials {
 		if existing.Username == username && existing.Password == password {
 			return
 		}
 	}
-	kg.KnownCredentials = append(kg.KnownCredentials, CredentialInfo{Username: username, Password: password})
-	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=known_credentials username=%s", username)
+	t.Credentials = append(t.Credentials, CredentialInfo{Username: username, Password: password})
+	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=known_credentials target=%s username=%s", targetValue, username)
 }
 
 func (kg *KnowledgeGraph) GetCredentials() []CredentialInfo {
 	kg.mu.RLock()
 	defer kg.mu.RUnlock()
 
-	credentials := make([]CredentialInfo, len(kg.KnownCredentials))
-	copy(credentials, kg.KnownCredentials)
+	var credentials []CredentialInfo
+	for _, t := range kg.Targets {
+		credentials = append(credentials, t.Credentials...)
+	}
 	return credentials
 }
 
@@ -506,8 +514,10 @@ func (kg *KnowledgeGraph) GetTokens() []string {
 	kg.mu.RLock()
 	defer kg.mu.RUnlock()
 
-	tokens := make([]string, len(kg.HarvestedTokens))
-	copy(tokens, kg.HarvestedTokens)
+	var tokens []string
+	for _, t := range kg.Targets {
+		tokens = append(tokens, t.Tokens...)
+	}
 	return tokens
 }
 
@@ -516,46 +526,47 @@ func (kg *KnowledgeGraph) MarkToolExecuted(target string, toolName string) {
 	kg.mu.Lock()
 	defer kg.mu.Unlock()
 
-	markList := func(targets []TargetInfo) {
-		for i := range targets {
-			if targets[i].Value == target {
-				found := false
-				for _, t := range targets[i].ExecutedTools {
-					if t == toolName {
-						found = true
-						break
-					}
-				}
-				if !found {
-					if targets[i].ExecutedTools == nil {
-						targets[i].ExecutedTools = make([]string, 0)
-					}
-					targets[i].ExecutedTools = append(targets[i].ExecutedTools, toolName)
-					log.Infof("KNOWLEDGE_GRAPH_UPDATE field=executed_tools target=%s tool=%s", target, toolName)
-				}
-			}
+	t := kg.getOrCreateTarget(target, "url") // Assume url as generic type or leave it
+	found := false
+	for _, tool := range t.ExecutedTools {
+		if tool == toolName {
+			found = true
+			break
 		}
 	}
-
-	markList(kg.DiscoveredIPs)
-	markList(kg.DiscoveredURLs)
+	if !found {
+		t.ExecutedTools = append(t.ExecutedTools, toolName)
+		log.Infof("KNOWLEDGE_GRAPH_UPDATE field=executed_tools target=%s tool=%s", target, toolName)
+	}
 }
 
 func (kg *KnowledgeGraph) Snapshot() KnowledgeSnapshot {
 	kg.mu.RLock()
 	defer kg.mu.RUnlock()
 
-	openPortCount := 0
-	for _, ports := range kg.OpenPorts {
-		openPortCount += len(ports)
+	ipCount := 0
+	urlCount := 0
+	portCount := 0
+	tokenCount := 0
+	vulnCount := 0
+
+	for _, t := range kg.Targets {
+		if t.Type == "ip" {
+			ipCount++
+		} else {
+			urlCount++
+		}
+		portCount += len(t.OpenPorts)
+		tokenCount += len(t.Tokens)
+		vulnCount += len(t.Vulnerabilities)
 	}
 
 	return KnowledgeSnapshot{
-		DiscoveredIPCount:   len(kg.DiscoveredIPs),
-		DiscoveredURLCount:  len(kg.DiscoveredURLs),
-		OpenPortCount:       openPortCount,
-		HarvestedTokenCount: len(kg.HarvestedTokens),
-		VulnerabilityCount:  len(kg.Vulnerabilities),
+		DiscoveredIPCount:   ipCount,
+		DiscoveredURLCount:  urlCount,
+		OpenPortCount:       portCount,
+		HarvestedTokenCount: tokenCount,
+		VulnerabilityCount:  vulnCount,
 		CurrentPhase:        kg.CurrentPhase,
 	}
 }

@@ -501,7 +501,7 @@ func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*m
 		if strings.TrimSpace(cred.Username) == "" {
 			continue
 		}
-		kg.AddCredential(strings.TrimSpace(cred.Username), cred.Password)
+		kg.AddCredential(target, strings.TrimSpace(cred.Username), cred.Password)
 	}
 	kg.SetContextValue("ip_whitelist", cfg.IPWhitelist)
 	kg.SetContextValue("rules_of_engagement", cfg.RulesOfEngagement)
@@ -813,17 +813,39 @@ IP whitelist policy:
 				var resBytes []byte
 				switch qType {
 				case "ips":
-					resBytes, _ = json.Marshal(kg.DiscoveredIPs)
+					var ips []string
+					for _, t := range kg.Targets {
+						if t.Type == "ip" {
+							ips = append(ips, t.Value)
+						}
+					}
+					resBytes, _ = json.Marshal(ips)
 				case "urls":
-					resBytes, _ = json.Marshal(kg.DiscoveredURLs)
+					var urls []string
+					for _, t := range kg.Targets {
+						if t.Type == "url" {
+							urls = append(urls, t.Value)
+						}
+					}
+					resBytes, _ = json.Marshal(urls)
 				case "ports":
-					resBytes, _ = json.Marshal(kg.OpenPorts)
+					ports := make(map[string][]int)
+					for _, t := range kg.Targets {
+						if len(t.OpenPorts) > 0 {
+							ports[t.Value] = t.OpenPorts
+						}
+					}
+					resBytes, _ = json.Marshal(ports)
 				case "credentials":
-					resBytes, _ = json.Marshal(kg.KnownCredentials)
+					resBytes, _ = json.Marshal(kg.GetCredentials())
 				case "vulnerabilities":
-					resBytes, _ = json.Marshal(kg.Vulnerabilities)
+					var vulns []string
+					for _, t := range kg.Targets {
+						vulns = append(vulns, t.Vulnerabilities...)
+					}
+					resBytes, _ = json.Marshal(vulns)
 				case "tokens":
-					resBytes, _ = json.Marshal(kg.HarvestedTokens)
+					resBytes, _ = json.Marshal(kg.GetTokens())
 				default:
 					rawBytes, _ := kg.ToJSON()
 					var data map[string]any
