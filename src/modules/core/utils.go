@@ -34,7 +34,7 @@ func NewHTTPClient(timeout time.Duration) *http.Client {
 // EnsureHTTPPrefix ensures the target URL starts with http:// or https://
 func EnsureHTTPPrefix(target string) string {
 	if !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
-		return "http://" + target
+		return "https://" + target
 	}
 	return target
 }
