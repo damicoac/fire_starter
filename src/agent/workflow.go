@@ -75,7 +75,7 @@ func getApplicableTargets(t matrix.ToolDefinition, kg *matrix.KnowledgeGraph, ba
 			hasIP = true
 		}
 	}
-	
+
 	var targets []string
 	if hasURL {
 		for _, u := range state.DiscoveredURLs {
@@ -462,7 +462,7 @@ You currently only have access to tools for your current phase. When you have ex
 
 Do not make assumptions. Turn theories into testable hypotheses, then validate them by calling available tools and using tool output as evidence for your next step. If evidence is missing or stale, call another tool instead of guessing.
 
-When you have reached your goals or finished all phases, you MUST call the 'submit' tool with your final report. Your report should thoroughly summarize the findings from the engagement and provide the security engineer with everything they need to do their job. The final report will automatically include the exact reproduction steps for the vulnerabilities based on your execution history, so you do not need to retrieve them.
+When you have reached your goals or finished all phases, you MUST call the 'submit' tool with your final report. Your report should thoroughly summarize the findings from the engagement and provide the security engineer with everything the need to do follow on work. The final report will automatically include the exact reproduction steps for the vulnerabilities based on your execution history, so you do not need to retrieve them.
 
 CRITICAL: Do not execute the same tool against the same target more than once. The Knowledge Graph tracks 'executed_tools' for each discovered target. Always check a target's executed tools before scanning to avoid infinite loops.
 
@@ -501,7 +501,7 @@ IP whitelist policy:
 		currentPhase := kg.GetCurrentPhase()
 		snapshot := kg.Snapshot()
 		log.Infof("RED_TEAM_LOOP iteration=%d/%d %s", iter+1, cfg.MaxIters, summarizeSnapshot(snapshot))
-		
+
 		needsPhase := make(map[matrix.Phase]bool)
 		if kgBytes, err := kg.ToJSON(); err == nil {
 			var state struct {
@@ -561,7 +561,7 @@ IP whitelist policy:
 					executedTargets = completedByPhase[toolStage][t.Name]
 				}
 				exhausted := isToolExhausted(t, kg, target, executedTargets)
-				
+
 				st := scoreTool(t, currentPhase, snapshot, exhausted)
 				if needsPhase[toolStage] && toolStage != currentPhase && toolStage != matrix.PhaseReconnaissance {
 					st.Score += 8
@@ -599,16 +599,16 @@ IP whitelist policy:
 				)
 				formattedChoices = append(formattedChoices, choiceStr)
 			}
-			
+
 			// Show prompt
 			chosenIndex := onPrompt(formattedChoices)
 			if chosenIndex >= 0 && chosenIndex < len(scored) {
 				chosen := scored[chosenIndex]
 				chosenCandidate = &chosen
-				
+
 				// Force model to use chosen tool
 				history = append(history, fantasy.NewUserMessage(fmt.Sprintf(
-					"The user has explicitly selected to execute the tool '%s'. You MUST call this tool next.", 
+					"The user has explicitly selected to execute the tool '%s'. You MUST call this tool next.",
 					chosen.Definition.Name,
 				)))
 			}
@@ -751,7 +751,7 @@ IP whitelist policy:
 					log.Infof("Saved report to: %s", reportPath)
 					finalReport = fmt.Sprintf("Report successfully saved to: %s", reportPath)
 				}
-				
+
 				return finalReport, nil
 			}
 
@@ -873,7 +873,7 @@ IP whitelist policy:
 					if completedByPhase[phase][tc.ToolName] == nil {
 						completedByPhase[phase][tc.ToolName] = make(map[string]bool)
 					}
-					
+
 					targetUsed := target
 					if tStr, ok := payload["target"].(string); ok && strings.TrimSpace(tStr) != "" {
 						targetUsed = strings.TrimSpace(tStr)
@@ -884,7 +884,7 @@ IP whitelist policy:
 					}
 					completedByPhase[phase][tc.ToolName][normalizeTarget(targetUsed)] = true
 				}
-				
+
 				if t, ok := payload["target"].(string); ok && strings.TrimSpace(t) != "" {
 					kg.MarkToolExecuted(strings.TrimSpace(t), tc.ToolName)
 				}
