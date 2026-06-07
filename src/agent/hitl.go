@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"sort"
+	"strings"
 
 	"charm.land/fantasy"
 	tea "github.com/charmbracelet/bubbletea"
@@ -117,33 +118,104 @@ func BuildHITLModel(ctx context.Context, target string, cfg Config) (*tea.Progra
 	}
 
 	recommendFn := func(target string) tea.Msg {
-		snapshot := kg.Snapshot()
-
-		scored := make([]scoredTool, 0)
+		kgJSON, _ := kg.ToJSON()
+		var toolDescs []string
 		for _, t := range executor.Tools() {
-			exhausted := false // In HITL, we leave tracking to the user
-			st := scoreTool(t, snapshot.CurrentPhase, snapshot, exhausted)
-			scored = append(scored, st)
+			toolDescs = append(toolDescs, fmt.Sprintf("- %s: %s", t.Name, t.Description))
 		}
 
-		sort.SliceStable(scored, func(i, j int) bool {
-			if scored[i].Score == scored[j].Score {
-				return scored[i].Definition.Identifier < scored[j].Definition.Identifier
-			}
-			return scored[i].Score > scored[j].Score
+		prompt := fmt.Sprintf(`You are an intelligent security testing agent. Based on the following Knowledge Graph state, recommend up to 5 security testing modules from the available tools to run next against the target '%s'.
+
+Knowledge Graph:
+%s
+
+Available Tools:
+%s
+
+You MUST call the 'submit_recommendations' tool with your top 5 recommendations. Provide a reason for each.`, target, string(kgJSON), strings.Join(toolDescs, "\n"))
+
+		activeTools := []fantasy.Tool{
+			fantasy.FunctionTool{
+				Name:        "submit_recommendations",
+				Description: "Submit recommended tools to run next.",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"recommendations": map[string]any{
+							"type": "array",
+							"items": map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"tool_name": map[string]any{"type": "string"},
+									"reason":    map[string]any{"type": "string"},
+								},
+								"required": []string{"tool_name", "reason"},
+							},
+						},
+					},
+					"required": []string{"recommendations"},
+				},
+			},
+		}
+
+		resp, err := llmModel.Generate(ctx, fantasy.Call{
+			Prompt: []fantasy.Message{
+				fantasy.NewUserMessage(prompt),
+			},
+			Tools: activeTools,
 		})
 
 		var recs []tui.Recommendation
-		numChoices := len(scored)
-		if numChoices > 5 {
-			numChoices = 5
+		if err == nil {
+			for _, tc := range resp.Content.ToolCalls() {
+				if tc.ToolName == "submit_recommendations" {
+					var args map[string]any
+					if err := json.Unmarshal([]byte(tc.Input), &args); err == nil {
+						if recList, ok := args["recommendations"].([]any); ok {
+							for _, r := range recList {
+								if rMap, ok := r.(map[string]any); ok {
+									name, _ := rMap["tool_name"].(string)
+									reason, _ := rMap["reason"].(string)
+									if name != "" {
+										recs = append(recs, tui.Recommendation{
+											Name:        name,
+											Description: fmt.Sprintf("Use Case: %s", reason),
+										})
+									}
+								}
+							}
+						}
+					}
+				}
+			}
 		}
-		for i := 0; i < numChoices; i++ {
-			c := scored[i]
-			recs = append(recs, tui.Recommendation{
-				Name:        c.Definition.Name,
-				Description: fmt.Sprintf("Score: %d\n\n%s", c.Score, c.Definition.Description),
+
+		if len(recs) == 0 {
+			snapshot := kg.Snapshot()
+			scored := make([]scoredTool, 0)
+			for _, t := range executor.Tools() {
+				st := scoreTool(t, snapshot.CurrentPhase, snapshot, false)
+				scored = append(scored, st)
+			}
+
+			sort.SliceStable(scored, func(i, j int) bool {
+				if scored[i].Score == scored[j].Score {
+					return scored[i].Definition.Identifier < scored[j].Definition.Identifier
+				}
+				return scored[i].Score > scored[j].Score
 			})
+
+			numChoices := len(scored)
+			if numChoices > 5 {
+				numChoices = 5
+			}
+			for i := 0; i < numChoices; i++ {
+				c := scored[i]
+				recs = append(recs, tui.Recommendation{
+					Name:        c.Definition.Name,
+					Description: fmt.Sprintf("Score: %d\n\n%s", c.Score, c.Definition.Description),
+				})
+			}
 		}
 
 		return tui.RecommendationsMsg{Recommendations: recs}

@@ -164,9 +164,13 @@ func buildKGNodes(targets []KGTarget) []KGNode {
 			color = lipgloss.Color("46") // Green
 		}
 		
-		exp := "▶"
-		if t.Expanded {
-			exp = "▼"
+		hasChildren := len(t.OpenPorts) > 0 || len(t.Vulnerabilities) > 0 || len(t.Tokens) > 0 || len(t.Credentials) > 0
+		exp := " "
+		if hasChildren {
+			exp = "▶"
+			if t.Expanded {
+				exp = "▼"
+			}
 		}
 		
 		nodes = append(nodes, KGNode{
