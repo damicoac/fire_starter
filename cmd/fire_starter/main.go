@@ -12,7 +12,6 @@ import (
 	"fire_starter/src/tui"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/log"
-	"io"
 )
 
 func main() {
@@ -25,7 +24,6 @@ func main() {
 	baseURL := flag.String("base-url", "", "Custom base URL for the provider")
 	maxIters := flag.Int("max-iters", 0, "Maximum execution loop iterations")
 	verbose := flag.Bool("verbose", false, "Enable verbose logging")
-	humanLoop := flag.Bool("human-loop", false, "Enable interactive human-in-the-loop mode")
 
 	flag.Parse()
 
@@ -53,9 +51,6 @@ func main() {
 	if *verbose {
 		cfg.Verbose = true
 	}
-	if *humanLoop {
-		cfg.HumanLoop = true
-	}
 
 	if cfg.Verbose {
 		log.SetLevel(log.DebugLevel)
@@ -65,55 +60,32 @@ func main() {
 		log.Fatal("Usage: fire_starter -target <ip_or_url> or set target in -config")
 	}
 
-	if cfg.HumanLoop {
-		p, err := agent.BuildHITLModel(context.Background(), cfg.Target, cfg)
+	m := tui.InitialModel()
+	p := tea.NewProgram(m, tea.WithAltScreen())
+
+	log.SetOutput(tui.NewProgramWriter(p))
+
+	go func() {
+		log.Infof("Starting Fire Starter Agent. Target: %s, Provider: %s, Model: %s", cfg.Target, cfg.Provider, cfg.Model)
+
+		onKGUpdate := func(kg *matrix.KnowledgeGraph) {
+			b, err := kg.ToJSON()
+			if err == nil {
+				p.Send(tui.KGUpdateMsg{Data: b})
+			}
+		}
+
+		result, err := agent.RunAgent(context.Background(), cfg.Target, cfg, onKGUpdate)
 		if err != nil {
-			log.Fatalf("Failed to initialize HITL mode: %v", err)
+			log.Errorf("Analysis failed: %v", err)
+			p.Send(tui.AgentFinishedMsg{Report: fmt.Sprintf("Error: %v", err)})
+			return
 		}
-		
-		log.SetOutput(io.Discard)
-		
-		if _, err := p.Run(); err != nil {
-			fmt.Printf("Alas, there's been an error: %v", err)
-			os.Exit(1)
-		}
-	} else {
-		m := tui.InitialModel()
-		p := tea.NewProgram(m, tea.WithAltScreen())
+		p.Send(tui.AgentFinishedMsg{Report: result})
+	}()
 
-		log.SetOutput(tui.NewProgramWriter(p))
-
-		go func() {
-			log.Infof("Starting Fire Starter Agent. Target: %s, Provider: %s, Model: %s", cfg.Target, cfg.Provider, cfg.Model)
-
-			onKGUpdate := func(kg *matrix.KnowledgeGraph) {
-				b, err := kg.ToJSON()
-				if err == nil {
-					p.Send(tui.KGUpdateMsg{Data: b})
-				}
-			}
-
-			onPrompt := func(choices []string) int {
-				responseCh := make(chan int)
-				p.Send(tui.PromptMsg{
-					Choices:    choices,
-					ResponseCh: responseCh,
-				})
-				return <-responseCh
-			}
-
-			result, err := agent.RunAgent(context.Background(), cfg.Target, cfg, onKGUpdate, onPrompt)
-			if err != nil {
-				log.Errorf("Analysis failed: %v", err)
-				p.Send(tui.AgentFinishedMsg{Report: fmt.Sprintf("Error: %v", err)})
-				return
-			}
-			p.Send(tui.AgentFinishedMsg{Report: result})
-		}()
-
-		if _, err := p.Run(); err != nil {
-			fmt.Printf("Alas, there's been an error: %v", err)
-			os.Exit(1)
-		}
+	if _, err := p.Run(); err != nil {
+		fmt.Printf("Alas, there's been an error: %v", err)
+		os.Exit(1)
 	}
 }

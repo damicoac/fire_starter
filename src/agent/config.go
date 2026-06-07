@@ -18,7 +18,6 @@ type Config struct {
 	BaseURL           string       `json:"base_url"`
 	MaxIters          int          `json:"max_iters"`
 	Verbose           bool         `json:"verbose"`
-	HumanLoop         bool         `json:"human_loop"`
 	IPWhitelist       []string     `json:"ip_whitelist"`
 	RulesOfEngagement string       `json:"rules_of_engagement"`
 	Credentials       []Credential `json:"credentials"`
