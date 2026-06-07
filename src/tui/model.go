@@ -38,10 +38,7 @@ type KGUpdateMsg struct {
 	Data []byte
 }
 
-type PromptMsg struct {
-	Choices    []string
-	ResponseCh chan int
-}
+
 
 type KGTarget struct {
 	Value           string
@@ -82,10 +79,7 @@ type Model struct {
 	finalReport      string
 	width            int
 	height           int
-	prompting        bool
-	choices          []string
-	cursor           int
-	responseCh       chan int
+
 	activePane       int // 0 = logs, 1 = sidebar
 }
 
@@ -281,37 +275,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
-			if m.prompting {
-				m.responseCh <- -1
-			}
 			return m, tea.Quit
 		case "tab":
 			m.activePane = (m.activePane + 1) % 2
 			m.updateKGViewports()
 		case "up", "k":
-			if !m.prompting && m.activePane == 1 {
+			if m.activePane == 1 {
 				if m.kgTreeCursor > 0 {
 					m.kgTreeCursor--
 					m.updateKGViewports()
 				}
-			} else if m.prompting && m.cursor > 0 {
-				m.cursor--
-			} else if !m.prompting && m.activePane == 0 {
+			} else if m.activePane == 0 {
 				m.logsViewport.LineUp(1)
 			}
 		case "down", "j":
-			if !m.prompting && m.activePane == 1 {
+			if m.activePane == 1 {
 				if m.kgTreeCursor < len(m.kgNodes)-1 {
 					m.kgTreeCursor++
 					m.updateKGViewports()
 				}
-			} else if m.prompting && m.cursor < len(m.choices)-1 {
-				m.cursor++
-			} else if !m.prompting && m.activePane == 0 {
+			} else if m.activePane == 0 {
 				m.logsViewport.LineDown(1)
 			}
 		case "enter", " ":
-			if !m.prompting && m.activePane == 1 {
+			if m.activePane == 1 {
 				if len(m.kgNodes) > 0 && m.kgTreeCursor < len(m.kgNodes) {
 					if m.kgNodes[m.kgTreeCursor].IsTarget {
 						idx := m.kgNodes[m.kgTreeCursor].TargetIndex
@@ -320,9 +307,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.updateKGViewports()
 					}
 				}
-			} else if m.prompting && msg.String() == "enter" {
-				m.prompting = false
-				m.responseCh <- m.cursor
 			}
 		}
 
@@ -380,11 +364,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.finished = true
 		m.finalReport = msg.Report
 
-	case PromptMsg:
-		m.prompting = true
-		m.choices = msg.Choices
-		m.cursor = 0
-		m.responseCh = msg.ResponseCh
+
 
 	case spinner.TickMsg:
 		if !m.finished {
@@ -401,11 +381,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "up", "down", "k", "j":
 				// Skip passing navigation keys to viewports, we handle them manually
 			default:
-				if !m.prompting && m.activePane == 0 {
+				if m.activePane == 0 {
 					m.logsViewport, cmd = m.logsViewport.Update(msg)
 					cmds = append(cmds, cmd)
 				}
-				if !m.prompting && m.activePane == 1 {
+				if m.activePane == 1 {
 					m.kgTreeViewport, cmd = m.kgTreeViewport.Update(msg)
 					cmds = append(cmds, cmd)
 					m.kgDetailViewport, cmd = m.kgDetailViewport.Update(msg)
@@ -497,34 +477,7 @@ func (m Model) View() string {
 
 	logsContent := m.logsViewport.View()
 	
-	if m.prompting {
-		var b strings.Builder
-		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true).Render("Select next action:"))
-		b.WriteString("\n\n")
-		for i, choice := range m.choices {
-			cursor := "  " // no cursor
-			style := lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
-			if m.cursor == i {
-				cursor = "> " // cursor!
-				style = lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true)
-			}
-			b.WriteString(cursor + style.Render(choice) + "\n")
-		}
-		
-		promptBox := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("205")).
-			Padding(1, 2).
-			Render(b.String())
 
-		logsContent = lipgloss.Place(
-			m.logsViewport.Width,
-			m.logsViewport.Height,
-			lipgloss.Center,
-			lipgloss.Center,
-			promptBox,
-		)
-	}
 
 	if m.finished && m.finalReport != "" {
 		logsContent = m.logsViewport.View() + "\n\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Render("--- Final Report ---\n"+m.finalReport)

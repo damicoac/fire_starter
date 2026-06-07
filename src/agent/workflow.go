@@ -447,7 +447,7 @@ func isPayloadAllowedByIPWhitelist(payload map[string]any, allowlist map[string]
 	return true
 }
 
-func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*matrix.KnowledgeGraph), onPrompt func(choices []string) int) (string, error) {
+func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*matrix.KnowledgeGraph)) (string, error) {
 	model, err := initializeModel(ctx, cfg)
 	if err != nil {
 		return "", err
@@ -626,57 +626,17 @@ IP whitelist policy:
 			return scored[i].Score > scored[j].Score
 		})
 
-			var activeTools []fantasy.Tool
-		var chosenCandidate *scoredTool
+		var activeTools []fantasy.Tool
 
-		if cfg.HumanLoop && len(scored) > 0 {
-			var formattedChoices []string
-			numChoices := len(scored)
-			if numChoices > 3 {
-				numChoices = 3
+		for rank, candidate := range scored {
+			if cfg.Verbose {
+				log.Infof("TOOL_OPTION rank=%d tool=%s phase=%s score=%d reasons=%s", rank+1, candidate.Definition.Name, matrix.MapTechniqueToStage(candidate.Definition.Technique), candidate.Score, strings.Join(candidate.Reasons, "; "))
 			}
-			for i := 0; i < numChoices; i++ {
-				c := scored[i]
-				choiceStr := fmt.Sprintf("%s (Phase: %s) - Score: %d [Reasons: %s]",
-					c.Definition.Name,
-					matrix.MapTechniqueToStage(c.Definition.Technique),
-					c.Score,
-					strings.Join(c.Reasons, "; "),
-				)
-				formattedChoices = append(formattedChoices, choiceStr)
-			}
-
-			// Show prompt
-			chosenIndex := onPrompt(formattedChoices)
-			if chosenIndex >= 0 && chosenIndex < len(scored) {
-				chosen := scored[chosenIndex]
-				chosenCandidate = &chosen
-
-				// Force model to use chosen tool
-				history = append(history, fantasy.NewUserMessage(fmt.Sprintf(
-					"The user has explicitly selected to execute the tool '%s'. You MUST call this tool next.",
-					chosen.Definition.Name,
-				)))
-			}
-		}
-
-		if chosenCandidate != nil {
 			activeTools = append(activeTools, fantasy.FunctionTool{
-				Name:        chosenCandidate.Definition.Name,
-				Description: chosenCandidate.Definition.Description,
-				InputSchema: chosenCandidate.Definition.InputSchema,
+				Name:        candidate.Definition.Name,
+				Description: candidate.Definition.Description,
+				InputSchema: candidate.Definition.InputSchema,
 			})
-		} else {
-			for rank, candidate := range scored {
-				if cfg.HumanLoop && (cfg.Verbose || rank < 3) {
-					log.Infof("TOOL_OPTION rank=%d tool=%s phase=%s score=%d reasons=%s", rank+1, candidate.Definition.Name, matrix.MapTechniqueToStage(candidate.Definition.Technique), candidate.Score, strings.Join(candidate.Reasons, "; "))
-				}
-				activeTools = append(activeTools, fantasy.FunctionTool{
-					Name:        candidate.Definition.Name,
-					Description: candidate.Definition.Description,
-					InputSchema: candidate.Definition.InputSchema,
-				})
-			}
 		}
 
 		canAdvanceNow, advanceReason := canAdvancePhase(currentPhase, completedByPhase, toolsByPhase, executor, kg, target)
