@@ -315,8 +315,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 
 		headerHeight := lipgloss.Height(m.headerView())
-		footerHeight := lipgloss.Height(m.footerView())
-		verticalMarginHeight := headerHeight + footerHeight + 3
+		phaseHeight := lipgloss.Height(m.phaseView())
+		verticalMarginHeight := headerHeight + phaseHeight + 3
 
 		logsWidth := ((msg.Width * 2) / 3) - 4
 		kgWidth := msg.Width - ((msg.Width * 2) / 3) - 4
@@ -424,7 +424,7 @@ func (m Model) headerView() string {
 	return lipgloss.JoinHorizontal(lipgloss.Center, title, headerStatus, lipgloss.NewStyle().Foreground(lipgloss.Color("62")).Render(line))
 }
 
-func (m Model) footerView() string {
+func (m Model) phaseView() string {
 	bgColor := lipgloss.Color("62") // Default neutral background
 	switch m.currentPhase {
 	case "pre-engagement":
@@ -536,7 +536,7 @@ func (m Model) View() string {
 		Padding(0, 1)
 
 	split := lipgloss.JoinHorizontal(lipgloss.Top, logsStyle.Render(logsContentWithStatus), kgStyle.Render(kgCombined))
-	return lipgloss.JoinVertical(lipgloss.Left, m.headerView(), split, m.footerView())
+	return lipgloss.JoinVertical(lipgloss.Left, m.headerView(), m.phaseView(), split)
 }
 
 func max(a, b int) int {
