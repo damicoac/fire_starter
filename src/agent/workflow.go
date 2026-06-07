@@ -213,7 +213,7 @@ func canAdvancePhase(currentPhase matrix.Phase, completedByPhase map[matrix.Phas
 		if completed >= 1 || snapshot.HarvestedTokenCount > 0 {
 			return true, "post-exploitation coverage complete"
 		}
-		return false, "need at least one post-exploitation action"
+		return true, "post-exploitation is optional, advancing to reporting"
 	default:
 		return false, "already at terminal phase"
 	}
