@@ -184,6 +184,45 @@ func completedInPhase(completedByPhase map[matrix.Phase]map[string]map[string]bo
 func canAdvancePhase(currentPhase matrix.Phase, completedByPhase map[matrix.Phase]map[string]map[string]bool, toolsByPhase map[matrix.Phase]int, executor *matrix.RealExecutor, kg *matrix.KnowledgeGraph, baseTarget string) (bool, string) {
 	completed := completedInPhase(completedByPhase, currentPhase, executor, kg, baseTarget)
 
+	if currentPhase != matrix.PhaseReporting {
+		bytes, err := kg.ToJSON()
+		if err == nil {
+			var state struct {
+				DiscoveredIPs []struct{ Value string } `json:"discovered_ips"`
+				DiscoveredURLs []struct{ Value string } `json:"discovered_urls"`
+			}
+			json.Unmarshal(bytes, &state)
+
+			var allTargets []string
+			if len(state.DiscoveredURLs) > 0 {
+				for _, u := range state.DiscoveredURLs {
+					allTargets = append(allTargets, normalizeTarget(u.Value))
+				}
+			} else if len(state.DiscoveredIPs) > 0 {
+				for _, ip := range state.DiscoveredIPs {
+					allTargets = append(allTargets, normalizeTarget(ip.Value))
+				}
+			} else {
+				allTargets = append(allTargets, normalizeTarget(baseTarget))
+			}
+
+			for _, target := range allTargets {
+				hasRun := false
+				if completedByPhase[currentPhase] != nil {
+					for _, toolTargets := range completedByPhase[currentPhase] {
+						if toolTargets[target] {
+							hasRun = true
+							break
+						}
+					}
+				}
+				if !hasRun {
+					return false, fmt.Sprintf("must test all discovered targets before advancing. Unprocessed: %s", target)
+				}
+			}
+		}
+	}
+
 	switch currentPhase {
 	case matrix.PhaseReconnaissance:
 		snapshot := kg.Snapshot()
