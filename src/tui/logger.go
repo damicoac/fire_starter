@@ -27,6 +27,13 @@ func (w *ProgramWriter) Write(p []byte) (n int, err error) {
 		if strings.Contains(text, "KNOWLEDGE_GRAPH_UPDATE") {
 			return len(p), nil // Suppress this log, we'll use the sidebar instead
 		}
+
+		// Strip charmbracelet/log default prefix (date time level)
+		parts := strings.SplitN(text, " ", 4)
+		if len(parts) >= 4 && len(parts[0]) == 10 && strings.Contains(parts[0], "/") && len(parts[1]) == 8 && strings.Contains(parts[1], ":") {
+			text = parts[3]
+		}
+
 		formatted := formatLogLine(text)
 		w.Program.Send(LogMsg{Text: formatted})
 	}
@@ -61,17 +68,17 @@ func formatLogLine(line string) string {
 	if strings.Contains(line, "RED_TEAM_LOOP") {
 		badge := loopBadge.Render("RED_TEAM_LOOP")
 		rest := strings.Replace(line, "RED_TEAM_LOOP", badge, 1)
-		return ts + " [*] " + rest
+		return ts + " " + rest
 	}
 	if strings.Contains(line, "TOOL_SELECTED") {
 		badge := toolBadge.Render("TOOL_SELECTED")
 		rest := strings.Replace(line, "TOOL_SELECTED", badge, 1)
-		return ts + " [+] " + rest
+		return ts + " " + rest
 	}
 	if strings.Contains(line, "KNOWLEDGE_GRAPH_UPDATE") {
 		badge := updateBadge.Render("KNOWLEDGE_GRAPH_UPDATE")
 		rest := strings.Replace(line, "KNOWLEDGE_GRAPH_UPDATE", badge, 1)
-		return ts + " [~] " + rest
+		return ts + " " + rest
 	}
 	if strings.Contains(line, "LLM_CHAT_MESSAGE") {
 		badge := chatBadge.Render("LLM_CHAT_MESSAGE")
@@ -82,15 +89,15 @@ func formatLogLine(line string) string {
 			quoted := line[idx+5:]
 			unquoted, err := strconv.Unquote(quoted)
 			if err == nil {
-				return ts + " [-] " + badge + "\n" + quoteStyle.Render(strings.TrimSpace(unquoted))
+				return ts + " " + badge + "\n" + quoteStyle.Render(strings.TrimSpace(unquoted))
 			}
 		}
-		return ts + " [-] " + rest
+		return ts + " " + rest
 	}
 	if strings.Contains(line, "TOOL_ERROR") {
 		badge := errorBadge.Render("TOOL_ERROR")
 		rest := strings.Replace(line, "TOOL_ERROR", badge, 1)
-		return ts + " [!] " + rest
+		return ts + " " + rest
 	}
 	if strings.Contains(line, "TOOL_EXECUTION_SUMMARY") {
 		badge := toolBadge.Render("TOOL_EXECUTION_SUMMARY")
@@ -109,13 +116,13 @@ func formatLogLine(line string) string {
 			if err == nil {
 				// Replace literal "\n" sequences with actual newlines
 				unquoted = strings.ReplaceAll(unquoted, `\n`, "\n")
-				header := ts + " [+] " + badge + lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true).Render(" (" + toolName + ")")
+				header := ts + " " + badge + lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true).Render(" (" + toolName + ")")
 				body := summaryStyle.Render(strings.TrimSpace(unquoted))
 				return header + "\n" + body
 			}
 		}
 		rest := strings.Replace(line, "TOOL_EXECUTION_SUMMARY", badge, 1)
-		return ts + " [+] " + rest
+		return ts + " " + rest
 	}
-	return ts + " [*] " + line
+	return ts + " " + line
 }
