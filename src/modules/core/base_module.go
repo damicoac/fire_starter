@@ -531,10 +531,12 @@ func GenerateCurlCommand(req *http.Request, bodyBytes []byte) string {
 
 // RecordPoC generates a curl command and records the Proof of Concept.
 func (b *BaseModule) RecordPoC(req *http.Request, bodyBytes []byte, description string) {
-	if req == nil {
-		return
+	var curlCmd string
+	if req != nil {
+		curlCmd = GenerateCurlCommand(req, bodyBytes)
+	} else {
+		curlCmd = "No request generated"
 	}
-	curlCmd := GenerateCurlCommand(req, bodyBytes)
 	b.PocMu.Lock()
 	defer b.PocMu.Unlock()
 	b.PoCs = append(b.PoCs, ProofOfConcept{

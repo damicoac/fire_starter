@@ -34,4 +34,18 @@ func TestKnowledgeGraph_Scoring(t *testing.T) {
 	if len(kg.DiscoveredURLs) != 2 || kg.DiscoveredURLs[1].Score != 6 { // 1 + 5
 		t.Errorf("Expected URL score 6 for param URL, got %d", kg.DiscoveredURLs[1].Score)
 	}
+
+	// Test www normalization
+	kg.AddURL("http://www.example.com")
+	if len(kg.DiscoveredURLs) != 2 {
+		t.Errorf("Expected URL to be normalized and merged, got %d URLs", len(kg.DiscoveredURLs))
+	}
+	kg.AddURL("https://www.example.com")
+	if len(kg.DiscoveredURLs) != 3 {
+		t.Errorf("Expected new URL for https scheme, got %d URLs", len(kg.DiscoveredURLs))
+	}
+	kg.AddURL("www.test.com")
+	if len(kg.DiscoveredURLs) != 4 || kg.DiscoveredURLs[3].Value != "test.com" {
+		t.Errorf("Expected www.test.com to be normalized to test.com, got %v", kg.DiscoveredURLs)
+	}
 }

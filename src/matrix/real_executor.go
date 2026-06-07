@@ -167,11 +167,11 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 		if hasBaseModule, ok := module.GetUnderlying().(interface{ GetBaseModule() *modules.BaseModule }); ok {
 			base := hasBaseModule.GetBaseModule()
 			if base != nil {
-				base.Mu.Lock()
+				base.PocMu.Lock()
 				if len(base.PoCs) > 0 {
 					resultOutput["reproduction_steps"] = base.PoCs
 				}
-				base.Mu.Unlock()
+				base.PocMu.Unlock()
 			}
 		}
 	}
