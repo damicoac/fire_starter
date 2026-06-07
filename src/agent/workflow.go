@@ -95,6 +95,8 @@ func getApplicableTargets(t matrix.ToolDefinition, kg *matrix.KnowledgeGraph, ba
 
 func normalizeTarget(t string) string {
 	t = strings.TrimSpace(t)
+	t = strings.TrimPrefix(t, "http://")
+	t = strings.TrimPrefix(t, "https://")
 	t = strings.TrimRight(t, "/")
 	return t
 }
@@ -357,6 +359,9 @@ func extractIPsFromTarget(target string) []string {
 		}
 	}
 	if ip := net.ParseIP(parsed); ip != nil {
+		if ip.String() == "0.0.0.0" || ip.String() == "::" {
+			return nil
+		}
 		return []string{ip.String()}
 	}
 	ips, err := net.LookupIP(parsed)
@@ -367,6 +372,9 @@ func extractIPsFromTarget(target string) []string {
 	result := make([]string, 0, len(ips))
 	for _, ip := range ips {
 		s := ip.String()
+		if s == "0.0.0.0" || s == "::" {
+			continue
+		}
 		if !seen[s] {
 			seen[s] = true
 			result = append(result, s)
@@ -415,7 +423,10 @@ func isPayloadAllowedByIPWhitelist(payload map[string]any, allowlist map[string]
 				}
 			}
 			if ip := net.ParseIP(parsed); ip != nil {
-				out[ip.String()] = true
+				s := ip.String()
+				if s != "0.0.0.0" && s != "::" {
+					out[s] = true
+				}
 			}
 		}
 	}

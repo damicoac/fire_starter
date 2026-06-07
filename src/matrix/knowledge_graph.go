@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
 	"regexp"
 	"strings"
@@ -308,6 +309,9 @@ func (kg *KnowledgeGraph) ToJSON() ([]byte, error) {
 }
 
 func (kg *KnowledgeGraph) AddIP(ip string) {
+	if ip == "0.0.0.0" || ip == "::" {
+		return
+	}
 	defer kg.triggerUpdate()
 	kg.mu.Lock()
 	defer kg.mu.Unlock()
@@ -350,17 +354,15 @@ func (kg *KnowledgeGraph) AddURL(u string) {
 	defer kg.mu.Unlock()
 
 	u = strings.TrimSpace(u)
-	u = strings.TrimRight(u, "/")
+	u = strings.TrimPrefix(u, "http://")
+	u = strings.TrimPrefix(u, "https://")
 	if strings.HasPrefix(u, "www.") {
 		u = strings.TrimPrefix(u, "www.")
-	} else if strings.HasPrefix(u, "http://www.") {
-		u = "http://" + strings.TrimPrefix(u, "http://www.")
-	} else if strings.HasPrefix(u, "https://www.") {
-		u = "https://" + strings.TrimPrefix(u, "https://www.")
 	}
+	u = strings.TrimRight(u, "/")
 
 	if kg.BaseDomain != "" {
-		parsed, err := url.Parse(u)
+		parsed, err := url.Parse("https://" + u)
 		if err != nil {
 			return // Reject unparseable URLs
 		}
@@ -371,12 +373,17 @@ func (kg *KnowledgeGraph) AddURL(u string) {
 			if host != kg.BaseDomain && !strings.HasSuffix(host, "."+kg.BaseDomain) {
 				return // Reject URL outside of BaseDomain
 			}
-		} else if !strings.HasPrefix(u, "/") {
-			// It might be a bare hostname like "test.updater.com"
-			if p2, err2 := url.Parse("https://" + u); err2 == nil && p2.Hostname() != "" {
-				host := p2.Hostname()
-				if host != kg.BaseDomain && !strings.HasSuffix(host, "."+kg.BaseDomain) {
-					return
+
+			if ips, err := net.LookupIP(host); err == nil && len(ips) > 0 {
+				allPlaceholder := true
+				for _, ip := range ips {
+					if ip.String() != "0.0.0.0" && ip.String() != "::" {
+						allPlaceholder = false
+						break
+					}
+				}
+				if allPlaceholder {
+					return // Reject URLs that resolve exclusively to placeholder IPs
 				}
 			}
 		}

@@ -23,10 +23,10 @@ func TestEnsureHTTPPrefix(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"example.com", "http://example.com"},
+		{"example.com", "https://example.com"},
 		{"http://example.com", "http://example.com"},
 		{"https://example.com", "https://example.com"},
-		{"", "http://"},
+		{"", "https://"},
 	}
 
 	for _, tt := range tests {
