@@ -9,43 +9,47 @@ func TestKnowledgeGraph_Scoring(t *testing.T) {
 
 	// Test IP Scoring
 	kg.AddIP("192.168.1.1")
-	if len(kg.DiscoveredIPs) != 1 || kg.DiscoveredIPs[0].Score != 1 {
-		t.Errorf("Expected IP score 1, got %d", kg.DiscoveredIPs[0].Score)
+	target := kg.Targets["192.168.1.1"]
+	if target == nil || target.Score != 1 {
+		t.Errorf("Expected IP score 1, got %v", target)
 	}
 
 	kg.AddIP("192.168.1.1")
-	if kg.DiscoveredIPs[0].Score != 2 {
-		t.Errorf("Expected IP score 2 after second add, got %d", kg.DiscoveredIPs[0].Score)
+	if target.Score != 2 {
+		t.Errorf("Expected IP score 2 after second add, got %d", target.Score)
 	}
 
 	// Test Port Scoring
 	kg.AddPort("192.168.1.1", 80)
-	if kg.DiscoveredIPs[0].Score != 12 { // 2 + 10
-		t.Errorf("Expected IP score 12 after adding port, got %d", kg.DiscoveredIPs[0].Score)
+	if target.Score != 12 { // 2 + 10
+		t.Errorf("Expected IP score 12 after adding port, got %d", target.Score)
 	}
 
 	// Test URL Scoring
 	kg.AddURL("http://example.com")
-	if len(kg.DiscoveredURLs) != 1 || kg.DiscoveredURLs[0].Score != 1 {
-		t.Errorf("Expected URL score 1, got %d", kg.DiscoveredURLs[0].Score)
+	targetUrl := kg.Targets["example.com"]
+	if targetUrl == nil || targetUrl.Score != 1 {
+		t.Errorf("Expected URL score 1, got %v", targetUrl)
 	}
 
 	kg.AddURL("http://example.com?id=1")
-	if len(kg.DiscoveredURLs) != 2 || kg.DiscoveredURLs[1].Score != 6 { // 1 + 5
-		t.Errorf("Expected URL score 6 for param URL, got %d", kg.DiscoveredURLs[1].Score)
+	targetUrlParams := kg.Targets["example.com?id=1"]
+	if targetUrlParams == nil || targetUrlParams.Score != 6 { // 1 + 5
+		t.Errorf("Expected URL score 6 for param URL, got %v", targetUrlParams)
 	}
 
 	// Test www normalization
 	kg.AddURL("http://www.example.com")
-	if len(kg.DiscoveredURLs) != 2 {
-		t.Errorf("Expected URL to be normalized and merged, got %d URLs", len(kg.DiscoveredURLs))
+	if kg.Targets["www.example.com"] != nil {
+		t.Errorf("Expected URL to be normalized and merged")
 	}
 	kg.AddURL("https://www.example.com")
-	if len(kg.DiscoveredURLs) != 2 {
-		t.Errorf("Expected https://www.example.com to be merged as well, got %d URLs", len(kg.DiscoveredURLs))
+	if kg.Targets["www.example.com"] != nil {
+		t.Errorf("Expected https://www.example.com to be merged as well")
 	}
 	kg.AddURL("www.test.com")
-	if len(kg.DiscoveredURLs) != 3 || kg.DiscoveredURLs[2].Value != "test.com" {
-		t.Errorf("Expected www.test.com to be normalized to test.com, got %v", kg.DiscoveredURLs)
+	targetTest := kg.Targets["test.com"]
+	if targetTest == nil || targetTest.Value != "test.com" {
+		t.Errorf("Expected www.test.com to be normalized to test.com")
 	}
 }
