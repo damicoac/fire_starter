@@ -56,7 +56,11 @@ func (m *ThreatMonitoringTesting) Execute(ctx context.Context) ([]ThreatMonitori
 	}
 
 	// Aggressive Burst
-	var wg sync.WaitGroup
+	var (
+		wg                 sync.WaitGroup
+		mu                 sync.Mutex
+		blockedDuringBurst bool
+	)
 	sem := make(chan struct{}, 50) // Max 50 concurrent requests
 	payloads := []string{
 		"1' OR '1'='1",
@@ -79,7 +83,16 @@ func (m *ThreatMonitoringTesting) Execute(ctx context.Context) ([]ThreatMonitori
 			req, err := http.NewRequestWithContext(ctx, "GET", targetURL, nil)
 			if err == nil {
 				resp, err := m.Client.Do(req)
-				if err == nil {
+				if err != nil {
+					mu.Lock()
+					blockedDuringBurst = true
+					mu.Unlock()
+				} else {
+					if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusNotAcceptable {
+						mu.Lock()
+						blockedDuringBurst = true
+						mu.Unlock()
+					}
 					resp.Body.Close()
 				}
 			}
@@ -112,11 +125,11 @@ func (m *ThreatMonitoringTesting) Execute(ctx context.Context) ([]ThreatMonitori
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+	if blockedDuringBurst || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
 		return append(results, ThreatMonitoringResult{
 			Target: m.Target,
 			Status: "secure",
-			Detail: "Active monitoring detected. Server returned 403 or 429 after aggressive burst.",
+			Detail: "Active monitoring detected. Server actively blocked requests during or after aggressive burst.",
 		}), nil
 	}
 

@@ -34,7 +34,15 @@ func NormalizeURL(u string) string {
 	if idx := strings.Index(u, "?"); idx != -1 {
 		u = u[:idx]
 	}
-	return strings.TrimRight(u, "/")
+	u = strings.TrimRight(u, "/")
+	
+	slashIdx := strings.Index(u, "/")
+	if slashIdx != -1 {
+		u = strings.ToLower(u[:slashIdx]) + u[slashIdx:]
+	} else {
+		u = strings.ToLower(u)
+	}
+	return u
 }
 
 type CredentialInfo struct {
@@ -348,6 +356,9 @@ func (kg *KnowledgeGraph) AddIP(ip string) {
 	if ip == "0.0.0.0" || ip == "::" {
 		return
 	}
+	if parsed := net.ParseIP(ip); parsed != nil && parsed.IsLoopback() {
+		return
+	}
 	defer kg.triggerUpdate()
 	kg.mu.Lock()
 	defer kg.mu.Unlock()
@@ -401,7 +412,7 @@ func (kg *KnowledgeGraph) AddURL(u string) {
 			if ips, err := net.LookupIP(host); err == nil && len(ips) > 0 {
 				allPlaceholder := true
 				for _, ip := range ips {
-					if ip.String() != "0.0.0.0" && ip.String() != "::" {
+					if ip.String() != "0.0.0.0" && ip.String() != "::" && !ip.IsLoopback() {
 						allPlaceholder = false
 						break
 					}
