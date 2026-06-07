@@ -462,7 +462,7 @@ You currently only have access to tools for your current phase. When you have ex
 
 Do not make assumptions. Turn theories into testable hypotheses, then validate them by calling available tools and using tool output as evidence for your next step. If evidence is missing or stale, call another tool instead of guessing.
 
-When you have reached your goals or finished all phases, you MUST call the 'submit' tool with your final report. Ensure that your final report explicitly includes any Proof-of-Concepts (PoCs) and exact reproduction steps for the vulnerabilities you discovered. You can use the 'query_knowledge_graph' tool with 'query_type': 'test_cases' to retrieve these details before submitting.
+When you have reached your goals or finished all phases, you MUST call the 'submit' tool with your final report. Your report should thoroughly summarize the findings from the engagement and provide the security engineer with everything they need to do their job. The final report will automatically include the exact reproduction steps for the vulnerabilities based on your execution history, so you do not need to retrieve them.
 
 CRITICAL: Do not execute the same tool against the same target more than once. The Knowledge Graph tracks 'executed_tools' for each discovered target. Always check a target's executed tools before scanning to avoid infinite loops.
 
@@ -644,7 +644,7 @@ IP whitelist policy:
 				"properties": map[string]any{
 					"query_type": map[string]any{
 						"type": "string",
-						"enum": []string{"ips", "urls", "ports", "credentials", "vulnerabilities", "tokens", "test_cases", "all"},
+						"enum": []string{"ips", "urls", "ports", "credentials", "vulnerabilities", "tokens", "all"},
 					},
 				},
 				"required": []string{"query_type"},
@@ -774,10 +774,15 @@ IP whitelist policy:
 					resBytes, _ = json.Marshal(kg.Vulnerabilities)
 				case "tokens":
 					resBytes, _ = json.Marshal(kg.HarvestedTokens)
-				case "test_cases":
-					resBytes, _ = json.Marshal(kg.TestCases)
 				default:
-					resBytes, _ = kg.ToJSON()
+					rawBytes, _ := kg.ToJSON()
+					var data map[string]any
+					if err := json.Unmarshal(rawBytes, &data); err == nil {
+						delete(data, "test_cases")
+						resBytes, _ = json.Marshal(data)
+					} else {
+						resBytes = rawBytes
+					}
 				}
 
 				toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
