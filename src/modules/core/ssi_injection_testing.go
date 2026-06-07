@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -45,8 +46,10 @@ func (m *SsiInjectionTesting) SetThreads(count int) {
 
 var ssiPayloads = []string{
 	`<!--#exec cmd="id" -->`,
-	`<!--#echo var="DATE_LOCAL" -->`,
+	`<!--#set var="testvar" value="ssi_vuln_1337" --><!--#echo var="testvar" -->`,
 }
+
+var idRegex = regexp.MustCompile(`uid=\d+\(.*\) gid=\d+\(.*\)`)
 
 func (m *SsiInjectionTesting) Execute(ctx context.Context) ([]SsiInjectionTestingResult, error) {
 	m.results = make([]SsiInjectionTestingResult, 0)
@@ -131,8 +134,8 @@ func (m *SsiInjectionTesting) testPayload(ctx context.Context, u *url.URL, paylo
 	bodyStr := string(bodyBytes)
 
 	// Signatures for SSI execution
-	if strings.Contains(bodyStr, "uid=") && strings.Contains(bodyStr, "gid=") ||
-		(strings.Contains(bodyStr, "19") && strings.Contains(bodyStr, ":") && !strings.Contains(bodyStr, "DATE_LOCAL")) { // Date output check
+	if idRegex.MatchString(bodyStr) ||
+		(strings.Contains(bodyStr, "ssi_vuln_1337") && !strings.Contains(bodyStr, payload)) {
 		m.Mu.Lock()
 		m.RecordPoC(req, nil, "SSI Injection detected. Command executed successfully with payload: "+payload)
 		m.results = append(m.results, SsiInjectionTestingResult{
