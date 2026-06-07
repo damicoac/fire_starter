@@ -350,6 +350,7 @@ func (kg *KnowledgeGraph) AddURL(u string) {
 	defer kg.mu.Unlock()
 
 	u = strings.TrimSpace(u)
+	u = strings.TrimRight(u, "/")
 	if strings.HasPrefix(u, "www.") {
 		u = strings.TrimPrefix(u, "www.")
 	} else if strings.HasPrefix(u, "http://www.") {
