@@ -94,11 +94,7 @@ func getApplicableTargets(t matrix.ToolDefinition, kg *matrix.KnowledgeGraph, ba
 }
 
 func normalizeTarget(t string) string {
-	t = strings.TrimSpace(t)
-	t = strings.TrimPrefix(t, "http://")
-	t = strings.TrimPrefix(t, "https://")
-	t = strings.TrimRight(t, "/")
-	return t
+	return matrix.NormalizeURL(t)
 }
 
 func isToolExhausted(t matrix.ToolDefinition, kg *matrix.KnowledgeGraph, baseTarget string, executedTargets map[string]bool) bool {

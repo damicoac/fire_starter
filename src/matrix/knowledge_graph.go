@@ -14,6 +14,21 @@ import (
 	"github.com/charmbracelet/log"
 )
 
+func NormalizeURL(u string) string {
+	u = strings.TrimSpace(u)
+	lower := strings.ToLower(u)
+	if strings.HasPrefix(lower, "http://") {
+		u = u[7:]
+	} else if strings.HasPrefix(lower, "https://") {
+		u = u[8:]
+	}
+	lower = strings.ToLower(u)
+	if strings.HasPrefix(lower, "www.") {
+		u = u[4:]
+	}
+	return strings.TrimRight(u, "/")
+}
+
 type CredentialInfo struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
@@ -78,6 +93,9 @@ func (kg *KnowledgeGraph) triggerUpdate() {
 }
 
 func (kg *KnowledgeGraph) getOrCreateTarget(value string, targetType string) *Target {
+	if targetType == "url" {
+		value = NormalizeURL(value)
+	}
 	if kg.Targets[value] == nil {
 		kg.Targets[value] = &Target{
 			Value:           value,
@@ -353,13 +371,7 @@ func (kg *KnowledgeGraph) AddURL(u string) {
 	kg.mu.Lock()
 	defer kg.mu.Unlock()
 
-	u = strings.TrimSpace(u)
-	u = strings.TrimPrefix(u, "http://")
-	u = strings.TrimPrefix(u, "https://")
-	if strings.HasPrefix(u, "www.") {
-		u = strings.TrimPrefix(u, "www.")
-	}
-	u = strings.TrimRight(u, "/")
+	u = NormalizeURL(u)
 
 	if kg.BaseDomain != "" {
 		parsed, err := url.Parse("https://" + u)
