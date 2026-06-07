@@ -26,6 +26,14 @@ func NormalizeURL(u string) string {
 	if strings.HasPrefix(lower, "www.") {
 		u = u[4:]
 	}
+	// Strip fragment
+	if idx := strings.Index(u, "#"); idx != -1 {
+		u = u[:idx]
+	}
+	// Strip query parameters
+	if idx := strings.Index(u, "?"); idx != -1 {
+		u = u[:idx]
+	}
 	return strings.TrimRight(u, "/")
 }
 
@@ -371,6 +379,11 @@ func (kg *KnowledgeGraph) AddURL(u string) {
 	kg.mu.Lock()
 	defer kg.mu.Unlock()
 
+	score := 1
+	if strings.Contains(u, "?") || strings.Contains(u, "=") {
+		score += 5
+	}
+
 	u = NormalizeURL(u)
 
 	if kg.BaseDomain != "" {
@@ -410,11 +423,6 @@ func (kg *KnowledgeGraph) AddURL(u string) {
 		}
 	}
 
-	score := 1
-	if strings.Contains(u, "?") || strings.Contains(u, "=") {
-		score += 5
-	}
-	
 	t := kg.getOrCreateTarget(u, "url")
 	t.Score += score
 	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=discovered_urls value=%s score=%d", u, t.Score)

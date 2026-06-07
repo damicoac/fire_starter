@@ -33,9 +33,11 @@ func TestKnowledgeGraph_Scoring(t *testing.T) {
 	}
 
 	kg.AddURL("http://example.com?id=1")
-	targetUrlParams := kg.Targets["example.com?id=1"]
-	if targetUrlParams == nil || targetUrlParams.Score != 6 { // 1 + 5
-		t.Errorf("Expected URL score 6 for param URL, got %v", targetUrlParams)
+	if kg.Targets["example.com?id=1"] != nil {
+		t.Errorf("Expected parameterized URL to be folded into base target")
+	}
+	if targetUrl.Score != 7 { // 1 (from http://example.com) + 6 (from http://example.com?id=1)
+		t.Errorf("Expected URL score 7 for param URL folded into base target, got %d", targetUrl.Score)
 	}
 
 	// Test www normalization
