@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -67,7 +68,22 @@ func (m *SubdomainEnumeration) Execute(ctx context.Context) ([]SubdomainEnumerat
 				case <-ctx.Done():
 					return
 				default:
-					ips, err := net.LookupHost(job)
+					var ips []string
+					var err error
+					maxRetries := 3
+					baseDelay := 100 * time.Millisecond
+					
+					for attempt := 0; attempt < maxRetries; attempt++ {
+						ips, err = net.LookupHost(job)
+						if err == nil {
+							break
+						}
+						if ctx.Err() != nil {
+							break
+						}
+						time.Sleep(baseDelay * time.Duration(1<<attempt))
+					}
+
 					if err == nil && len(ips) > 0 {
 						m.Mu.Lock()
 						m.RecordPoC(nil, nil, fmt.Sprintf("Subdomain %s resolved to %s", job, strings.Join(ips, ", ")))
@@ -91,9 +107,15 @@ func (m *SubdomainEnumeration) Execute(ctx context.Context) ([]SubdomainEnumerat
 
 	select {
 	case <-done:
+		sort.Slice(m.results, func(i, j int) bool {
+			return m.results[i].Detail < m.results[j].Detail
+		})
 		return m.results, nil
 	case <-ctx.Done():
 		<-done
+		sort.Slice(m.results, func(i, j int) bool {
+			return m.results[i].Detail < m.results[j].Detail
+		})
 		return m.results, ctx.Err()
 	}
 }
