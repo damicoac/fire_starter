@@ -204,18 +204,39 @@ func canAdvancePhase(currentPhase matrix.Phase, completedByPhase map[matrix.Phas
 				allTargets = append(allTargets, normalizeTarget(baseTarget))
 			}
 
+			phasesToCheck := []matrix.Phase{
+				matrix.PhaseReconnaissance,
+				matrix.PhaseScanning,
+				matrix.PhaseVulnerabilityAnalysis,
+				matrix.PhaseExploitation,
+				matrix.PhasePostExploitation,
+			}
+
 			for _, target := range allTargets {
-				hasRun := false
-				if completedByPhase[currentPhase] != nil {
-					for _, toolTargets := range completedByPhase[currentPhase] {
-						if toolTargets[target] {
-							hasRun = true
+				for _, p := range phasesToCheck {
+					if p == matrix.PhaseReconnaissance {
+						if p == currentPhase {
 							break
 						}
+						continue
 					}
-				}
-				if !hasRun {
-					return false, fmt.Sprintf("must test all discovered targets before advancing. Unprocessed: %s", target)
+
+					hasRun := false
+					if completedByPhase[p] != nil {
+						for _, toolTargets := range completedByPhase[p] {
+							if toolTargets[target] {
+								hasRun = true
+								break
+							}
+						}
+					}
+					if !hasRun {
+						return false, fmt.Sprintf("must test all discovered targets in phase %s before advancing. Unprocessed: %s", p, target)
+					}
+
+					if p == currentPhase {
+						break
+					}
 				}
 			}
 		}
