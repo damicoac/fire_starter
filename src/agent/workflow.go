@@ -179,7 +179,10 @@ func completedInPhase(completedByPhase map[matrix.Phase]map[string]map[string]bo
 	return len(entries)
 }
 
-func canAdvancePhase(currentPhase matrix.Phase, completedByPhase map[matrix.Phase]map[string]map[string]bool, toolsByPhase map[matrix.Phase]int, executor *matrix.RealExecutor, kg *matrix.KnowledgeGraph, baseTarget string) (bool, string) {
+func canAdvancePhase(currentPhase matrix.Phase, completedByPhase map[matrix.Phase]map[string]map[string]bool, toolsByPhase map[matrix.Phase]int, executor *matrix.RealExecutor, kg *matrix.KnowledgeGraph, baseTarget string, queriedGraphByPhase map[matrix.Phase]bool) (bool, string) {
+	if !queriedGraphByPhase[currentPhase] && currentPhase != matrix.PhaseReconnaissance {
+		return false, "must query the knowledge graph to review discovered targets and intelligence before advancing"
+	}
 	completed := completedInPhase(completedByPhase, currentPhase, executor, kg, baseTarget)
 
 	if currentPhase != matrix.PhaseReporting {
@@ -533,6 +536,8 @@ When you have reached your goals or finished all phases, you MUST call the 'subm
 
 CRITICAL: Do not execute the same tool against the same target more than once. The Knowledge Graph tracks 'executed_tools' for each discovered target. Always check a target's executed tools before scanning to avoid infinite loops.
 
+CRITICAL: You MUST thoroughly test ALL discovered subdomains and paths (not just the main domain). Before advancing to the next phase, ensure that you have run applicable modules against every discovered target. Do not skip subdomains or specific endpoints (like /login).
+
 Rules of Engagement (must be enforced in every decision):
 %s
 
@@ -563,6 +568,7 @@ IP whitelist policy:
 		toolsByPhase[stage]++
 	}
 	completedByPhase := make(map[matrix.Phase]map[string]map[string]bool)
+	queriedGraphByPhase := make(map[matrix.Phase]bool)
 
 	for iter := 0; iter < cfg.MaxIters; iter++ {
 		currentPhase := kg.GetCurrentPhase()
@@ -660,7 +666,7 @@ IP whitelist policy:
 			})
 		}
 
-		canAdvanceNow, advanceReason := canAdvancePhase(currentPhase, completedByPhase, toolsByPhase, executor, kg, target)
+		canAdvanceNow, advanceReason := canAdvancePhase(currentPhase, completedByPhase, toolsByPhase, executor, kg, target, queriedGraphByPhase)
 		canSubmitNow, submitReason := canSubmit(currentPhase, completedByPhase, snapshot, toolsByPhase, executor, kg, target)
 		log.Debugf("Phase controls: can_advance=%t reason=%s can_submit=%t reason=%s", canAdvanceNow, advanceReason, canSubmitNow, submitReason)
 		activeTools = append(activeTools, fantasy.FunctionTool{
@@ -783,6 +789,7 @@ IP whitelist policy:
 			}
 
 			if tc.ToolName == "query_knowledge_graph" {
+				queriedGraphByPhase[kg.GetCurrentPhase()] = true
 				var qArgs map[string]any
 				_ = json.Unmarshal([]byte(tc.Input), &qArgs)
 				qType, _ := qArgs["query_type"].(string)
@@ -843,7 +850,7 @@ IP whitelist policy:
 
 			if tc.ToolName == "advance_phase" {
 				priorPhase := kg.GetCurrentPhase()
-				ok, reason := canAdvancePhase(priorPhase, completedByPhase, toolsByPhase, executor, kg, target)
+				ok, reason := canAdvancePhase(priorPhase, completedByPhase, toolsByPhase, executor, kg, target, queriedGraphByPhase)
 				if !ok {
 					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
 						ToolCallID: tc.ToolCallID,
@@ -952,7 +959,7 @@ IP whitelist policy:
 				}
 				afterGraph := kg.Snapshot()
 				log.Infof("KNOWLEDGE_GRAPH_UPDATE tool=%s delta=%s snapshot=%s", tc.ToolName, snapshotDelta(beforeGraph, afterGraph), summarizeSnapshot(afterGraph))
-				canAdvanceAfter, advanceReasonAfter := canAdvancePhase(afterGraph.CurrentPhase, completedByPhase, toolsByPhase, executor, kg, target)
+				canAdvanceAfter, advanceReasonAfter := canAdvancePhase(afterGraph.CurrentPhase, completedByPhase, toolsByPhase, executor, kg, target, queriedGraphByPhase)
 				canSubmitAfter, submitReasonAfter := canSubmit(afterGraph.CurrentPhase, completedByPhase, afterGraph, toolsByPhase, executor, kg, target)
 				log.Infof("NEXT_DECISION tool=%s recommendation=%s", tc.ToolName, recommendedNextAction(afterGraph.CurrentPhase, canAdvanceAfter, advanceReasonAfter, canSubmitAfter, submitReasonAfter))
 				log.Infof("TOOL_EXECUTION_SUMMARY tool=%s summary=%q", tc.ToolName, summary)
