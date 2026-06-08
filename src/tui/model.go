@@ -316,7 +316,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		headerHeight := lipgloss.Height(m.headerView())
 		phaseHeight := lipgloss.Height(m.phaseView())
-		verticalMarginHeight := headerHeight + phaseHeight + 3
+		verticalMarginHeight := headerHeight + phaseHeight + 4
 
 		logsWidth := ((msg.Width * 2) / 3) - 4
 		kgWidth := msg.Width - ((msg.Width * 2) / 3) - 4
@@ -326,7 +326,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		kgHeight := max(0, msg.Height-verticalMarginHeight)
 		kgTreeHeight := kgHeight / 2
-		kgDetailHeight := kgHeight - kgTreeHeight - 1 // -1 for a divider if we want, or just let them abut
+		kgDetailHeight := kgHeight - kgTreeHeight - 2 // -2 to account for titles and dividers without overflowing
 
 		if !m.ready {
 			m.logsViewport = viewport.New(logsWidth, max(0, msg.Height-verticalMarginHeight))
@@ -495,22 +495,24 @@ func (m Model) View() string {
 	}
 
 	// Logs Viewport
+	logsTitle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).Render(" Execution Log")
 	logsScrollStr := fmt.Sprintf(" %3.0f%% ", m.logsViewport.ScrollPercent()*100)
 	if m.logsViewport.TotalLineCount() <= m.logsViewport.Height {
 		logsScrollStr = " 100% "
 	}
 	logsStatus := lipgloss.NewStyle().Width(m.logsViewport.Width).Align(lipgloss.Right).Foreground(lipgloss.Color("240")).Render(logsScrollStr)
 	paddedLogs := lipgloss.NewStyle().Height(m.logsViewport.Height).Render(logsContent)
-	logsContentWithStatus := lipgloss.JoinVertical(lipgloss.Left, paddedLogs, logsStatus)
+	logsContentWithStatus := lipgloss.JoinVertical(lipgloss.Left, logsTitle, paddedLogs, logsStatus)
 
 	// KG Tree Viewport
+	kgTitle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).Render(" Knowledge Graph")
 	kgTreeScrollStr := fmt.Sprintf(" %3.0f%% ", m.kgTreeViewport.ScrollPercent()*100)
 	if m.kgTreeViewport.TotalLineCount() <= m.kgTreeViewport.Height {
 		kgTreeScrollStr = " 100% "
 	}
 	kgTreeStatus := lipgloss.NewStyle().Width(m.kgTreeViewport.Width).Align(lipgloss.Right).Foreground(lipgloss.Color("240")).Render(kgTreeScrollStr)
 	paddedKgTree := lipgloss.NewStyle().Height(m.kgTreeViewport.Height).Render(m.kgTreeViewport.View())
-	kgTreeWithStatus := lipgloss.JoinVertical(lipgloss.Left, paddedKgTree, kgTreeStatus)
+	kgTreeWithStatus := lipgloss.JoinVertical(lipgloss.Left, kgTitle, paddedKgTree, kgTreeStatus)
 
 	// KG Detail Viewport
 	kgDetailScrollStr := fmt.Sprintf(" %3.0f%% ", m.kgDetailViewport.ScrollPercent()*100)
