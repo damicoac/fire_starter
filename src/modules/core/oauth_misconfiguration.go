@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -40,11 +41,26 @@ func (m *OAuthMisconfiguration) Execute(ctx context.Context) ([]OAuthMisconfigur
 		"/oauth2/authorize",
 		"/auth/authorize",
 		"/login/oauth/authorize",
+		"/api/oauth/authorize",
+		"/api/oauth2/authorize",
+		"/oauth2/v1/authorize",
+		"/v1/oauth2/authorize",
 	}
 
-	payloads := []string{
-		"?response_type=token&client_id=test&redirect_uri=https://evil.com",
-		"?response_type=code&client_id=test&redirect_uri=https://evil.com",
+	type payloadDef struct {
+		qs    string
+		isXSS bool
+		match string
+	}
+
+	payloads := []payloadDef{
+		{"?response_type=token&client_id=test&redirect_uri=https://evil.com", false, "evil.com"},
+		{"?response_type=code&client_id=test&redirect_uri=https://evil.com", false, "evil.com"},
+		{"?response_type=code&client_id=test&redirect_uri=//evil.com", false, "evil.com"},
+		{"?response_type=code&client_id=test&redirect_uri=\\\\evil.com", false, "evil.com"},
+		{"?response_type=code&client_id=test&redirect_uri=/%09/evil.com", false, "evil.com"},
+		{"?response_type=code&client_id=test&redirect_uri=javascript:prompt(1)", true, "javascript:prompt(1)"},
+		{"?response_type=code&client_id=test&redirect_uri=\"><script>alert(1)</script>", true, "\"><script>alert(1)</script>"},
 	}
 
 	var wg sync.WaitGroup
@@ -64,7 +80,7 @@ func (m *OAuthMisconfiguration) Execute(ctx context.Context) ([]OAuthMisconfigur
 					return
 				default:
 					for _, p := range payloads {
-						m.testOAuth(ctx, ep, p)
+						m.testOAuth(ctx, ep, p.qs, p.isXSS, p.match)
 					}
 				}
 			}
@@ -75,7 +91,7 @@ func (m *OAuthMisconfiguration) Execute(ctx context.Context) ([]OAuthMisconfigur
 	return m.results, nil
 }
 
-func (m *OAuthMisconfiguration) testOAuth(ctx context.Context, endpoint, payload string) {
+func (m *OAuthMisconfiguration) testOAuth(ctx context.Context, endpoint, payload string, isXSS bool, match string) {
 	testURL := m.Target + endpoint + payload
 
 	req, err := http.NewRequestWithContext(ctx, "GET", testURL, nil)
@@ -99,26 +115,80 @@ func (m *OAuthMisconfiguration) testOAuth(ctx context.Context, endpoint, payload
 	defer resp.Body.Close()
 
 	loc := resp.Header.Get("Location")
-	if resp.StatusCode >= 300 && resp.StatusCode < 400 && strings.Contains(loc, "evil.com") {
-		m.Mu.Lock()
-		m.RecordPoC(req, nil, fmt.Sprintf("OAuth redirect_uri manipulation successful at: %s", testURL))
-		m.results = append(m.results, OAuthMisconfigurationResult{
-			Target: m.Target,
-			Status: "vulnerable",
-			Detail: fmt.Sprintf("OAuth redirect_uri manipulation allowed to %s", loc),
-		})
-		m.Mu.Unlock()
-	} else if resp.StatusCode == http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		if strings.Contains(string(body), "evil.com") {
-			m.Mu.Lock()
-			m.RecordPoC(req, nil, fmt.Sprintf("OAuth redirect_uri reflected in body at: %s", testURL))
-			m.results = append(m.results, OAuthMisconfigurationResult{
-				Target: m.Target,
-				Status: "vulnerable",
-				Detail: fmt.Sprintf("OAuth redirect_uri reflected, potential open redirect or XSS at %s", testURL),
-			})
-			m.Mu.Unlock()
+	
+	if !isXSS {
+		if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+			isVulnerable := false
+			
+			// Parse the location to check the actual host it redirects to
+			if parsedLoc, err := url.Parse(loc); err == nil && parsedLoc.Hostname() != "" {
+				if strings.Contains(parsedLoc.Hostname(), match) {
+					isVulnerable = true
+				}
+			} else {
+				// Fallback for cases where url.Parse fails or doesn't extract hostname correctly
+				locLower := strings.ToLower(loc)
+				if strings.HasPrefix(locLower, "http://"+match) || 
+				   strings.HasPrefix(locLower, "https://"+match) ||
+				   strings.HasPrefix(locLower, "//"+match) ||
+				   strings.HasPrefix(locLower, "\\\\"+match) ||
+				   strings.HasPrefix(locLower, "/\\"+match) {
+					isVulnerable = true
+				}
+			}
+
+			if isVulnerable {
+				m.Mu.Lock()
+				m.RecordPoC(req, nil, fmt.Sprintf("OAuth redirect_uri manipulation successful at: %s", testURL))
+				m.results = append(m.results, OAuthMisconfigurationResult{
+					Target: m.Target,
+					Status: "vulnerable",
+					Detail: fmt.Sprintf("OAuth redirect_uri manipulation allowed to %s", loc),
+				})
+				m.Mu.Unlock()
+			}
+		} else if resp.StatusCode == http.StatusOK {
+			// Check for potential client-side redirects (e.g. meta refresh or window.location)
+			body, _ := io.ReadAll(resp.Body)
+			bodyStr := strings.ToLower(string(body))
+			if strings.Contains(bodyStr, "http://"+match) || strings.Contains(bodyStr, "https://"+match) {
+				if strings.Contains(bodyStr, "url=http") || strings.Contains(bodyStr, "window.location") {
+					m.Mu.Lock()
+					m.RecordPoC(req, nil, fmt.Sprintf("OAuth redirect_uri reflected in body for client-side redirect at: %s", testURL))
+					m.results = append(m.results, OAuthMisconfigurationResult{
+						Target: m.Target,
+						Status: "vulnerable",
+						Detail: fmt.Sprintf("OAuth redirect_uri reflected, potential client-side redirect at %s", testURL),
+					})
+					m.Mu.Unlock()
+				}
+			}
+		}
+	} else {
+		// XSS Check
+		if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+			if strings.HasPrefix(strings.ToLower(loc), match) || strings.Contains(loc, match) {
+				m.Mu.Lock()
+				m.RecordPoC(req, nil, fmt.Sprintf("OAuth XSS via Location header at: %s", testURL))
+				m.results = append(m.results, OAuthMisconfigurationResult{
+					Target: m.Target,
+					Status: "vulnerable",
+					Detail: fmt.Sprintf("OAuth redirect_uri reflected in Location header causing XSS at %s", testURL),
+				})
+				m.Mu.Unlock()
+			}
+		} else if resp.StatusCode == http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			if strings.Contains(string(body), match) {
+				m.Mu.Lock()
+				m.RecordPoC(req, nil, fmt.Sprintf("OAuth redirect_uri XSS reflected in body at: %s", testURL))
+				m.results = append(m.results, OAuthMisconfigurationResult{
+					Target: m.Target,
+					Status: "vulnerable",
+					Detail: fmt.Sprintf("OAuth redirect_uri reflected causing potential XSS at %s", testURL),
+				})
+				m.Mu.Unlock()
+			}
 		}
 	}
 }

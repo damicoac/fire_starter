@@ -162,7 +162,7 @@ Respond STRICTLY in the following JSON format:
   "discovered_urls": ["list of URLs"],
   "open_ports": [{"ip": "1.2.3.4", "port": 80}],
   "harvested_tokens": ["list of tokens/cookies"],
-  "vulnerabilities": ["list of vulnerabilities"],
+  "vulnerabilities": ["list of vulnerabilities (Provide descriptions only. DO NOT include reproduction steps or curl commands here. They are automatically extracted.)"],
   "credentials": [{"username": "user", "password": "pw"}],
   "summary": "A concise 1-3 sentence summary of what the tool achieved and found."
 }

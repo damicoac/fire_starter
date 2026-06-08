@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -62,7 +63,22 @@ func (m *PasswordSpraying) getBaselineAuthBypass(ctx context.Context) bool {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusFound || resp.StatusCode == http.StatusSeeOther {
-		if len(resp.Cookies()) > 0 || resp.Header.Get("Location") != "" {
+		location := resp.Header.Get("Location")
+		locationLower := strings.ToLower(location)
+
+		isLikelyError := false
+		if location != "" && (strings.Contains(locationLower, "error") || strings.Contains(locationLower, "login") || strings.Contains(locationLower, "retry")) {
+			isLikelyError = true
+		}
+
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyStr := strings.ToLower(string(bodyBytes))
+
+		if resp.StatusCode == http.StatusOK && (strings.Contains(bodyStr, "invalid") || strings.Contains(bodyStr, "incorrect") || strings.Contains(bodyStr, "wrong") || strings.Contains(bodyStr, "failed")) {
+			isLikelyError = true
+		}
+
+		if (len(resp.Cookies()) > 0 || location != "") && !isLikelyError {
 			return true
 		}
 	}
@@ -128,8 +144,23 @@ func (m *PasswordSpraying) testUsername(ctx context.Context, username string, ba
 
 	// 200 OK or 302 Redirect might indicate a successful login
 	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusFound || resp.StatusCode == http.StatusSeeOther {
+		location := resp.Header.Get("Location")
+		locationLower := strings.ToLower(location)
+
+		isLikelyError := false
+		if location != "" && (strings.Contains(locationLower, "error") || strings.Contains(locationLower, "login") || strings.Contains(locationLower, "retry")) {
+			isLikelyError = true
+		}
+
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyStr := strings.ToLower(string(bodyBytes))
+
+		if resp.StatusCode == http.StatusOK && (strings.Contains(bodyStr, "invalid") || strings.Contains(bodyStr, "incorrect") || strings.Contains(bodyStr, "wrong") || strings.Contains(bodyStr, "failed")) {
+			isLikelyError = true
+		}
+
 		// Just a heuristic - if it doesn't set a cookie or redirect to dashboard, it might be a false positive
-		if len(resp.Cookies()) > 0 || resp.Header.Get("Location") != "" {
+		if (len(resp.Cookies()) > 0 || location != "") && !isLikelyError {
 			if !baselineAuthBypass {
 				m.Mu.Lock()
 				m.RecordPoC(req, nil, "Successful login found via spraying: "+username+" / "+sprayPassword)
