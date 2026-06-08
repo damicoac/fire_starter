@@ -500,6 +500,10 @@ func NewBaseModule() *BaseModule {
 	}
 }
 
+func escapeBash(s string) string {
+	return strings.ReplaceAll(s, "'", "'\\''")
+}
+
 // GenerateCurlCommand builds a curl command string from an *http.Request and its body.
 func GenerateCurlCommand(req *http.Request, bodyBytes []byte) string {
 	if req == nil || req.URL == nil {
@@ -515,15 +519,15 @@ func GenerateCurlCommand(req *http.Request, bodyBytes []byte) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("curl -X %s '%s'", req.Method, req.URL.String()))
+	sb.WriteString(fmt.Sprintf("curl -X %s '%s'", req.Method, escapeBash(req.URL.String())))
 	for k, vals := range req.Header {
 		for _, v := range vals {
-			sb.WriteString(fmt.Sprintf(" -H '%s: %s'", k, v))
+			sb.WriteString(fmt.Sprintf(" -H '%s: %s'", escapeBash(k), escapeBash(v)))
 		}
 	}
 	if len(bodyBytes) > 0 {
 		// Escape single quotes for bash
-		bodyStr := strings.ReplaceAll(string(bodyBytes), "'", "'\\''")
+		bodyStr := escapeBash(string(bodyBytes))
 		sb.WriteString(fmt.Sprintf(" -d '%s'", bodyStr))
 	}
 	return sb.String()

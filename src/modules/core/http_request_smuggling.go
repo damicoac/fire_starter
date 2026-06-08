@@ -67,56 +67,67 @@ func (m *HTTPRequestSmuggling) Execute(ctx context.Context) ([]HTTPRequestSmuggl
 func (m *HTTPRequestSmuggling) testSmuggling(ctx context.Context, endpoint string) {
 	testURL := m.Target + endpoint
 
-	// Very rudimentary smuggle payload
-	payload := "0\r\n\r\nGET / HTTP/1.1\r\nHost: " + m.Target + "\r\n\r\n"
-
-	req, err := http.NewRequestWithContext(ctx, "POST", testURL, bytes.NewBufferString(payload))
+	// 1. Baseline Request
+	baselineReq, err := http.NewRequestWithContext(ctx, "POST", testURL, bytes.NewBufferString("baseline"))
 	if err != nil {
 		return
 	}
-
-	// Create conflicting headers
-	req.Header.Add("Transfer-Encoding", "chunked")
-	req.Header.Add("Content-Length", fmt.Sprintf("%d", len(payload)))
-
-	resp, err := m.Client.Do(req)
+	baselineResp, err := m.Client.Do(baselineReq)
 	if err != nil {
-		// Timeouts could indicate a smuggling issue due to backend waiting
-		if strings.Contains(err.Error(), "timeout") {
+		if strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "context deadline exceeded") {
+			// Baseline times out, target is naturally slow, skip to avoid false positives
+			return
+		}
+	} else {
+		io.Copy(io.Discard, baselineResp.Body)
+		baselineResp.Body.Close()
+	}
+
+	// 2. CL.TE Timing Check
+	cltePayload := "1\r\nA\r\nX"
+	clteReq, err := http.NewRequestWithContext(ctx, "POST", testURL, bytes.NewBufferString(cltePayload))
+	if err == nil {
+		clteReq.Header.Add("Transfer-Encoding", "chunked")
+		clteReq.Header.Add("Content-Length", "4")
+		
+		clteResp, err := m.Client.Do(clteReq)
+		if err != nil && (strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "context deadline exceeded")) {
 			m.Mu.Lock()
-			m.RecordPoC(req, []byte(payload), fmt.Sprintf("Potential HTTP Request Smuggling (timeout) at: %s", testURL))
+			m.RecordPoC(clteReq, []byte(cltePayload), fmt.Sprintf("CL.TE HTTP Request Smuggling timeout at: %s", testURL))
 			m.results = append(m.results, HTTPRequestSmugglingResult{
 				Target: m.Target,
 				Status: "vulnerable",
-				Detail: "Potential request smuggling detected via timeout (TE.CL or CL.TE)",
+				Detail: "Vulnerable to CL.TE request smuggling (timing based)",
 			})
 			m.Mu.Unlock()
+			return // already found vulnerability
+		} else if err == nil {
+			io.Copy(io.Discard, clteResp.Body)
+			clteResp.Body.Close()
 		}
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusNotImplemented {
-		// Server probably rejected conflicting headers, not vulnerable to basic
-		return
 	}
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode == 400 {
-		return
-	}
+	// 3. TE.CL Timing Check
+	teclPayload := "0\r\n\r\nX"
+	teclReq, err := http.NewRequestWithContext(ctx, "POST", testURL, bytes.NewBufferString(teclPayload))
+	if err == nil {
+		teclReq.Header.Add("Transfer-Encoding", "chunked")
+		teclReq.Header.Add("Content-Length", "6")
 
-	if len(bodyBytes) > 0 {
-		// A more complete smuggling test would require analyzing response offsets,
-		// but for a heuristic check, we'll just flag if it didn't reject it immediately.
-		m.Mu.Lock()
-		m.RecordPoC(req, []byte(payload), fmt.Sprintf("Potential HTTP Request Smuggling (accepted) at: %s", testURL))
-		m.results = append(m.results, HTTPRequestSmugglingResult{
-			Target: m.Target,
-			Status: "vulnerable",
-			Detail: "Conflicting TE/CL headers were accepted",
-		})
-		m.Mu.Unlock()
+		teclResp, err := m.Client.Do(teclReq)
+		if err != nil && (strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "context deadline exceeded")) {
+			m.Mu.Lock()
+			m.RecordPoC(teclReq, []byte(teclPayload), fmt.Sprintf("TE.CL HTTP Request Smuggling timeout at: %s", testURL))
+			m.results = append(m.results, HTTPRequestSmugglingResult{
+				Target: m.Target,
+				Status: "vulnerable",
+				Detail: "Vulnerable to TE.CL request smuggling (timing based)",
+			})
+			m.Mu.Unlock()
+		} else if err == nil {
+			io.Copy(io.Discard, teclResp.Body)
+			teclResp.Body.Close()
+		}
 	}
 }
 

@@ -47,7 +47,8 @@ func (m *ThreatMonitoringTesting) Execute(ctx context.Context) ([]ThreatMonitori
 	results := make([]ThreatMonitoringResult, 0)
 
 	// Baseline
-	if !m.checkIsAlive(ctx) {
+	isAlive, baselineStatus := m.getBaseline(ctx)
+	if !isAlive {
 		return append(results, ThreatMonitoringResult{
 			Target: m.Target,
 			Status: "error",
@@ -59,7 +60,8 @@ func (m *ThreatMonitoringTesting) Execute(ctx context.Context) ([]ThreatMonitori
 	var (
 		wg                 sync.WaitGroup
 		mu                 sync.Mutex
-		blockedDuringBurst bool
+		blockedCount       int
+		errorCount         int
 	)
 	sem := make(chan struct{}, 50) // Max 50 concurrent requests
 	payloads := []string{
@@ -85,12 +87,13 @@ func (m *ThreatMonitoringTesting) Execute(ctx context.Context) ([]ThreatMonitori
 				resp, err := m.Client.Do(req)
 				if err != nil {
 					mu.Lock()
-					blockedDuringBurst = true
+					errorCount++
 					mu.Unlock()
 				} else {
-					if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusNotAcceptable {
+					// Check if status is indicative of a block and DIFFERENT from baseline
+					if resp.StatusCode != baselineStatus && (resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusNotAcceptable || resp.StatusCode == http.StatusUnauthorized) {
 						mu.Lock()
-						blockedDuringBurst = true
+						blockedCount++
 						mu.Unlock()
 					}
 					resp.Body.Close()
@@ -99,6 +102,19 @@ func (m *ThreatMonitoringTesting) Execute(ctx context.Context) ([]ThreatMonitori
 		}(i)
 	}
 	wg.Wait()
+
+	// Consider it active monitoring if > 10% of requests explicitly blocked,
+	// or if > 20% resulted in errors (connection drops) which could indicate IP ban.
+	explicitBlockThreshold := m.burstCount / 10
+	if explicitBlockThreshold < 1 {
+		explicitBlockThreshold = 1
+	}
+	errorBlockThreshold := m.burstCount / 5
+	if errorBlockThreshold < 1 {
+		errorBlockThreshold = 1
+	}
+
+	blockedDuringBurst := blockedCount >= explicitBlockThreshold || errorCount >= errorBlockThreshold
 
 	// Verification
 	req, err := http.NewRequestWithContext(ctx, "GET", m.Target, nil)
@@ -110,22 +126,40 @@ func (m *ThreatMonitoringTesting) Execute(ctx context.Context) ([]ThreatMonitori
 
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
+			// A timeout might just be an overloaded server, not necessarily a block.
+			if !blockedDuringBurst && errorCount < errorBlockThreshold {
+				return append(results, ThreatMonitoringResult{
+					Target: m.Target,
+					Status: "vulnerable",
+					Detail: "No active threat monitoring detected. Server timed out but no explicit blocks were observed.",
+				}), nil
+			}
 			return append(results, ThreatMonitoringResult{
 				Target: m.Target,
 				Status: "error",
 				Detail: "Verification request timed out (context deadline exceeded).",
 			}), nil
 		}
+		
 		// Connection dropped or timeout, indicating potential blocking
+		// Only consider it a block if we had some errors during the burst
+		if errorCount >= explicitBlockThreshold {
+			return append(results, ThreatMonitoringResult{
+				Target: m.Target,
+				Status: "secure",
+				Detail: "Active blocking detected. Connection failed after aggressive burst.",
+			}), nil
+		}
+		
 		return append(results, ThreatMonitoringResult{
 			Target: m.Target,
-			Status: "secure",
-			Detail: "Active blocking detected. Connection failed after aggressive burst.",
+			Status: "vulnerable",
+			Detail: "No active threat monitoring detected. Server allowed aggressive burst without explicit blocking.",
 		}), nil
 	}
 	defer resp.Body.Close()
 
-	if blockedDuringBurst || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+	if blockedDuringBurst || (resp.StatusCode != baselineStatus && (resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests)) {
 		return append(results, ThreatMonitoringResult{
 			Target: m.Target,
 			Status: "secure",
@@ -140,17 +174,17 @@ func (m *ThreatMonitoringTesting) Execute(ctx context.Context) ([]ThreatMonitori
 	}), nil
 }
 
-func (m *ThreatMonitoringTesting) checkIsAlive(ctx context.Context) bool {
+func (m *ThreatMonitoringTesting) getBaseline(ctx context.Context) (bool, int) {
 	req, err := http.NewRequestWithContext(ctx, "GET", m.Target, nil)
 	if err != nil {
-		return false
+		return false, 0
 	}
 	resp, err := m.Client.Do(req)
 	if err != nil {
-		return false
+		return false, 0
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode < 500
+	return resp.StatusCode < 500, resp.StatusCode
 }
 
 func init() {
