@@ -238,7 +238,14 @@ Output:
 		kg.AddCredential(target, c.Username, c.Password)
 	}
 
-	return extracted.Summary, nil
+	summary := extracted.Summary
+	if len(extracted.DiscoveredURLs) > 0 {
+		summary += "\n\nDiscovered URLs: " + strings.Join(extracted.DiscoveredURLs, ", ")
+	}
+	if len(extracted.DiscoveredIPs) > 0 {
+		summary += "\n\nDiscovered IPs: " + strings.Join(extracted.DiscoveredIPs, ", ")
+	}
+	return summary, nil
 }
 
 func (kg *KnowledgeGraph) regexExtract(toolName, target string, payload map[string]any, resultData string) {

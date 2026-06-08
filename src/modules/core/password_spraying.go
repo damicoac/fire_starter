@@ -48,19 +48,21 @@ var sprayUsernames = []string{
 
 const sprayPassword = "Password1!"
 
-func (m *PasswordSpraying) getBaselineAuthBypass(ctx context.Context) bool {
+func (m *PasswordSpraying) getBaselineAuthBypass(ctx context.Context) (bool, int) {
 	body := "username=invalid_user_12345&password=invalid_password_12345"
 	req, err := http.NewRequestWithContext(ctx, "POST", m.Target, strings.NewReader(body))
 	if err != nil {
-		return false
+		return false, 0
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := m.Client.Do(req)
 	if err != nil {
-		return false
+		return false, 0
 	}
 	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusFound || resp.StatusCode == http.StatusSeeOther {
 		location := resp.Header.Get("Location")
@@ -71,7 +73,6 @@ func (m *PasswordSpraying) getBaselineAuthBypass(ctx context.Context) bool {
 			isLikelyError = true
 		}
 
-		bodyBytes, _ := io.ReadAll(resp.Body)
 		bodyStr := strings.ToLower(string(bodyBytes))
 
 		if resp.StatusCode == http.StatusOK && (strings.Contains(bodyStr, "invalid") || strings.Contains(bodyStr, "incorrect") || strings.Contains(bodyStr, "wrong") || strings.Contains(bodyStr, "failed")) {
@@ -79,16 +80,17 @@ func (m *PasswordSpraying) getBaselineAuthBypass(ctx context.Context) bool {
 		}
 
 		if (len(resp.Cookies()) > 0 || location != "") && !isLikelyError {
-			return true
+			return true, len(bodyBytes)
 		}
+		return false, len(bodyBytes)
 	}
-	return false
+	return false, len(bodyBytes)
 }
 
 func (m *PasswordSpraying) Execute(ctx context.Context) ([]PasswordSprayingResult, error) {
 	m.results = make([]PasswordSprayingResult, 0)
 
-	baselineAuthBypass := m.getBaselineAuthBypass(ctx)
+	baselineAuthBypass, baselineLen := m.getBaselineAuthBypass(ctx)
 
 	jobs := make(chan string, len(sprayUsernames))
 	for _, u := range sprayUsernames {
@@ -107,7 +109,7 @@ func (m *PasswordSpraying) Execute(ctx context.Context) ([]PasswordSprayingResul
 				case <-ctx.Done():
 					return
 				default:
-					m.testUsername(ctx, username, baselineAuthBypass)
+					m.testUsername(ctx, username, baselineAuthBypass, baselineLen)
 				}
 			}
 		}()
@@ -128,7 +130,7 @@ func (m *PasswordSpraying) Execute(ctx context.Context) ([]PasswordSprayingResul
 	}
 }
 
-func (m *PasswordSpraying) testUsername(ctx context.Context, username string, baselineAuthBypass bool) {
+func (m *PasswordSpraying) testUsername(ctx context.Context, username string, baselineAuthBypass bool, baselineLen int) {
 	body := "username=" + username + "&password=" + sprayPassword
 	req, err := http.NewRequestWithContext(ctx, "POST", m.Target, strings.NewReader(body))
 	if err != nil {
@@ -155,8 +157,19 @@ func (m *PasswordSpraying) testUsername(ctx context.Context, username string, ba
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		bodyStr := strings.ToLower(string(bodyBytes))
 
-		if resp.StatusCode == http.StatusOK && (strings.Contains(bodyStr, "invalid") || strings.Contains(bodyStr, "incorrect") || strings.Contains(bodyStr, "wrong") || strings.Contains(bodyStr, "failed")) {
-			isLikelyError = true
+		if resp.StatusCode == http.StatusOK {
+			if strings.Contains(bodyStr, "invalid") || strings.Contains(bodyStr, "incorrect") || strings.Contains(bodyStr, "wrong") || strings.Contains(bodyStr, "failed") {
+				isLikelyError = true
+			} else {
+				diff := len(bodyBytes) - baselineLen
+				if diff < 0 {
+					diff = -diff
+				}
+				isSignificantlyDifferent := float64(diff)/float64(baselineLen+1) > 0.1 || diff > 500
+				if !isSignificantlyDifferent {
+					isLikelyError = true
+				}
+			}
 		}
 
 		// Just a heuristic - if it doesn't set a cookie or redirect to dashboard, it might be a false positive

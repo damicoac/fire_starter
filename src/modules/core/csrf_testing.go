@@ -115,6 +115,12 @@ func (m *CSRFTesting) testEndpoint(ctx context.Context, targetURL string) {
 		// Not a form endpoint, skip blind POST to reduce false positives
 		return
 	}
+	
+	// Check if the form is actually a POST form
+	if !strings.Contains(getBodyStr, "method=\"post\"") && !strings.Contains(getBodyStr, "method='post'") && !strings.Contains(getBodyStr, "method=post") {
+		// Only GET forms exist, which don't need CSRF protection
+		return
+	}
 
 	// Step 2: A simple test for CSRF is checking if state-changing requests (POST/PUT)
 	// require anti-CSRF tokens. We send a bare POST without tokens.
@@ -133,9 +139,25 @@ func (m *CSRFTesting) testEndpoint(ctx context.Context, targetURL string) {
 
 	bodyBytes, _ := io.ReadAll(resp.Body)
 	bodyStr := string(bodyBytes)
+	
+	// Check for response similarity to prevent scanner-induced false positives
+	// If the server returns the same status code and the body length is within 5% 
+	// of the original GET request, it almost certainly just ignored the POST data 
+	// and re-rendered the GET view (e.g. invalid POST to a GET-only endpoint).
+	getLen := len(getBodyBytes)
+	postLen := len(bodyBytes)
+	diff := getLen - postLen
+	if diff < 0 {
+		diff = -diff
+	}
+	
+	if resp.StatusCode == getResp.StatusCode && float64(diff) <= float64(getLen)*0.05 {
+		// Response is substantially identical; state likely didn't change
+		return
+	}
 
-	// If the server accepts it (200 OK) without complaining about a missing token
-	if resp.StatusCode == http.StatusOK &&
+	// If the server accepts it (200 OK or 3xx redirect) without complaining about a missing token
+	if (resp.StatusCode == http.StatusOK || (resp.StatusCode >= 300 && resp.StatusCode < 400)) &&
 		!strings.Contains(strings.ToLower(bodyStr), "csrf") &&
 		!strings.Contains(strings.ToLower(bodyStr), "token") {
 		m.Mu.Lock()
