@@ -26,13 +26,13 @@ func TestKnowledgeGraph_Scoring(t *testing.T) {
 	}
 
 	// Test URL Scoring
-	kg.AddURL("http://example.com")
+	kg.AddURL("http://example.com", "")
 	targetUrl := kg.Targets["example.com"]
 	if targetUrl == nil || targetUrl.Score != 1 {
 		t.Errorf("Expected URL score 1, got %v", targetUrl)
 	}
 
-	kg.AddURL("http://example.com?id=1")
+	kg.AddURL("http://example.com?id=1", "")
 	if kg.Targets["example.com?id=1"] != nil {
 		t.Errorf("Expected parameterized URL to be folded into base target")
 	}
@@ -41,15 +41,15 @@ func TestKnowledgeGraph_Scoring(t *testing.T) {
 	}
 
 	// Test www normalization
-	kg.AddURL("http://www.example.com")
+	kg.AddURL("http://www.example.com", "")
 	if kg.Targets["www.example.com"] != nil {
 		t.Errorf("Expected URL to be normalized and merged")
 	}
-	kg.AddURL("https://www.example.com")
+	kg.AddURL("https://www.example.com", "")
 	if kg.Targets["www.example.com"] != nil {
 		t.Errorf("Expected https://www.example.com to be merged as well")
 	}
-	kg.AddURL("www.test.com")
+	kg.AddURL("www.test.com", "")
 	targetTest := kg.Targets["test.com"]
 	if targetTest == nil || targetTest.Value != "test.com" {
 		t.Errorf("Expected www.test.com to be normalized to test.com")

@@ -922,6 +922,15 @@ IP whitelist policy:
 				log.Warnf("Tool error in %s: %v", tc.ToolName, execErr)
 				log.Debugf("TOOL_RESULT tool=%s status=error result=%s", tc.ToolName, res)
 			} else {
+				targetUsed := target
+				if tStr, ok := payload["target"].(string); ok && strings.TrimSpace(tStr) != "" {
+					targetUsed = strings.TrimSpace(tStr)
+				} else if uStr, ok := payload["url"].(string); ok && strings.TrimSpace(uStr) != "" {
+					targetUsed = strings.TrimSpace(uStr)
+				} else if ipStr, ok := payload["ip"].(string); ok && strings.TrimSpace(ipStr) != "" {
+					targetUsed = strings.TrimSpace(ipStr)
+				}
+
 				if phase, ok := toolStageByName[tc.ToolName]; ok {
 					if completedByPhase[phase] == nil {
 						completedByPhase[phase] = make(map[string]map[string]bool)
@@ -930,14 +939,6 @@ IP whitelist policy:
 						completedByPhase[phase][tc.ToolName] = make(map[string]bool)
 					}
 
-					targetUsed := target
-					if tStr, ok := payload["target"].(string); ok && strings.TrimSpace(tStr) != "" {
-						targetUsed = strings.TrimSpace(tStr)
-					} else if uStr, ok := payload["url"].(string); ok && strings.TrimSpace(uStr) != "" {
-						targetUsed = strings.TrimSpace(uStr)
-					} else if ipStr, ok := payload["ip"].(string); ok && strings.TrimSpace(ipStr) != "" {
-						targetUsed = strings.TrimSpace(ipStr)
-					}
 					completedByPhase[phase][tc.ToolName][normalizeTarget(targetUsed)] = true
 				}
 
@@ -952,7 +953,7 @@ IP whitelist policy:
 				}
 
 				beforeGraph := kg.Snapshot()
-				summary, extractErr := kg.ExtractIntelligence(ctx, model, tc.ToolName, target, payload, resultData)
+				summary, extractErr := kg.ExtractIntelligence(ctx, model, tc.ToolName, targetUsed, payload, resultData)
 				if extractErr != nil {
 					log.Warnf("Intelligence extraction failed: %v", extractErr)
 					summary = fmt.Sprintf("Tool executed successfully but intelligence extraction failed: %v", extractErr)
