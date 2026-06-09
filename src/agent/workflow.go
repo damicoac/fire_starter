@@ -57,8 +57,10 @@ func getApplicableTargets(t matrix.ToolDefinition, kg *matrix.KnowledgeGraph, ba
 		return []string{baseTarget}
 	}
 	var state struct {
-		DiscoveredIPs []struct{ Value string } `json:"discovered_ips"`
-		DiscoveredURLs []struct{ Value string } `json:"discovered_urls"`
+		Targets map[string]struct {
+			Value string `json:"value"`
+			Type  string `json:"type"`
+		} `json:"targets"`
 	}
 	json.Unmarshal(bytes, &state)
 
@@ -78,13 +80,17 @@ func getApplicableTargets(t matrix.ToolDefinition, kg *matrix.KnowledgeGraph, ba
 
 	var targets []string
 	if hasURL {
-		for _, u := range state.DiscoveredURLs {
-			targets = append(targets, normalizeTarget(u.Value))
+		for _, t := range state.Targets {
+			if t.Type == "url" {
+				targets = append(targets, normalizeTarget(t.Value))
+			}
 		}
 	}
 	if hasIP {
-		for _, ip := range state.DiscoveredIPs {
-			targets = append(targets, normalizeTarget(ip.Value))
+		for _, t := range state.Targets {
+			if t.Type == "ip" {
+				targets = append(targets, normalizeTarget(t.Value))
+			}
 		}
 	}
 	if len(targets) == 0 {
@@ -189,21 +195,20 @@ func canAdvancePhase(currentPhase matrix.Phase, completedByPhase map[matrix.Phas
 		bytes, err := kg.ToJSON()
 		if err == nil {
 			var state struct {
-				DiscoveredIPs []struct{ Value string } `json:"discovered_ips"`
-				DiscoveredURLs []struct{ Value string } `json:"discovered_urls"`
+				Targets map[string]struct {
+					Value string `json:"value"`
+					Type  string `json:"type"`
+				} `json:"targets"`
 			}
 			json.Unmarshal(bytes, &state)
 
 			var allTargets []string
-			if len(state.DiscoveredURLs) > 0 {
-				for _, u := range state.DiscoveredURLs {
-					allTargets = append(allTargets, normalizeTarget(u.Value))
+			for _, t := range state.Targets {
+				if t.Type == "url" || t.Type == "ip" {
+					allTargets = append(allTargets, normalizeTarget(t.Value))
 				}
-			} else if len(state.DiscoveredIPs) > 0 {
-				for _, ip := range state.DiscoveredIPs {
-					allTargets = append(allTargets, normalizeTarget(ip.Value))
-				}
-			} else {
+			}
+			if len(allTargets) == 0 {
 				allTargets = append(allTargets, normalizeTarget(baseTarget))
 			}
 
@@ -578,8 +583,10 @@ IP whitelist policy:
 		needsPhase := make(map[matrix.Phase]bool)
 		if kgBytes, err := kg.ToJSON(); err == nil {
 			var state struct {
-				DiscoveredIPs []struct{ Value string } `json:"discovered_ips"`
-				DiscoveredURLs []struct{ Value string } `json:"discovered_urls"`
+				Targets map[string]struct {
+					Value string `json:"value"`
+					Type  string `json:"type"`
+				} `json:"targets"`
 			}
 			if err := json.Unmarshal(kgBytes, &state); err == nil {
 				checkTarget := func(target string) {
@@ -616,11 +623,10 @@ IP whitelist policy:
 						}
 					}
 				}
-				for _, ip := range state.DiscoveredIPs {
-					checkTarget(ip.Value)
-				}
-				for _, u := range state.DiscoveredURLs {
-					checkTarget(u.Value)
+				for _, t := range state.Targets {
+					if t.Type == "ip" || t.Type == "url" {
+						checkTarget(t.Value)
+					}
 				}
 			}
 		}
@@ -701,7 +707,8 @@ IP whitelist policy:
 			Tools:  activeTools,
 		})
 		if err != nil {
-			return "", fmt.Errorf("LLM error: %w", err)
+			log.Errorf("LLM error: %v. Retrying...", err)
+			continue
 		}
 
 		assistantMsg := fantasy.Message{Role: "assistant"}
@@ -983,5 +990,23 @@ IP whitelist policy:
 
 
 	}
-	return "", fmt.Errorf("max iterations reached without calling 'submit'")
+
+	kg.SetCurrentPhase(matrix.PhaseReporting)
+	reportStr := "# Final Report\n\n**WARNING: The application reached the maximum number of iterations without completing the red team process.**\n\n"
+	reportPath := "fire_starter_report.md"
+
+	if kgJSON, err := kg.ToJSON(); err == nil {
+		reportStr += "## Appendix: Knowledge Graph Dump\n\n```json\n" + string(kgJSON) + "\n```\n"
+	}
+
+	var finalReport string
+	if err := os.WriteFile(reportPath, []byte(reportStr), 0644); err != nil {
+		log.Errorf("Failed to save report: %v", err)
+		finalReport = fmt.Sprintf("Error saving report to %s: %v", reportPath, err)
+	} else {
+		log.Infof("Saved report to: %s", reportPath)
+		finalReport = fmt.Sprintf("Report successfully saved to: %s (Note: Max iterations reached before completion)", reportPath)
+	}
+
+	return finalReport, nil
 }

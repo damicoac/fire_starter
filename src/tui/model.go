@@ -522,9 +522,19 @@ func (m Model) View() string {
 	}
 	kgTitle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).Render(titleStr)
 	
-	kgScrollStr := fmt.Sprintf(" %3.0f%% ", m.kgViewport.ScrollPercent()*100)
-	if m.kgViewport.TotalLineCount() <= m.kgViewport.Height {
-		kgScrollStr = " 100% "
+	var kgScrollStr string
+	if m.inspectorMode {
+		kgScrollStr = fmt.Sprintf(" %3.0f%% ", m.kgViewport.ScrollPercent()*100)
+		if m.kgViewport.TotalLineCount() <= m.kgViewport.Height {
+			kgScrollStr = " 100% "
+		}
+	} else {
+		if len(m.kgTargets) <= 1 {
+			kgScrollStr = " 100% "
+		} else {
+			percent := float64(m.dashboardCursor) / float64(len(m.kgTargets)-1) * 100
+			kgScrollStr = fmt.Sprintf(" %3.0f%% ", percent)
+		}
 	}
 	kgStatus := lipgloss.NewStyle().Width(m.kgViewport.Width).Align(lipgloss.Right).Foreground(lipgloss.Color("240")).Render(kgScrollStr)
 	
