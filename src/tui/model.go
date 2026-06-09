@@ -38,8 +38,6 @@ type KGUpdateMsg struct {
 	Data []byte
 }
 
-
-
 type KGTarget struct {
 	Value           string
 	Type            string
@@ -51,36 +49,24 @@ type KGTarget struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	Expanded bool
-}
-
-type KGNode struct {
-	Label       string
-	Icon        string
-	Color       lipgloss.Color
-	Level       int
-	IsTarget    bool
-	TargetIndex int // Index into kgTargets
-	DetailText  string // Text to display in the detail pane
 }
 
 type Model struct {
-	logsViewport     viewport.Model
-	kgTreeViewport   viewport.Model
-	kgDetailViewport viewport.Model
-	spinner          spinner.Model
-	logs             []string
-	kgTargets        []KGTarget
-	kgNodes          []KGNode
-	kgTreeCursor     int
-	currentPhase     string
-	ready            bool
-	finished         bool
-	finalReport      string
-	width            int
-	height           int
+	logsViewport    viewport.Model
+	kgViewport      viewport.Model
+	spinner         spinner.Model
+	logs            []string
+	kgTargets       []KGTarget
+	dashboardCursor int
+	inspectorMode   bool
+	currentPhase    string
+	ready           bool
+	finished        bool
+	finalReport     string
+	width           int
+	height          int
 
-	activePane       int // 0 = logs, 1 = sidebar
+	activePane      int // 0 = logs, 1 = sidebar
 }
 
 func InitialModel() Model {
@@ -119,11 +105,6 @@ func parseKG(data []byte, existingTargets []KGTarget) ([]KGTarget, string) {
 		return existingTargets, ""
 	}
 
-	expandedMap := make(map[string]bool)
-	for _, t := range existingTargets {
-		expandedMap[t.Value] = t.Expanded
-	}
-
 	var newTargets []KGTarget
 	for _, t := range kg.Targets {
 		newTargets = append(newTargets, KGTarget{
@@ -134,7 +115,6 @@ func parseKG(data []byte, existingTargets []KGTarget) ([]KGTarget, string) {
 			Tokens:          t.Tokens,
 			Vulnerabilities: t.Vulnerabilities,
 			Credentials:     t.Credentials,
-			Expanded:        expandedMap[t.Value],
 		})
 	}
 
@@ -148,121 +128,154 @@ func parseKG(data []byte, existingTargets []KGTarget) ([]KGTarget, string) {
 	return newTargets, kg.CurrentPhase
 }
 
-func buildKGNodes(targets []KGTarget) []KGNode {
-	var nodes []KGNode
-	for i, t := range targets {
-		icon := "🌐"
-		color := lipgloss.Color("33") // Blue
-		if t.Type == "ip" {
-			icon = "🖥️ "
-			color = lipgloss.Color("46") // Green
-		}
-		
-		hasChildren := len(t.OpenPorts) > 0 || len(t.Vulnerabilities) > 0 || len(t.Tokens) > 0 || len(t.Credentials) > 0
-		exp := " "
-		if hasChildren {
-			exp = "▶"
-			if t.Expanded {
-				exp = "▼"
-			}
-		}
-		
-		nodes = append(nodes, KGNode{
-			Label:       fmt.Sprintf("%s %s %s", exp, icon, t.Value),
-			Color:       color,
-			Level:       0,
-			IsTarget:    true,
-			TargetIndex: i,
-			DetailText:  fmt.Sprintf("Type: %s\nScore: %d\nOpen Ports: %d\nVulnerabilities: %d\nTokens: %d\nCredentials: %d", t.Type, t.Score, len(t.OpenPorts), len(t.Vulnerabilities), len(t.Tokens), len(t.Credentials)),
-		})
-
-		if t.Expanded {
-			for _, p := range t.OpenPorts {
-				nodes = append(nodes, KGNode{
-					Label:       fmt.Sprintf("🔌 Port %d", p),
-					Color:       lipgloss.Color("99"), // Purple
-					Level:       1,
-					TargetIndex: i,
-					DetailText:  fmt.Sprintf("Target: %s\nOpen Port: %d", t.Value, p),
-				})
-			}
-			for _, v := range t.Vulnerabilities {
-				nodes = append(nodes, KGNode{
-					Label:       fmt.Sprintf("⚠️  %s", v),
-					Color:       lipgloss.Color("196"), // Red
-					Level:       1,
-					TargetIndex: i,
-					DetailText:  fmt.Sprintf("Target: %s\n\nVulnerability:\n%s", t.Value, v),
-				})
-			}
-			for _, token := range t.Tokens {
-				nodes = append(nodes, KGNode{
-					Label:       "🔑 Token",
-					Color:       lipgloss.Color("220"), // Yellow
-					Level:       1,
-					TargetIndex: i,
-					DetailText:  fmt.Sprintf("Target: %s\n\nToken/Cookie:\n%s", t.Value, token),
-				})
-			}
-			for _, cred := range t.Credentials {
-				nodes = append(nodes, KGNode{
-					Label:       fmt.Sprintf("👤 %s", cred.Username),
-					Color:       lipgloss.Color("240"), // Gray
-					Level:       1,
-					TargetIndex: i,
-					DetailText:  fmt.Sprintf("Target: %s\n\nUsername: %s\nPassword: %s", t.Value, cred.Username, cred.Password),
-				})
-			}
-		}
-	}
-	return nodes
-}
-
-func (m *Model) updateKGViewports() {
+func (m *Model) updateKGViewport() {
 	if !m.ready {
 		return
 	}
 
-	var treeBuilder strings.Builder
-	for i, n := range m.kgNodes {
-		prefix := ""
-		if n.Level > 0 {
-			prefix = "  └─ "
+	var contentBuilder strings.Builder
+
+	if m.inspectorMode && m.dashboardCursor < len(m.kgTargets) {
+		t := m.kgTargets[m.dashboardCursor]
+		header := lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Bold(true).Render("⬅ Press Esc to return")
+		contentBuilder.WriteString(header + "\n\n")
+
+		titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true)
+		valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
+		
+		icon := "🌐"
+		if t.Type == "ip" {
+			icon = "🖥️ "
 		}
 		
-		cursor := "  "
-		if i == m.kgTreeCursor {
-			cursor = "> "
+		contentBuilder.WriteString(titleStyle.Render(fmt.Sprintf("%s Target: ", icon)) + valueStyle.Render(t.Value) + "\n")
+		contentBuilder.WriteString(titleStyle.Render("Score: ") + valueStyle.Render(fmt.Sprintf("%d", t.Score)) + "\n")
+		contentBuilder.WriteString(titleStyle.Render("Type: ") + valueStyle.Render(t.Type) + "\n\n")
+
+		if len(t.OpenPorts) > 0 {
+			contentBuilder.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("99")).Bold(true).Render("🔌 Open Ports") + "\n")
+			for _, p := range t.OpenPorts {
+				contentBuilder.WriteString(fmt.Sprintf("  - %d\n", p))
+			}
+			contentBuilder.WriteString("\n")
 		}
 
-		style := lipgloss.NewStyle().Foreground(n.Color)
-		if i == m.kgTreeCursor && m.activePane == 1 {
-			style = style.Bold(true).Background(lipgloss.Color("236"))
+		if len(t.Vulnerabilities) > 0 {
+			contentBuilder.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true).Render("⚠️  Vulnerabilities") + "\n")
+			for _, v := range t.Vulnerabilities {
+				contentBuilder.WriteString(fmt.Sprintf("  - %s\n", v))
+			}
+			contentBuilder.WriteString("\n")
 		}
 
-		line := cursor + prefix + style.Render(n.Label)
-		treeBuilder.WriteString(line + "\n")
+		if len(t.Tokens) > 0 {
+			contentBuilder.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true).Render("🔑 Tokens / Cookies") + "\n")
+			for _, token := range t.Tokens {
+				contentBuilder.WriteString(fmt.Sprintf("  - %s\n", token))
+			}
+			contentBuilder.WriteString("\n")
+		}
+
+		if len(t.Credentials) > 0 {
+			contentBuilder.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Bold(true).Render("👤 Credentials") + "\n")
+			for _, cred := range t.Credentials {
+				contentBuilder.WriteString(fmt.Sprintf("  - %s:%s\n", cred.Username, cred.Password))
+			}
+			contentBuilder.WriteString("\n")
+		}
+
+	} else {
+		// Dashboard Mode
+		totalPorts, totalVulns, totalTokens, totalCreds := 0, 0, 0, 0
+		for _, t := range m.kgTargets {
+			totalPorts += len(t.OpenPorts)
+			totalVulns += len(t.Vulnerabilities)
+			totalTokens += len(t.Tokens)
+			totalCreds += len(t.Credentials)
+		}
+		
+		metricStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Bold(true)
+		valStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
+		
+		metrics := fmt.Sprintf("%s %s | %s %s | %s %s | %s %s",
+			metricStyle.Render("Targets:"), valStyle.Render(fmt.Sprintf("%d", len(m.kgTargets))),
+			metricStyle.Render("Vulns:"), valStyle.Render(fmt.Sprintf("%d", totalVulns)),
+			metricStyle.Render("Creds:"), valStyle.Render(fmt.Sprintf("%d", totalCreds)),
+			metricStyle.Render("Ports:"), valStyle.Render(fmt.Sprintf("%d", totalPorts)))
+		
+		contentBuilder.WriteString(metrics + "\n" + strings.Repeat("─", m.kgViewport.Width) + "\n\n")
+
+		if len(m.kgTargets) == 0 {
+			contentBuilder.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("  No targets discovered yet.\n"))
+		}
+
+		for i, t := range m.kgTargets {
+			cursor := "  "
+			if i == m.dashboardCursor {
+				cursor = "> "
+			}
+			
+			icon := "🌐"
+			color := lipgloss.Color("33") // Blue
+			if t.Type == "ip" {
+				icon = "🖥️ "
+				color = lipgloss.Color("46") // Green
+			}
+
+			style := lipgloss.NewStyle().Foreground(color)
+			if i == m.dashboardCursor && m.activePane == 1 {
+				style = style.Bold(true).Background(lipgloss.Color("236"))
+			}
+
+			bgStyle := lipgloss.NewStyle()
+			if i == m.dashboardCursor && m.activePane == 1 {
+				bgStyle = bgStyle.Background(lipgloss.Color("236"))
+			}
+
+			baseStyle := bgStyle.Copy().Foreground(lipgloss.Color("245"))
+
+			portStr := fmt.Sprintf("%d", len(t.OpenPorts))
+			if len(t.OpenPorts) > 0 {
+				portStr = bgStyle.Copy().Foreground(lipgloss.Color("99")).Render(portStr)
+			} else {
+				portStr = baseStyle.Render(portStr)
+			}
+
+			vulnStr := fmt.Sprintf("%d", len(t.Vulnerabilities))
+			if len(t.Vulnerabilities) > 0 {
+				vulnStr = bgStyle.Copy().Foreground(lipgloss.Color("196")).Render(vulnStr)
+			} else {
+				vulnStr = baseStyle.Render(vulnStr)
+			}
+
+			credStr := fmt.Sprintf("%d", len(t.Credentials))
+			if len(t.Credentials) > 0 {
+				credStr = bgStyle.Copy().Foreground(lipgloss.Color("220")).Render(credStr)
+			} else {
+				credStr = baseStyle.Render(credStr)
+			}
+
+			summary := baseStyle.Render("    ↳ Ports: ") + portStr + baseStyle.Render(" | Vulns: ") + vulnStr + baseStyle.Render(" | Creds: ") + credStr
+			
+			cursorSpacing := "  "
+			line1 := cursor + style.Render(fmt.Sprintf("%s %s (Score: %d)", icon, t.Value, t.Score))
+			line2 := cursorSpacing + summary
+			contentBuilder.WriteString(line1 + "\n" + line2 + "\n")
+		}
 	}
 
-	if len(m.kgNodes) == 0 {
-		treeBuilder.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("  No targets discovered yet.\n"))
-	}
-
-	m.kgTreeViewport.SetContent(treeBuilder.String())
+	m.kgViewport.SetContent(wordwrap.String(contentBuilder.String(), m.kgViewport.Width))
 	
-	if m.kgTreeCursor < m.kgTreeViewport.YOffset {
-		m.kgTreeViewport.SetYOffset(m.kgTreeCursor)
-	} else if m.kgTreeCursor >= m.kgTreeViewport.YOffset+m.kgTreeViewport.Height {
-		m.kgTreeViewport.SetYOffset(m.kgTreeCursor - m.kgTreeViewport.Height + 1)
+	// Handle scroll sync if needed
+	if !m.inspectorMode && len(m.kgTargets) > 0 {
+		cursorYTop := (m.dashboardCursor * 2) + 3 // header offset
+		cursorYBottom := cursorYTop + 1
+		if cursorYTop < m.kgViewport.YOffset {
+			m.kgViewport.SetYOffset(cursorYTop)
+		} else if cursorYBottom >= m.kgViewport.YOffset+m.kgViewport.Height {
+			m.kgViewport.SetYOffset(cursorYBottom - m.kgViewport.Height + 1)
+		}
 	}
-
-	detailContent := ""
-	if len(m.kgNodes) > 0 && m.kgTreeCursor < len(m.kgNodes) {
-		node := m.kgNodes[m.kgTreeCursor]
-		header := lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Bold(true).Render("Detail View")
-		detailContent = header + "\n" + strings.Repeat("─", 20) + "\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Render(node.DetailText)
-	}
-	m.kgDetailViewport.SetContent(wordwrap.String(detailContent, m.kgDetailViewport.Width))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -278,35 +291,45 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "tab":
 			m.activePane = (m.activePane + 1) % 2
-			m.updateKGViewports()
+			m.updateKGViewport()
 		case "up", "k":
 			if m.activePane == 1 {
-				if m.kgTreeCursor > 0 {
-					m.kgTreeCursor--
-					m.updateKGViewports()
+				if m.inspectorMode {
+					m.kgViewport.LineUp(1)
+				} else {
+					if m.dashboardCursor > 0 {
+						m.dashboardCursor--
+						m.updateKGViewport()
+					}
 				}
 			} else if m.activePane == 0 {
 				m.logsViewport.LineUp(1)
 			}
 		case "down", "j":
 			if m.activePane == 1 {
-				if m.kgTreeCursor < len(m.kgNodes)-1 {
-					m.kgTreeCursor++
-					m.updateKGViewports()
+				if m.inspectorMode {
+					m.kgViewport.LineDown(1)
+				} else {
+					if m.dashboardCursor < len(m.kgTargets)-1 {
+						m.dashboardCursor++
+						m.updateKGViewport()
+					}
 				}
 			} else if m.activePane == 0 {
 				m.logsViewport.LineDown(1)
 			}
 		case "enter", " ":
-			if m.activePane == 1 {
-				if len(m.kgNodes) > 0 && m.kgTreeCursor < len(m.kgNodes) {
-					if m.kgNodes[m.kgTreeCursor].IsTarget {
-						idx := m.kgNodes[m.kgTreeCursor].TargetIndex
-						m.kgTargets[idx].Expanded = !m.kgTargets[idx].Expanded
-						m.kgNodes = buildKGNodes(m.kgTargets)
-						m.updateKGViewports()
-					}
+			if m.activePane == 1 && !m.inspectorMode {
+				if len(m.kgTargets) > 0 {
+					m.inspectorMode = true
+					m.kgViewport.SetYOffset(0) // reset scroll
+					m.updateKGViewport()
 				}
+			}
+		case "esc", "backspace":
+			if m.activePane == 1 && m.inspectorMode {
+				m.inspectorMode = false
+				m.updateKGViewport()
 			}
 		}
 
@@ -325,25 +348,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if kgWidth < 0 { kgWidth = 0 }
 
 		kgHeight := max(0, msg.Height-verticalMarginHeight)
-		kgTreeHeight := kgHeight / 2
-		kgDetailHeight := kgHeight - kgTreeHeight - 2 // -2 to account for titles and dividers without overflowing
 
 		if !m.ready {
 			m.logsViewport = viewport.New(logsWidth, max(0, msg.Height-verticalMarginHeight))
-			m.kgTreeViewport = viewport.New(kgWidth, kgTreeHeight)
-			m.kgDetailViewport = viewport.New(kgWidth, kgDetailHeight)
+			m.kgViewport = viewport.New(kgWidth, kgHeight - 2)
 			m.ready = true
 		} else {
 			m.logsViewport.Width = logsWidth
 			m.logsViewport.Height = max(0, msg.Height-verticalMarginHeight)
-			m.kgTreeViewport.Width = kgWidth
-			m.kgTreeViewport.Height = kgTreeHeight
-			m.kgDetailViewport.Width = kgWidth
-			m.kgDetailViewport.Height = kgDetailHeight
+			m.kgViewport.Width = kgWidth
+			m.kgViewport.Height = max(0, kgHeight - 2)
 		}
 
 		m.logsViewport.SetContent(wordwrap.String(strings.Join(m.logs, "\n"), m.logsViewport.Width))
-		m.updateKGViewports()
+		m.updateKGViewport()
 
 	case LogMsg:
 		m.logs = append(m.logs, msg.Text)
@@ -354,11 +372,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case KGUpdateMsg:
 		m.kgTargets, m.currentPhase = parseKG(msg.Data, m.kgTargets)
-		m.kgNodes = buildKGNodes(m.kgTargets)
-		if m.kgTreeCursor >= len(m.kgNodes) {
-			m.kgTreeCursor = max(0, len(m.kgNodes)-1)
+		if m.dashboardCursor >= len(m.kgTargets) {
+			m.dashboardCursor = max(0, len(m.kgTargets)-1)
 		}
-		m.updateKGViewports()
+		m.updateKGViewport()
 
 	case AgentFinishedMsg:
 		m.finished = true
@@ -386,18 +403,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					cmds = append(cmds, cmd)
 				}
 				if m.activePane == 1 {
-					m.kgTreeViewport, cmd = m.kgTreeViewport.Update(msg)
-					cmds = append(cmds, cmd)
-					m.kgDetailViewport, cmd = m.kgDetailViewport.Update(msg)
+					m.kgViewport, cmd = m.kgViewport.Update(msg)
 					cmds = append(cmds, cmd)
 				}
 			}
 		default:
 			m.logsViewport, cmd = m.logsViewport.Update(msg)
 			cmds = append(cmds, cmd)
-			m.kgTreeViewport, cmd = m.kgTreeViewport.Update(msg)
-			cmds = append(cmds, cmd)
-			m.kgDetailViewport, cmd = m.kgDetailViewport.Update(msg)
+			m.kgViewport, cmd = m.kgViewport.Update(msg)
 			cmds = append(cmds, cmd)
 		}
 	}
@@ -476,8 +489,6 @@ func (m Model) View() string {
 	}
 
 	logsContent := m.logsViewport.View()
-	
-
 
 	if m.finished && m.finalReport != "" {
 		logsContent = m.logsViewport.View() + "\n\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Render("--- Final Report ---\n"+m.finalReport)
@@ -504,28 +515,22 @@ func (m Model) View() string {
 	paddedLogs := lipgloss.NewStyle().Height(m.logsViewport.Height).Render(logsContent)
 	logsContentWithStatus := lipgloss.JoinVertical(lipgloss.Left, logsTitle, paddedLogs, logsStatus)
 
-	// KG Tree Viewport
-	kgTitle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).Render(" Knowledge Graph")
-	kgTreeScrollStr := fmt.Sprintf(" %3.0f%% ", m.kgTreeViewport.ScrollPercent()*100)
-	if m.kgTreeViewport.TotalLineCount() <= m.kgTreeViewport.Height {
-		kgTreeScrollStr = " 100% "
+	// KG Viewport
+	titleStr := " Knowledge Graph Dashboard"
+	if m.inspectorMode {
+		titleStr = " Target Inspector"
 	}
-	kgTreeStatus := lipgloss.NewStyle().Width(m.kgTreeViewport.Width).Align(lipgloss.Right).Foreground(lipgloss.Color("240")).Render(kgTreeScrollStr)
-	paddedKgTree := lipgloss.NewStyle().Height(m.kgTreeViewport.Height).Render(m.kgTreeViewport.View())
-	kgTreeWithStatus := lipgloss.JoinVertical(lipgloss.Left, kgTitle, paddedKgTree, kgTreeStatus)
-
-	// KG Detail Viewport
-	kgDetailScrollStr := fmt.Sprintf(" %3.0f%% ", m.kgDetailViewport.ScrollPercent()*100)
-	if m.kgDetailViewport.TotalLineCount() <= m.kgDetailViewport.Height {
-		kgDetailScrollStr = " 100% "
+	kgTitle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).Render(titleStr)
+	
+	kgScrollStr := fmt.Sprintf(" %3.0f%% ", m.kgViewport.ScrollPercent()*100)
+	if m.kgViewport.TotalLineCount() <= m.kgViewport.Height {
+		kgScrollStr = " 100% "
 	}
-	kgDetailStatus := lipgloss.NewStyle().Width(m.kgDetailViewport.Width).Align(lipgloss.Right).Foreground(lipgloss.Color("240")).Render(kgDetailScrollStr)
-	paddedKgDetail := lipgloss.NewStyle().Height(m.kgDetailViewport.Height).Render(m.kgDetailViewport.View())
-	kgDetailWithStatus := lipgloss.JoinVertical(lipgloss.Left, paddedKgDetail, kgDetailStatus)
-
-	// Combine KG Top and Bottom
-	divider := lipgloss.NewStyle().Foreground(lipgloss.Color("62")).Render(strings.Repeat("─", m.kgTreeViewport.Width))
-	kgCombined := lipgloss.JoinVertical(lipgloss.Left, kgTreeWithStatus, divider, kgDetailWithStatus)
+	kgStatus := lipgloss.NewStyle().Width(m.kgViewport.Width).Align(lipgloss.Right).Foreground(lipgloss.Color("240")).Render(kgScrollStr)
+	
+	paddedKg := lipgloss.NewStyle().Height(m.kgViewport.Height).Render(m.kgViewport.View())
+	
+	kgCombined := lipgloss.JoinVertical(lipgloss.Left, kgTitle, paddedKg, kgStatus)
 
 	logsStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).

@@ -45,6 +45,68 @@ func NormalizeURL(u string) string {
 	return u
 }
 
+func ResolveAndNormalizeURL(u string, baseCtx string) string {
+	u = strings.TrimSpace(u)
+	baseCtx = strings.TrimSpace(baseCtx)
+
+	if u == "" {
+		return ""
+	}
+
+	var baseURL *url.URL
+	if baseCtx != "" {
+		if !strings.HasPrefix(baseCtx, "http://") && !strings.HasPrefix(baseCtx, "https://") {
+			parsed, err := url.Parse("http://" + baseCtx)
+			if err == nil {
+				baseURL = parsed
+			}
+		} else {
+			parsed, err := url.Parse(baseCtx)
+			if err == nil {
+				baseURL = parsed
+			}
+		}
+	}
+
+	hasScheme := strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://")
+	if !hasScheme {
+		isAbsoluteSchemeless := false
+
+		if baseURL != nil {
+			if strings.HasPrefix(u, baseURL.Host+"/") || u == baseURL.Host {
+				isAbsoluteSchemeless = true
+			}
+		}
+		
+		firstSeg := u
+		if idx := strings.Index(u, "/"); idx != -1 {
+			firstSeg = u[:idx]
+		}
+		if net.ParseIP(firstSeg) != nil || (strings.Contains(firstSeg, ":") && net.ParseIP(strings.Split(firstSeg, ":")[0]) != nil) {
+			isAbsoluteSchemeless = true
+		} else if strings.Contains(firstSeg, ".") {
+			if baseURL == nil {
+				isAbsoluteSchemeless = true
+			}
+		}
+
+		if isAbsoluteSchemeless {
+			u = "http://" + u
+			hasScheme = true
+		}
+	}
+
+	if baseURL != nil && !hasScheme {
+		refURL, err := url.Parse(u)
+		if err == nil {
+			resolved := baseURL.ResolveReference(refURL)
+			u = resolved.String()
+		}
+	}
+
+	return NormalizeURL(u)
+}
+
 type CredentialInfo struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
@@ -213,7 +275,7 @@ Output:
 		kg.AddIP(ip)
 	}
 	for _, u := range extracted.DiscoveredURLs {
-		kg.AddURL(u)
+		kg.AddURL(u, target)
 	}
 	for _, p := range extracted.OpenPorts {
 		kg.AddPort(p.IP, p.Port)
@@ -330,7 +392,7 @@ func (kg *KnowledgeGraph) regexExtract(toolName, target string, payload map[stri
 
 	urls := urlRegex.FindAllString(resultData, -1)
 	for _, u := range urls {
-		kg.AddURL(u)
+		kg.AddURL(u, target)
 	}
 
 	if strings.Contains(strings.ToLower(resultData), "vulnerability") || strings.Contains(strings.ToLower(resultData), "exploited") {
@@ -392,7 +454,7 @@ func (kg *KnowledgeGraph) AddPort(targetValue string, port int) {
 	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=open_ports target=%s port=%d", targetValue, port)
 }
 
-func (kg *KnowledgeGraph) AddURL(u string) {
+func (kg *KnowledgeGraph) AddURL(u string, baseCtx string) {
 	defer kg.triggerUpdate()
 	kg.mu.Lock()
 	defer kg.mu.Unlock()
@@ -402,7 +464,7 @@ func (kg *KnowledgeGraph) AddURL(u string) {
 		score += 5
 	}
 
-	u = NormalizeURL(u)
+	u = ResolveAndNormalizeURL(u, baseCtx)
 
 	if kg.BaseDomain != "" {
 		parsed, err := url.Parse("https://" + u)
