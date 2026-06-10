@@ -154,6 +154,7 @@ type KnowledgeSnapshot struct {
 	HarvestedTokenCount int
 	VulnerabilityCount  int
 	CurrentPhase        Phase
+	OpenPorts           []int
 }
 
 func NewKnowledgeGraph() *KnowledgeGraph {
@@ -650,6 +651,8 @@ func (kg *KnowledgeGraph) Snapshot() KnowledgeSnapshot {
 	tokenCount := 0
 	vulnCount := 0
 
+	var allPorts []int
+
 	for _, t := range kg.Targets {
 		if t.Type == "ip" {
 			ipCount++
@@ -657,6 +660,7 @@ func (kg *KnowledgeGraph) Snapshot() KnowledgeSnapshot {
 			urlCount++
 		}
 		portCount += len(t.OpenPorts)
+		allPorts = append(allPorts, t.OpenPorts...)
 		tokenCount += len(t.Tokens)
 		vulnCount += len(t.Vulnerabilities)
 	}
@@ -668,5 +672,6 @@ func (kg *KnowledgeGraph) Snapshot() KnowledgeSnapshot {
 		HarvestedTokenCount: tokenCount,
 		VulnerabilityCount:  vulnCount,
 		CurrentPhase:        kg.CurrentPhase,
+		OpenPorts:           allPorts,
 	}
 }
