@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"net"
 	"net/url"
 	"os"
@@ -116,6 +117,15 @@ func isToolExhausted(t matrix.ToolDefinition, kg *matrix.KnowledgeGraph, baseTar
 	return true
 }
 
+func hasPort(ports []int, target int) bool {
+	for _, p := range ports {
+		if p == target {
+			return true
+		}
+	}
+	return false
+}
+
 func scoreTool(def matrix.ToolDefinition, currentPhase matrix.Phase, snapshot matrix.KnowledgeSnapshot, exhausted bool) scoredTool {
 	stage := matrix.Phase(matrix.MapTechniqueToStage(def.Technique))
 	score := 0
@@ -160,6 +170,20 @@ func scoreTool(def matrix.ToolDefinition, currentPhase matrix.Phase, snapshot ma
 			score += 3
 			reasons = append(reasons, "tokens available for post-exploitation")
 		}
+	}
+
+	name := strings.ToLower(def.Name)
+	if strings.Contains(name, "ssh") && hasPort(snapshot.OpenPorts, 22) {
+		score += 3
+		reasons = append(reasons, "ssh port 22 is open")
+	}
+	if (strings.Contains(name, "sql") || strings.Contains(name, "database") || strings.Contains(name, "db")) && (hasPort(snapshot.OpenPorts, 3306) || hasPort(snapshot.OpenPorts, 5432)) {
+		score += 3
+		reasons = append(reasons, "database port is open")
+	}
+	if strings.Contains(name, "ftp") && hasPort(snapshot.OpenPorts, 21) {
+		score += 3
+		reasons = append(reasons, "ftp port 21 is open")
 	}
 
 	if exhausted {
@@ -574,6 +598,7 @@ IP whitelist policy:
 	}
 	completedByPhase := make(map[matrix.Phase]map[string]map[string]bool)
 	queriedGraphByPhase := make(map[matrix.Phase]bool)
+	executedPayloads := make(map[string]bool)
 
 	for iter := 0; iter < cfg.MaxIters; iter++ {
 		currentPhase := kg.GetCurrentPhase()
@@ -637,7 +662,17 @@ IP whitelist policy:
 			if toolStage == currentPhase || toolStage == matrix.PhaseReconnaissance || needsPhase[toolStage] {
 				var executedTargets map[string]bool
 				if completedByPhase[toolStage] != nil {
-					executedTargets = completedByPhase[toolStage][t.Name]
+					executedTargets = make(map[string]bool)
+					if completedByPhase[toolStage][t.Name] != nil {
+						for k, v := range completedByPhase[toolStage][t.Name] {
+							executedTargets[k] = v
+						}
+					}
+					if completedByPhase[toolStage]["mark_target_inapplicable"] != nil {
+						for k, v := range completedByPhase[toolStage]["mark_target_inapplicable"] {
+							executedTargets[k] = v
+						}
+					}
 				}
 				exhausted := isToolExhausted(t, kg, target, executedTargets)
 
@@ -652,10 +687,11 @@ IP whitelist policy:
 			log.Debugf("Tool rejected this phase: %s stage=%s current_phase=%s", t.Name, toolStage, currentPhase)
 		}
 
+		rand.Shuffle(len(scored), func(i, j int) {
+			scored[i], scored[j] = scored[j], scored[i]
+		})
+
 		sort.SliceStable(scored, func(i, j int) bool {
-			if scored[i].Score == scored[j].Score {
-				return scored[i].Definition.Identifier < scored[j].Definition.Identifier
-			}
 			return scored[i].Score > scored[j].Score
 		})
 
@@ -693,6 +729,11 @@ IP whitelist policy:
 			Name:        "advance_phase",
 			Description: "Advance to the next red team phase only after current phase completion criteria are satisfied.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+		})
+		activeTools = append(activeTools, fantasy.FunctionTool{
+			Name:        "mark_target_inapplicable",
+			Description: "Mark a discovered target as inapplicable or fully processed for the current phase, so you can satisfy phase advancement criteria without running incompatible tools.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{"target": map[string]any{"type": "string"}}, "required": []string{"target"}},
 		})
 		if canSubmitNow {
 			activeTools = append(activeTools, fantasy.FunctionTool{
@@ -875,6 +916,33 @@ IP whitelist policy:
 				continue
 			}
 
+			if tc.ToolName == "mark_target_inapplicable" {
+				var args map[string]any
+				_ = json.Unmarshal([]byte(tc.Input), &args)
+				if tStr, ok := args["target"].(string); ok && tStr != "" {
+					phase := kg.GetCurrentPhase()
+					if completedByPhase[phase] == nil {
+						completedByPhase[phase] = make(map[string]map[string]bool)
+					}
+					if completedByPhase[phase]["mark_target_inapplicable"] == nil {
+						completedByPhase[phase]["mark_target_inapplicable"] = make(map[string]bool)
+					}
+					completedByPhase[phase]["mark_target_inapplicable"][normalizeTarget(tStr)] = true
+					res := fmt.Sprintf("Target %s marked as inapplicable/processed for phase %s.", tStr, phase)
+					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+						ToolCallID: tc.ToolCallID,
+						Output:     fantasy.ToolResultOutputContentText{Text: res},
+					})
+					log.Infof("TARGET_MARKED_INAPPLICABLE target=%s phase=%s", tStr, phase)
+				} else {
+					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+						ToolCallID: tc.ToolCallID,
+						Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: target argument missing"},
+					})
+				}
+				continue
+			}
+
 			var args map[string]any
 			if tc.Input != "" {
 				if err := json.Unmarshal([]byte(tc.Input), &args); err != nil {
@@ -919,6 +987,17 @@ IP whitelist policy:
 				}
 			}
 
+			payloadBytes, _ := json.Marshal(payload)
+			payloadHash := fmt.Sprintf("%s|%s", tc.ToolName, string(payloadBytes))
+			if executedPayloads[payloadHash] {
+				toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+					ToolCallID: tc.ToolCallID,
+					Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: You have already successfully executed this tool with this exact payload. Please choose a different target, a different tool, different parameters, or advance the phase."},
+				})
+				log.Infof("TOOL_EXECUTION_BLOCKED reason=duplicate_payload tool=%s payload=%s", tc.ToolName, string(payloadBytes))
+				continue
+			}
+
 			resultData, execErr := executor.ExecuteByToolName(tc.ToolName, payload, func(s string) {
 				log.Debug(s)
 			})
@@ -929,6 +1008,8 @@ IP whitelist policy:
 				log.Warnf("Tool error in %s: %v", tc.ToolName, execErr)
 				log.Debugf("TOOL_RESULT tool=%s status=error result=%s", tc.ToolName, res)
 			} else {
+				executedPayloads[payloadHash] = true
+
 				targetUsed := target
 				if tStr, ok := payload["target"].(string); ok && strings.TrimSpace(tStr) != "" {
 					targetUsed = strings.TrimSpace(tStr)
