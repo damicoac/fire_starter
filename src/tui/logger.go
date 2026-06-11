@@ -103,20 +103,36 @@ func formatLogLine(line string) string {
 		badge := toolBadge.Render("TOOL_EXECUTION_SUMMARY")
 		
 		toolPrefix := "tool="
+		targetPrefix := "target="
 		summaryPrefix := `summary="`
 
 		tIdx := strings.Index(line, toolPrefix)
+		tgtIdx := strings.Index(line, targetPrefix)
 		sIdx := strings.Index(line, summaryPrefix)
 		
 		if tIdx != -1 && sIdx != -1 {
-			toolName := strings.TrimSpace(line[tIdx+len(toolPrefix) : sIdx])
+			var toolName string
+			var targetName string
+			
+			if tgtIdx != -1 && tgtIdx < sIdx {
+				toolName = strings.TrimSpace(line[tIdx+len(toolPrefix) : tgtIdx])
+				targetName = strings.TrimSpace(line[tgtIdx+len(targetPrefix) : sIdx])
+			} else {
+				toolName = strings.TrimSpace(line[tIdx+len(toolPrefix) : sIdx])
+			}
+			
 			quotedSummary := line[sIdx+len(`summary=`):]
 			
 			unquoted, err := strconv.Unquote(quotedSummary)
 			if err == nil {
 				// Replace literal "\n" sequences with actual newlines
 				unquoted = strings.ReplaceAll(unquoted, `\n`, "\n")
-				header := ts + " " + badge + lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true).Render(" (" + toolName + ")")
+				
+				headerText := " (" + toolName + ")"
+				if targetName != "" {
+					headerText = " (" + toolName + " on " + targetName + ")"
+				}
+				header := ts + " " + badge + lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true).Render(headerText)
 				body := summaryStyle.Render(strings.TrimSpace(unquoted))
 				return header + "\n" + body
 			}
