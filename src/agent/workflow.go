@@ -724,6 +724,17 @@ IP whitelist policy:
 				continue
 			}
 
+			payloadBytes, _ := json.Marshal(payload)
+			payloadHash := fmt.Sprintf("%s|%s", tc.ToolName, string(payloadBytes))
+			if executedPayloads[payloadHash] {
+				toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+					ToolCallID: tc.ToolCallID,
+					Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: You have already successfully executed this tool with this exact payload. Please choose a different target, a different tool, different parameters, or advance the phase."},
+				})
+				log.Infof("TOOL_EXECUTION_BLOCKED reason=duplicate_payload tool=%s payload=%s", tc.ToolName, string(payloadBytes))
+				continue
+			}
+
 			tokens := kg.GetTokens()
 			if len(tokens) > 0 {
 				payload["cookies"] = strings.Join(tokens, "; ")
@@ -734,17 +745,6 @@ IP whitelist policy:
 					payload["username"] = credentials[0].Username
 					payload["password"] = credentials[0].Password
 				}
-			}
-
-			payloadBytes, _ := json.Marshal(payload)
-			payloadHash := fmt.Sprintf("%s|%s", tc.ToolName, string(payloadBytes))
-			if executedPayloads[payloadHash] {
-				toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
-					ToolCallID: tc.ToolCallID,
-					Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: You have already successfully executed this tool with this exact payload. Please choose a different target, a different tool, different parameters, or advance the phase."},
-				})
-				log.Infof("TOOL_EXECUTION_BLOCKED reason=duplicate_payload tool=%s payload=%s", tc.ToolName, string(payloadBytes))
-				continue
 			}
 
 			resultData, execErr := executor.ExecuteByToolName(tc.ToolName, payload, func(s string) {
@@ -789,7 +789,7 @@ IP whitelist policy:
 				log.Infof("KNOWLEDGE_GRAPH_UPDATE tool=%s delta=%s snapshot=%s", tc.ToolName, snapshotDelta(beforeGraph, afterGraph), summarizeSnapshot(afterGraph))
 				canSubmitAfter, submitReasonAfter := canSubmit(afterGraph)
 				log.Infof("NEXT_DECISION tool=%s recommendation=%s", tc.ToolName, recommendedNextAction(canSubmitAfter, submitReasonAfter))
-				log.Infof("TOOL_EXECUTION_SUMMARY tool=%s summary=%q", tc.ToolName, summary)
+				log.Infof("TOOL_EXECUTION_SUMMARY tool=%s target=%s summary=%q", tc.ToolName, targetUsed, summary)
 				res = fmt.Sprintf("=== TOOL EXECUTION SUMMARY ===\n%s", summary)
 				log.Debugf("TOOL_RESULT tool=%s status=success result=%s", tc.ToolName, resultData)
 			}
