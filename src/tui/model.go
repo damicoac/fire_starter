@@ -23,6 +23,16 @@ var (
 
 	statusStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240"))
+
+	phaseColors = map[string]lipgloss.Color{
+		"pre-engagement":         lipgloss.Color("245"), // Grey
+		"reconnaissance":         lipgloss.Color("33"),  // Blue
+		"scanning-enumeration":   lipgloss.Color("214"), // Orange
+		"vulnerability-analysis": lipgloss.Color("196"), // Red
+		"exploitation":           lipgloss.Color("129"), // Purple
+		"post-exploitation":      lipgloss.Color("201"), // Pink
+		"reporting":              lipgloss.Color("46"),  // Green
+	}
 )
 
 // Messages
@@ -151,7 +161,13 @@ func (m *Model) updateKGViewport() {
 		
 		contentBuilder.WriteString(titleStyle.Render(fmt.Sprintf("%s Target: ", icon)) + valueStyle.Render(t.Value) + "\n")
 		contentBuilder.WriteString(titleStyle.Render("Score: ") + valueStyle.Render(fmt.Sprintf("%d", t.Score)) + "\n")
-		contentBuilder.WriteString(titleStyle.Render("Phase: ") + valueStyle.Render(t.CurrentPhase) + "\n")
+		
+		phaseColor := valueStyle.GetForeground()
+		if c, ok := phaseColors[t.CurrentPhase]; ok {
+			phaseColor = c
+		}
+		contentBuilder.WriteString(titleStyle.Render("Phase: ") + lipgloss.NewStyle().Foreground(phaseColor).Render(t.CurrentPhase) + "\n")
+		
 		contentBuilder.WriteString(titleStyle.Render("Type: ") + valueStyle.Render(t.Type) + "\n\n")
 
 		if len(t.OpenPorts) > 0 {
@@ -212,7 +228,13 @@ func (m *Model) updateKGViewport() {
 		var phaseSummary []string
 		for _, p := range phases {
 			if count := phaseCounts[p]; count > 0 {
-				phaseSummary = append(phaseSummary, fmt.Sprintf("%s: %d", shortPhases[p], count))
+				color := lipgloss.Color("214") // fallback
+				if c, ok := phaseColors[p]; ok {
+					color = c
+				}
+				phaseLabel := lipgloss.NewStyle().Foreground(color).Render(shortPhases[p])
+				countStr := lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Render(fmt.Sprintf("%d", count))
+				phaseSummary = append(phaseSummary, fmt.Sprintf("%s: %s", phaseLabel, countStr))
 			}
 		}
 		
@@ -258,7 +280,11 @@ func (m *Model) updateKGViewport() {
 
 			baseStyle := bgStyle.Copy().Foreground(lipgloss.Color("245"))
 
-			phaseStr := bgStyle.Copy().Foreground(lipgloss.Color("214")).Render(shortPhases[t.CurrentPhase])
+			phaseColor := lipgloss.Color("214")
+			if c, ok := phaseColors[t.CurrentPhase]; ok {
+				phaseColor = c
+			}
+			phaseStr := bgStyle.Copy().Foreground(phaseColor).Render(shortPhases[t.CurrentPhase])
 
 			portStr := fmt.Sprintf("%d", len(t.OpenPorts))
 			if len(t.OpenPorts) > 0 {
