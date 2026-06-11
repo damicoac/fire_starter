@@ -1,6 +1,7 @@
 package matrix
 
 import (
+	_ "embed"
 	"os"
 	"path/filepath"
 	"time"
@@ -52,8 +53,14 @@ type ToolDefinition struct {
 	InputSchema map[string]any `json:"input_schema"`
 }
 
+//go:embed decisions.json
+var embeddedDecisions []byte
+
 // Add to the bottom of src/matrix/models.go
 func ReadDecisionsFile(path string) ([]byte, error) {
+	if len(embeddedDecisions) > 0 {
+		return embeddedDecisions, nil
+	}
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		path = filepath.Join("..", "..", "src", "matrix", "decisions.json")
 	}

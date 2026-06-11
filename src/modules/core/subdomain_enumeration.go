@@ -45,16 +45,15 @@ func (m *SubdomainEnumeration) SetThreads(count int) {
 	m.MaxThreads = count
 }
 
-var commonSubdomains = []string{
-	"www", "mail", "ftp", "localhost", "webmail", "smtp", "pop", "ns1", "webdisk", "ns2", "cpanel", "whm", "autodiscover", "autoconfig", "m", "imap", "test", "ns", "blog", "pop3", "dev", "www2", "admin", "forum", "news", "vpn", "ns3", "mail2", "new", "mysql", "old", "b", "i", "a", "server", "ns4", "api", "shop", "app", "mobile", "secure", "web", "staging",
-}
+
 
 func (m *SubdomainEnumeration) Execute(ctx context.Context) ([]SubdomainEnumerationResult, error) {
 	m.results = make([]SubdomainEnumerationResult, 0)
-	jobs := make(chan string, len(commonSubdomains))
+	wordlist := getDefaultWordlist()
+	jobs := make(chan string, len(wordlist))
 	var wg sync.WaitGroup
 
-	for _, sub := range commonSubdomains {
+	for _, sub := range wordlist {
 		jobs <- fmt.Sprintf("%s.%s", sub, m.Target)
 	}
 	close(jobs)
