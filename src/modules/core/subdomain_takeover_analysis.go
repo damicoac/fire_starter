@@ -56,11 +56,9 @@ var takeoverSignatures = map[string]string{
 func (m *SubdomainTakeoverAnalysis) Execute(ctx context.Context) ([]SubdomainTakeoverAnalysisResult, error) {
 	m.results = make([]SubdomainTakeoverAnalysisResult, 0)
 
-	// In a real run, this would be a full wordlist, but we'll use a small set for simulation
-	testSubs := []string{"help", "docs", "blog", "app", "dev", "status"}
-
-	jobs := make(chan string, len(testSubs))
-	for _, sub := range testSubs {
+	wordlist := getDefaultWordlist()
+	jobs := make(chan string, len(wordlist))
+	for _, sub := range wordlist {
 		jobs <- fmt.Sprintf("%s.%s", sub, m.Target)
 	}
 	close(jobs)

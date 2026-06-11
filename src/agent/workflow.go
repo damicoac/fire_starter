@@ -155,20 +155,29 @@ func scoreTool(def matrix.ToolDefinition, target *matrix.Target, snapshot matrix
 }
 
 func canSubmit(snapshot matrix.KnowledgeSnapshot) (bool, string) {
-	if snapshot.VulnerabilityCount > 0 {
-		return true, "vulnerabilities found"
-	}
 	allReporting := true
+	allPastRecon := true
 	for _, phase := range snapshot.TargetPhases {
 		if phase != matrix.PhaseReporting {
 			allReporting = false
-			break
+		}
+		if phase == matrix.PhaseReconnaissance {
+			allPastRecon = false
 		}
 	}
+
+	if snapshot.VulnerabilityCount == 0 {
+		if len(snapshot.TargetPhases) > 0 && allPastRecon {
+			return true, "no vulnerabilities found and all targets completed recon, early exit allowed"
+		}
+		return false, "no vulnerabilities found, but targets must complete recon before early exit"
+	}
+
 	if len(snapshot.TargetPhases) > 0 && allReporting {
 		return true, "all targets exhausted"
 	}
-	return false, "no vulnerabilities and targets not exhausted"
+
+	return false, "vulnerabilities found; must exhaust all targets before submitting"
 }
 
 func summarizeSnapshot(snapshot matrix.KnowledgeSnapshot) string {
@@ -393,7 +402,7 @@ Review the 'Current Intelligence Summary' in the system messages to see what tar
 
 Do not make assumptions. Turn theories into testable hypotheses, then validate them by calling available tools and using tool output as evidence for your next step. If evidence is missing or stale, call another tool instead of guessing.
 
-When you have exhausted all applicable tools for a target's current phase, you MUST call the 'advance_target_phase' tool for that target to unlock the next set of tools. When you have reached your goals, found critical vulnerabilities, or run out of actionable tools across all targets, you MUST call the 'submit' tool with your final report. Your report should thoroughly summarize the findings from the engagement and provide the security engineer with everything they need to do follow on work. The final report will automatically include the exact reproduction steps for the vulnerabilities based on your execution history, so you do not need to retrieve them.
+When you have exhausted all applicable tools for a target's current phase, you MUST call the 'advance_target_phase' tool for that target to unlock the next set of tools. If you find vulnerabilities, you MUST continue your investigation to probe deeper and attempt lateral movement. You may only call the 'submit' tool if you have exhausted all actionable tools across all targets, OR if you have found no vulnerabilities and all targets have completed their reconnaissance phase. Your report should thoroughly summarize the findings from the engagement and provide the security engineer with everything they need to do follow on work. The final report will automatically include the exact reproduction steps for the vulnerabilities based on your execution history, so you do not need to retrieve them.
 
 CRITICAL: Do not execute the same tool against the same target more than once. The framework will block duplicate payloads.
 CRITICAL: Security testing is oriented around lateral movement within the network. Continue probing deeply.
@@ -579,58 +588,24 @@ IP whitelist policy:
 
 		var toolResultParts []fantasy.MessagePart
 
+		var submitTc *fantasy.ToolCallContent
+		var otherTcs []fantasy.ToolCallContent
+
 		for _, tc := range toolCalls {
+			if tc.ToolName == "submit" {
+				tcCopy := tc
+				submitTc = &tcCopy
+			} else {
+				otherTcs = append(otherTcs, tc)
+			}
+		}
+
+		for _, tc := range otherTcs {
 			selectedPhase := matrix.PhaseReconnaissance
 			if stage, ok := toolStageByName[tc.ToolName]; ok {
 				selectedPhase = stage
 			}
 			log.Infof("TOOL_SELECTED tool=%s phase=%s", tc.ToolName, selectedPhase)
-
-			if tc.ToolName == "submit" {
-				ok, reason := canSubmit(kg.Snapshot())
-				if !ok {
-					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
-						ToolCallID: tc.ToolCallID,
-						Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: submit blocked: " + reason},
-					})
-					continue
-				}
-
-				var args map[string]any
-				if err := json.Unmarshal([]byte(tc.Input), &args); err != nil {
-					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
-						ToolCallID: tc.ToolCallID,
-						Output:     fantasy.ToolResultOutputContentText{Text: fmt.Sprintf("TOOL_ERROR: invalid JSON: %v", err)},
-					})
-					continue
-				}
-
-				reportStr, ok := args["report"].(string)
-				if !ok {
-					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
-						ToolCallID: tc.ToolCallID,
-						Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: The 'report' argument is missing or not a string. Please call submit again with the report string."},
-					})
-					continue
-				}
-
-				reportPath := "fire_starter_report.md"
-
-				if kgJSON, err := kg.ToJSON(); err == nil {
-					reportStr += "\n\n## Appendix: Knowledge Graph Dump\n\n```json\n" + string(kgJSON) + "\n```\n"
-				}
-
-				var finalReport string
-				if err := os.WriteFile(reportPath, []byte(reportStr), 0644); err != nil {
-					log.Errorf("Failed to save report: %v", err)
-					finalReport = fmt.Sprintf("Error saving report to %s: %v", reportPath, err)
-				} else {
-					log.Infof("Saved report to: %s", reportPath)
-					finalReport = fmt.Sprintf("Report successfully saved to: %s", reportPath)
-				}
-
-				return finalReport, nil
-			}
 
 			if tc.ToolName == "advance_target_phase" {
 				var args map[string]any
@@ -823,6 +798,56 @@ IP whitelist policy:
 				ToolCallID: tc.ToolCallID,
 				Output:     fantasy.ToolResultOutputContentText{Text: res},
 			})
+		}
+
+		if submitTc != nil {
+			tc := *submitTc
+			selectedPhase := matrix.PhaseReconnaissance
+			if stage, ok := toolStageByName[tc.ToolName]; ok {
+				selectedPhase = stage
+			}
+			log.Infof("TOOL_SELECTED tool=%s phase=%s", tc.ToolName, selectedPhase)
+
+			ok, reason := canSubmit(kg.Snapshot())
+			if !ok {
+				toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+					ToolCallID: tc.ToolCallID,
+					Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: submit blocked: " + reason},
+				})
+			} else {
+				var args map[string]any
+				if err := json.Unmarshal([]byte(tc.Input), &args); err != nil {
+					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+						ToolCallID: tc.ToolCallID,
+						Output:     fantasy.ToolResultOutputContentText{Text: fmt.Sprintf("TOOL_ERROR: invalid JSON: %v", err)},
+					})
+				} else {
+					reportStr, ok := args["report"].(string)
+					if !ok {
+						toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+							ToolCallID: tc.ToolCallID,
+							Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: The 'report' argument is missing or not a string. Please call submit again with the report string."},
+						})
+					} else {
+						reportPath := "fire_starter_report.md"
+
+						if kgJSON, err := kg.ToJSON(); err == nil {
+							reportStr += "\n\n## Appendix: Knowledge Graph Dump\n\n```json\n" + string(kgJSON) + "\n```\n"
+						}
+
+						var finalReport string
+						if err := os.WriteFile(reportPath, []byte(reportStr), 0644); err != nil {
+							log.Errorf("Failed to save report: %v", err)
+							finalReport = fmt.Sprintf("Error saving report to %s: %v", reportPath, err)
+						} else {
+							log.Infof("Saved report to: %s", reportPath)
+							finalReport = fmt.Sprintf("Report successfully saved to: %s", reportPath)
+						}
+
+						return finalReport, nil
+					}
+				}
+			}
 		}
 
 		if len(toolResultParts) > 0 {
