@@ -130,6 +130,7 @@ type Target struct {
 	Value           string           `json:"value"`
 	Type            string           `json:"type"` // "ip" or "url"
 	Score           int              `json:"score"`
+	CurrentPhase    Phase            `json:"current_phase"`
 	ExecutedTools   []string         `json:"executed_tools"`
 	OpenPorts       []int            `json:"open_ports,omitempty"`
 	Tokens          []string         `json:"tokens,omitempty"`
@@ -143,7 +144,6 @@ type KnowledgeGraph struct {
 	BaseDomain   string             `json:"base_domain"`
 	Targets      map[string]*Target `json:"targets"`
 	Context      map[string]any     `json:"context"`
-	CurrentPhase Phase              `json:"current_phase"`
 	OnUpdate     func(*KnowledgeGraph) `json:"-"`
 }
 
@@ -153,7 +153,7 @@ type KnowledgeSnapshot struct {
 	OpenPortCount       int
 	HarvestedTokenCount int
 	VulnerabilityCount  int
-	CurrentPhase        Phase
+	TargetPhases        map[string]Phase
 	OpenPorts           []int
 }
 
@@ -161,7 +161,6 @@ func NewKnowledgeGraph() *KnowledgeGraph {
 	return &KnowledgeGraph{
 		Targets:      make(map[string]*Target),
 		Context:      make(map[string]any),
-		CurrentPhase: PhaseReconnaissance,
 	}
 }
 
@@ -180,6 +179,7 @@ func (kg *KnowledgeGraph) getOrCreateTarget(value string, targetType string) *Ta
 			Value:           value,
 			Type:            targetType,
 			Score:           0,
+			CurrentPhase:    PhaseReconnaissance,
 			ExecutedTools:   make([]string, 0),
 			OpenPorts:       make([]int, 0),
 			Tokens:          make([]string, 0),
@@ -586,29 +586,28 @@ func (kg *KnowledgeGraph) SetContextValue(key string, value any) {
 	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=context key=%s value=%v", key, value)
 }
 
-func (kg *KnowledgeGraph) SetCurrentPhase(phase Phase) {
-	defer kg.triggerUpdate()
-	kg.mu.Lock()
-	defer kg.mu.Unlock()
-	previous := kg.CurrentPhase
-	kg.CurrentPhase = phase
-	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=current_phase from=%s to=%s", previous, kg.CurrentPhase)
-}
-
-func (kg *KnowledgeGraph) AdvancePhase() Phase {
-	defer kg.triggerUpdate()
-	kg.mu.Lock()
-	defer kg.mu.Unlock()
-	previous := kg.CurrentPhase
-	kg.CurrentPhase = NextPhase(kg.CurrentPhase)
-	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=current_phase from=%s to=%s", previous, kg.CurrentPhase)
-	return kg.CurrentPhase
-}
-
-func (kg *KnowledgeGraph) GetCurrentPhase() Phase {
+func (kg *KnowledgeGraph) GetTargetPhase(targetValue string) Phase {
 	kg.mu.RLock()
 	defer kg.mu.RUnlock()
-	return kg.CurrentPhase
+	t, ok := kg.Targets[targetValue]
+	if !ok {
+		return PhaseReconnaissance
+	}
+	return t.CurrentPhase
+}
+
+func (kg *KnowledgeGraph) AdvanceTargetPhase(targetValue string) Phase {
+	defer kg.triggerUpdate()
+	kg.mu.Lock()
+	defer kg.mu.Unlock()
+	t, ok := kg.Targets[targetValue]
+	if !ok {
+		return PhaseReconnaissance
+	}
+	previous := t.CurrentPhase
+	t.CurrentPhase = NextPhase(t.CurrentPhase)
+	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=target_phase target=%s from=%s to=%s", targetValue, previous, t.CurrentPhase)
+	return t.CurrentPhase
 }
 
 func (kg *KnowledgeGraph) GetTokens() []string {
@@ -652,6 +651,7 @@ func (kg *KnowledgeGraph) Snapshot() KnowledgeSnapshot {
 	vulnCount := 0
 
 	var allPorts []int
+	targetPhases := make(map[string]Phase)
 
 	for _, t := range kg.Targets {
 		if t.Type == "ip" {
@@ -663,6 +663,7 @@ func (kg *KnowledgeGraph) Snapshot() KnowledgeSnapshot {
 		allPorts = append(allPorts, t.OpenPorts...)
 		tokenCount += len(t.Tokens)
 		vulnCount += len(t.Vulnerabilities)
+		targetPhases[t.Value] = t.CurrentPhase
 	}
 
 	return KnowledgeSnapshot{
@@ -671,7 +672,7 @@ func (kg *KnowledgeGraph) Snapshot() KnowledgeSnapshot {
 		OpenPortCount:       portCount,
 		HarvestedTokenCount: tokenCount,
 		VulnerabilityCount:  vulnCount,
-		CurrentPhase:        kg.CurrentPhase,
+		TargetPhases:        targetPhases,
 		OpenPorts:           allPorts,
 	}
 }

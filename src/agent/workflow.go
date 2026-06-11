@@ -104,19 +104,6 @@ func normalizeTarget(t string) string {
 	return matrix.NormalizeURL(t)
 }
 
-func isToolExhausted(t matrix.ToolDefinition, kg *matrix.KnowledgeGraph, baseTarget string, executedTargets map[string]bool) bool {
-	if executedTargets == nil {
-		return false
-	}
-	applicable := getApplicableTargets(t, kg, baseTarget)
-	for _, target := range applicable {
-		if !executedTargets[target] {
-			return false
-		}
-	}
-	return true
-}
-
 func hasPort(ports []int, target int) bool {
 	for _, p := range ports {
 		if p == target {
@@ -126,72 +113,38 @@ func hasPort(ports []int, target int) bool {
 	return false
 }
 
-func scoreTool(def matrix.ToolDefinition, currentPhase matrix.Phase, snapshot matrix.KnowledgeSnapshot, exhausted bool) scoredTool {
+func scoreTool(def matrix.ToolDefinition, target *matrix.Target, snapshot matrix.KnowledgeSnapshot) scoredTool {
 	stage := matrix.Phase(matrix.MapTechniqueToStage(def.Technique))
 	score := 0
 	reasons := make([]string, 0, 4)
 
+	for _, exec := range target.ExecutedTools {
+		if exec == def.Name {
+			return scoredTool{Definition: def, Score: -100, Reasons: []string{"already executed on this target"}}
+		}
+	}
+
 	switch {
-	case stage == currentPhase:
+	case stage == target.CurrentPhase:
 		score += 10
-		reasons = append(reasons, "in current phase")
+		reasons = append(reasons, "matches target phase")
 	case stage == matrix.PhaseReconnaissance:
 		score += 3
 		reasons = append(reasons, "always-recon exception")
 	}
 
-	switch stage {
-	case matrix.PhaseReconnaissance:
-		if snapshot.DiscoveredIPCount == 0 {
-			score += 4
-			reasons = append(reasons, "no discovered IPs")
-		}
-		if snapshot.DiscoveredURLCount == 0 {
-			score += 4
-			reasons = append(reasons, "no discovered URLs")
-		}
-	case matrix.PhaseScanning:
-		if snapshot.OpenPortCount == 0 {
-			score += 5
-			reasons = append(reasons, "no open ports yet")
-		}
-	case matrix.PhaseVulnerabilityAnalysis:
-		if snapshot.VulnerabilityCount == 0 {
-			score += 4
-			reasons = append(reasons, "no vulnerabilities confirmed")
-		}
-	case matrix.PhaseExploitation:
-		if snapshot.VulnerabilityCount > 0 {
-			score += 3
-			reasons = append(reasons, "vulnerabilities available to exploit")
-		}
-	case matrix.PhasePostExploitation:
-		if snapshot.HarvestedTokenCount > 0 {
-			score += 3
-			reasons = append(reasons, "tokens available for post-exploitation")
-		}
-	}
-
 	name := strings.ToLower(def.Name)
-	if strings.Contains(name, "ssh") && hasPort(snapshot.OpenPorts, 22) {
+	if strings.Contains(name, "ssh") && hasPort(target.OpenPorts, 22) {
 		score += 3
 		reasons = append(reasons, "ssh port 22 is open")
 	}
-	if (strings.Contains(name, "sql") || strings.Contains(name, "database") || strings.Contains(name, "db")) && (hasPort(snapshot.OpenPorts, 3306) || hasPort(snapshot.OpenPorts, 5432)) {
+	if (strings.Contains(name, "sql") || strings.Contains(name, "database") || strings.Contains(name, "db")) && (hasPort(target.OpenPorts, 3306) || hasPort(target.OpenPorts, 5432)) {
 		score += 3
 		reasons = append(reasons, "database port is open")
 	}
-	if strings.Contains(name, "ftp") && hasPort(snapshot.OpenPorts, 21) {
+	if strings.Contains(name, "ftp") && hasPort(target.OpenPorts, 21) {
 		score += 3
 		reasons = append(reasons, "ftp port 21 is open")
-	}
-
-	if exhausted {
-		score -= 5
-		reasons = append(reasons, "exhausted against all targets")
-	} else {
-		score += 5
-		reasons = append(reasons, "targets remaining to test")
 	}
 
 	if len(reasons) == 0 {
@@ -201,148 +154,31 @@ func scoreTool(def matrix.ToolDefinition, currentPhase matrix.Phase, snapshot ma
 	return scoredTool{Definition: def, Score: score, Reasons: reasons}
 }
 
-func completedInPhase(completedByPhase map[matrix.Phase]map[string]map[string]bool, phase matrix.Phase, executor *matrix.RealExecutor, kg *matrix.KnowledgeGraph, baseTarget string) int {
-	entries, ok := completedByPhase[phase]
-	if !ok {
-		return 0
+func canSubmit(snapshot matrix.KnowledgeSnapshot) (bool, string) {
+	if snapshot.VulnerabilityCount > 0 {
+		return true, "vulnerabilities found"
 	}
-	return len(entries)
-}
-
-func canAdvancePhase(currentPhase matrix.Phase, completedByPhase map[matrix.Phase]map[string]map[string]bool, toolsByPhase map[matrix.Phase]int, executor *matrix.RealExecutor, kg *matrix.KnowledgeGraph, baseTarget string, queriedGraphByPhase map[matrix.Phase]bool) (bool, string) {
-	if !queriedGraphByPhase[currentPhase] && currentPhase != matrix.PhaseReconnaissance {
-		return false, "must query the knowledge graph to review discovered targets and intelligence before advancing"
-	}
-	completed := completedInPhase(completedByPhase, currentPhase, executor, kg, baseTarget)
-
-	if currentPhase != matrix.PhaseReporting {
-		bytes, err := kg.ToJSON()
-		if err == nil {
-			var state struct {
-				Targets map[string]struct {
-					Value string `json:"value"`
-					Type  string `json:"type"`
-				} `json:"targets"`
-			}
-			json.Unmarshal(bytes, &state)
-
-			var allTargets []string
-			for _, t := range state.Targets {
-				if t.Type == "url" || t.Type == "ip" {
-					allTargets = append(allTargets, normalizeTarget(t.Value))
-				}
-			}
-			if len(allTargets) == 0 {
-				allTargets = append(allTargets, normalizeTarget(baseTarget))
-			}
-
-			phasesToCheck := []matrix.Phase{
-				matrix.PhaseReconnaissance,
-				matrix.PhaseScanning,
-				matrix.PhaseVulnerabilityAnalysis,
-				matrix.PhaseExploitation,
-				matrix.PhasePostExploitation,
-			}
-
-			for _, target := range allTargets {
-				for _, p := range phasesToCheck {
-					if p == matrix.PhaseReconnaissance {
-						if p == currentPhase {
-							break
-						}
-						continue
-					}
-
-					hasRun := false
-					if completedByPhase[p] != nil {
-						for _, toolTargets := range completedByPhase[p] {
-							if toolTargets[target] {
-								hasRun = true
-								break
-							}
-						}
-					}
-					if !hasRun {
-						return false, fmt.Sprintf("must test all discovered targets in phase %s before advancing. Unprocessed: %s", p, target)
-					}
-
-					if p == currentPhase {
-						break
-					}
-				}
-			}
+	allReporting := true
+	for _, phase := range snapshot.TargetPhases {
+		if phase != matrix.PhaseReporting {
+			allReporting = false
+			break
 		}
 	}
-
-	switch currentPhase {
-	case matrix.PhaseReconnaissance:
-		snapshot := kg.Snapshot()
-		if completed >= 2 || (completed >= 1 && (snapshot.DiscoveredIPCount > 0 || snapshot.DiscoveredURLCount > 0)) {
-			return true, "reconnaissance evidence captured"
-		}
-		return false, "need at least one to two recon actions plus discovered targets"
-	case matrix.PhaseScanning:
-		snapshot := kg.Snapshot()
-		if completed >= 1 && (snapshot.OpenPortCount > 0 || snapshot.DiscoveredURLCount > 0) {
-			return true, "scanning produced usable surface"
-		}
-		return false, "need at least one scanning action and discovered services/URLs"
-	case matrix.PhaseVulnerabilityAnalysis:
-		snapshot := kg.Snapshot()
-		if completed >= 1 && (snapshot.VulnerabilityCount > 0 || snapshot.HarvestedTokenCount > 0) {
-			return true, "analysis produced exploitable findings"
-		}
-		return false, "need at least one analysis action and findings/tokens"
-	case matrix.PhaseExploitation:
-		if completed >= 1 {
-			return true, "exploitation actions executed"
-		}
-		return false, "need at least one exploitation action"
-	case matrix.PhasePostExploitation:
-		snapshot := kg.Snapshot()
-		if completed >= 1 || snapshot.HarvestedTokenCount > 0 {
-			return true, "post-exploitation coverage complete"
-		}
-		return true, "post-exploitation is optional, advancing to reporting"
-	default:
-		return false, "already at terminal phase"
+	if len(snapshot.TargetPhases) > 0 && allReporting {
+		return true, "all targets exhausted"
 	}
-}
-
-func canSubmit(currentPhase matrix.Phase, completedByPhase map[matrix.Phase]map[string]map[string]bool, snapshot matrix.KnowledgeSnapshot, toolsByPhase map[matrix.Phase]int, executor *matrix.RealExecutor, kg *matrix.KnowledgeGraph, baseTarget string) (bool, string) {
-	if currentPhase == matrix.PhaseReporting {
-		return true, "in reporting phase"
-	}
-
-	requiredPhases := []matrix.Phase{
-		matrix.PhaseReconnaissance,
-		matrix.PhaseScanning,
-		matrix.PhaseVulnerabilityAnalysis,
-		matrix.PhaseExploitation,
-	}
-	missing := make([]string, 0, len(requiredPhases))
-	for _, phase := range requiredPhases {
-		if completedInPhase(completedByPhase, phase, executor, kg, baseTarget) == 0 {
-			missing = append(missing, string(phase))
-		}
-	}
-	if len(missing) > 0 {
-		return false, "missing phase coverage: " + strings.Join(missing, ", ")
-	}
-	if snapshot.VulnerabilityCount == 0 {
-		return false, "no confirmed vulnerability signals"
-	}
-	return true, "explicit completion criteria met"
+	return false, "no vulnerabilities and targets not exhausted"
 }
 
 func summarizeSnapshot(snapshot matrix.KnowledgeSnapshot) string {
-	return fmt.Sprintf("phase=%s ips=%d urls=%d open_ports=%d vulnerabilities=%d tokens=%d",
-		snapshot.CurrentPhase,
+	return fmt.Sprintf("ips=%d urls=%d open_ports=%d vulnerabilities=%d tokens=%d targets=%d",
 		snapshot.DiscoveredIPCount,
 		snapshot.DiscoveredURLCount,
 		snapshot.OpenPortCount,
 		snapshot.VulnerabilityCount,
 		snapshot.HarvestedTokenCount,
+		len(snapshot.TargetPhases),
 	)
 }
 
@@ -369,14 +205,11 @@ func snapshotDelta(before, after matrix.KnowledgeSnapshot) string {
 	return strings.Join(changes, ",")
 }
 
-func recommendedNextAction(currentPhase matrix.Phase, canAdvanceNow bool, advanceReason string, canSubmitNow bool, submitReason string) string {
+func recommendedNextAction(canSubmitNow bool, submitReason string) string {
 	if canSubmitNow {
 		return "submit (" + submitReason + ")"
 	}
-	if canAdvanceNow {
-		return "advance_phase (" + advanceReason + ")"
-	}
-	return "continue_phase " + string(currentPhase) + " (" + advanceReason + ")"
+	return "continue_execution"
 }
 
 func normalizeBaseURL(provider string, baseURL string) string {
@@ -555,17 +388,15 @@ func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*m
 	kg.SetContextValue("ip_whitelist", cfg.IPWhitelist)
 	kg.SetContextValue("rules_of_engagement", cfg.RulesOfEngagement)
 
-	systemPrompt := `You are an intelligent security testing agent following a strict Red Team lifecycle: Reconnaissance -> Scanning -> Vulnerability Analysis -> Exploitation -> Post-Exploitation -> Reporting.
-
-You currently only have access to tools for your current phase. When you have exhausted the interesting attack surface for your current phase, you MUST call the 'advance_phase' tool to unlock the next set of tools. State is persisted in the Knowledge Graph. Note that security testing is oriented around lateral movement within the network.
+	systemPrompt := `You are an autonomous red team agent. Your current available tools are automatically populated based on the phase of the targets you have discovered. 
+Review the 'Current Intelligence Summary' in the system messages to see what targets exist, what state they are in, and what ports/vulns they have.
 
 Do not make assumptions. Turn theories into testable hypotheses, then validate them by calling available tools and using tool output as evidence for your next step. If evidence is missing or stale, call another tool instead of guessing.
 
-When you have reached your goals or finished all phases, you MUST call the 'submit' tool with your final report. Your report should thoroughly summarize the findings from the engagement and provide the security engineer with everything the need to do follow on work. The final report will automatically include the exact reproduction steps for the vulnerabilities based on your execution history, so you do not need to retrieve them.
+When you have exhausted all applicable tools for a target's current phase, you MUST call the 'advance_target_phase' tool for that target to unlock the next set of tools. When you have reached your goals, found critical vulnerabilities, or run out of actionable tools across all targets, you MUST call the 'submit' tool with your final report. Your report should thoroughly summarize the findings from the engagement and provide the security engineer with everything they need to do follow on work. The final report will automatically include the exact reproduction steps for the vulnerabilities based on your execution history, so you do not need to retrieve them.
 
-CRITICAL: Do not execute the same tool against the same target more than once. The Knowledge Graph tracks 'executed_tools' for each discovered target. Always check a target's executed tools before scanning to avoid infinite loops.
-
-CRITICAL: You MUST thoroughly test ALL discovered subdomains and paths (not just the main domain). Before advancing to the next phase, ensure that you have run applicable modules against every discovered target. Do not skip subdomains or specific endpoints (like /login).
+CRITICAL: Do not execute the same tool against the same target more than once. The framework will block duplicate payloads.
+CRITICAL: Security testing is oriented around lateral movement within the network. Continue probing deeply.
 
 Rules of Engagement (must be enforced in every decision):
 %s
@@ -590,114 +421,60 @@ IP whitelist policy:
 	}
 
 	toolStageByName := make(map[string]matrix.Phase)
-	toolsByPhase := make(map[matrix.Phase]int)
 	for _, t := range executor.Tools() {
 		stage := matrix.Phase(matrix.MapTechniqueToStage(t.Technique))
 		toolStageByName[t.Name] = stage
-		toolsByPhase[stage]++
 	}
-	completedByPhase := make(map[matrix.Phase]map[string]map[string]bool)
-	queriedGraphByPhase := make(map[matrix.Phase]bool)
 	executedPayloads := make(map[string]bool)
 
 	for iter := 0; iter < cfg.MaxIters; iter++ {
-		currentPhase := kg.GetCurrentPhase()
 		snapshot := kg.Snapshot()
 		log.Infof("RED_TEAM_LOOP iteration=%d/%d %s", iter+1, cfg.MaxIters, summarizeSnapshot(snapshot))
 
-		needsPhase := make(map[matrix.Phase]bool)
-		if kgBytes, err := kg.ToJSON(); err == nil {
-			var state struct {
-				Targets map[string]struct {
-					Value string `json:"value"`
-					Type  string `json:"type"`
-				} `json:"targets"`
-			}
-			if err := json.Unmarshal(kgBytes, &state); err == nil {
-				checkTarget := func(target string) {
-					if target == "" {
-						return
-					}
-					norm := normalizeTarget(target)
-					phasesToCheck := []matrix.Phase{
-						matrix.PhaseReconnaissance,
-						matrix.PhaseScanning,
-						matrix.PhaseVulnerabilityAnalysis,
-						matrix.PhaseExploitation,
-						matrix.PhasePostExploitation,
-					}
-					for _, p := range phasesToCheck {
-						if p == currentPhase {
-							break
-						}
-						if p == matrix.PhaseReconnaissance {
-							continue
-						}
-						hasCompleted := false
-						if completedByPhase[p] != nil {
-							for _, targets := range completedByPhase[p] {
-								if targets[norm] {
-									hasCompleted = true
-									break
-								}
-							}
-						}
-						if !hasCompleted {
-							needsPhase[p] = true
-							break
-						}
-					}
-				}
-				for _, t := range state.Targets {
-					if t.Type == "ip" || t.Type == "url" {
-						checkTarget(t.Value)
-					}
-				}
-			}
-		}
-
 		scored := make([]scoredTool, 0)
-		for _, t := range executor.Tools() {
-			toolStage := matrix.Phase(matrix.MapTechniqueToStage(t.Technique))
-			if toolStage == currentPhase || toolStage == matrix.PhaseReconnaissance || needsPhase[toolStage] {
-				var executedTargets map[string]bool
-				if completedByPhase[toolStage] != nil {
-					executedTargets = make(map[string]bool)
-					if completedByPhase[toolStage][t.Name] != nil {
-						for k, v := range completedByPhase[toolStage][t.Name] {
-							executedTargets[k] = v
-						}
-					}
-					if completedByPhase[toolStage]["mark_target_inapplicable"] != nil {
-						for k, v := range completedByPhase[toolStage]["mark_target_inapplicable"] {
-							executedTargets[k] = v
-						}
+		for _, targetObj := range kg.Targets {
+			for _, t := range executor.Tools() {
+				toolStage := matrix.Phase(matrix.MapTechniqueToStage(t.Technique))
+				
+				if toolStage == targetObj.CurrentPhase || toolStage == matrix.PhaseReconnaissance {
+					st := scoreTool(t, targetObj, snapshot)
+					if st.Score >= 0 {
+						scored = append(scored, st)
 					}
 				}
-				exhausted := isToolExhausted(t, kg, target, executedTargets)
-
-				st := scoreTool(t, currentPhase, snapshot, exhausted)
-				if needsPhase[toolStage] && toolStage != currentPhase && toolStage != matrix.PhaseReconnaissance {
-					st.Score += 8
-					st.Reasons = append(st.Reasons, "unprocessed target requires this phase")
-				}
-				scored = append(scored, st)
-				continue
 			}
-			log.Debugf("Tool rejected this phase: %s stage=%s current_phase=%s", t.Name, toolStage, currentPhase)
 		}
 
-		rand.Shuffle(len(scored), func(i, j int) {
-			scored[i], scored[j] = scored[j], scored[i]
+		uniqueScored := make(map[string]scoredTool)
+		for _, st := range scored {
+			if existing, ok := uniqueScored[st.Definition.Name]; ok {
+				if st.Score > existing.Score {
+					uniqueScored[st.Definition.Name] = st
+				}
+			} else {
+				uniqueScored[st.Definition.Name] = st
+			}
+		}
+
+		scoredList := make([]scoredTool, 0, len(uniqueScored))
+		for _, st := range uniqueScored {
+			scoredList = append(scoredList, st)
+		}
+
+		rand.Shuffle(len(scoredList), func(i, j int) {
+			scoredList[i], scoredList[j] = scoredList[j], scoredList[i]
 		})
 
-		sort.SliceStable(scored, func(i, j int) bool {
-			return scored[i].Score > scored[j].Score
+		sort.SliceStable(scoredList, func(i, j int) bool {
+			return scoredList[i].Score > scoredList[j].Score
 		})
 
 		var activeTools []fantasy.Tool
 
-		for rank, candidate := range scored {
+		for rank, candidate := range scoredList {
+			if rank >= 15 {
+				break
+			}
 			if cfg.Verbose {
 				log.Infof("TOOL_OPTION rank=%d tool=%s phase=%s score=%d reasons=%s", rank+1, candidate.Definition.Name, matrix.MapTechniqueToStage(candidate.Definition.Technique), candidate.Score, strings.Join(candidate.Reasons, "; "))
 			}
@@ -708,9 +485,25 @@ IP whitelist policy:
 			})
 		}
 
-		canAdvanceNow, advanceReason := canAdvancePhase(currentPhase, completedByPhase, toolsByPhase, executor, kg, target, queriedGraphByPhase)
-		canSubmitNow, submitReason := canSubmit(currentPhase, completedByPhase, snapshot, toolsByPhase, executor, kg, target)
-		log.Debugf("Phase controls: can_advance=%t reason=%s can_submit=%t reason=%s", canAdvanceNow, advanceReason, canSubmitNow, submitReason)
+		var summaryBuilder strings.Builder
+		summaryBuilder.WriteString("Current Intelligence Summary (Context for Tools):\n")
+		for _, t := range kg.Targets {
+			summaryBuilder.WriteString(fmt.Sprintf("- Target: %s (Phase: %s)\n", t.Value, t.CurrentPhase))
+			if len(t.OpenPorts) > 0 {
+				summaryBuilder.WriteString(fmt.Sprintf("  - Open Ports: %v\n", t.OpenPorts))
+			}
+			if len(t.Vulnerabilities) > 0 {
+				summaryBuilder.WriteString(fmt.Sprintf("  - Vulns: %d found\n", len(t.Vulnerabilities)))
+			}
+		}
+
+		history = append(history, fantasy.Message{
+			Role:    "system",
+			Content: []fantasy.MessagePart{fantasy.TextPart{Text: summaryBuilder.String()}},
+		})
+
+		canSubmitNow, submitReason := canSubmit(snapshot)
+		log.Debugf("Phase controls: can_submit=%t reason=%s", canSubmitNow, submitReason)
 		activeTools = append(activeTools, fantasy.FunctionTool{
 			Name:        "query_knowledge_graph",
 			Description: "Query the knowledge graph for specific gathered intelligence.",
@@ -726,15 +519,19 @@ IP whitelist policy:
 			},
 		})
 		activeTools = append(activeTools, fantasy.FunctionTool{
-			Name:        "advance_phase",
-			Description: "Advance to the next red team phase only after current phase completion criteria are satisfied.",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+			Name:        "advance_target_phase",
+			Description: "Advance a specific target to the next red team phase after you have exhausted all applicable tools for its current phase.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"target": map[string]any{
+						"type": "string",
+					},
+				},
+				"required": []string{"target"},
+			},
 		})
-		activeTools = append(activeTools, fantasy.FunctionTool{
-			Name:        "mark_target_inapplicable",
-			Description: "Mark a discovered target as inapplicable or fully processed for the current phase, so you can satisfy phase advancement criteria without running incompatible tools.",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{"target": map[string]any{"type": "string"}}, "required": []string{"target"}},
-		})
+		
 		if canSubmitNow {
 			activeTools = append(activeTools, fantasy.FunctionTool{
 				Name:        "submit",
@@ -783,14 +580,14 @@ IP whitelist policy:
 		var toolResultParts []fantasy.MessagePart
 
 		for _, tc := range toolCalls {
-			selectedPhase := kg.GetCurrentPhase()
+			selectedPhase := matrix.PhaseReconnaissance
 			if stage, ok := toolStageByName[tc.ToolName]; ok {
 				selectedPhase = stage
 			}
 			log.Infof("TOOL_SELECTED tool=%s phase=%s", tc.ToolName, selectedPhase)
 
 			if tc.ToolName == "submit" {
-				ok, reason := canSubmit(kg.GetCurrentPhase(), completedByPhase, kg.Snapshot(), toolsByPhase, executor, kg, target)
+				ok, reason := canSubmit(kg.Snapshot())
 				if !ok {
 					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
 						ToolCallID: tc.ToolCallID,
@@ -817,7 +614,6 @@ IP whitelist policy:
 					continue
 				}
 
-				kg.SetCurrentPhase(matrix.PhaseReporting)
 				reportPath := "fire_starter_report.md"
 
 				if kgJSON, err := kg.ToJSON(); err == nil {
@@ -836,8 +632,32 @@ IP whitelist policy:
 				return finalReport, nil
 			}
 
+			if tc.ToolName == "advance_target_phase" {
+				var args map[string]any
+				if err := json.Unmarshal([]byte(tc.Input), &args); err == nil {
+					if tStr, ok := args["target"].(string); ok && tStr != "" {
+						kg.AdvanceTargetPhase(normalizeTarget(tStr))
+						toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+							ToolCallID: tc.ToolCallID,
+							Output:     fantasy.ToolResultOutputContentText{Text: "Target advanced to next phase successfully."},
+						})
+						log.Infof("TARGET_PHASE_ADVANCED target=%s", tStr)
+					} else {
+						toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+							ToolCallID: tc.ToolCallID,
+							Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: Missing or empty target string."},
+						})
+					}
+				} else {
+					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+						ToolCallID: tc.ToolCallID,
+						Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: Invalid JSON input."},
+					})
+				}
+				continue
+			}
+
 			if tc.ToolName == "query_knowledge_graph" {
-				queriedGraphByPhase[kg.GetCurrentPhase()] = true
 				var qArgs map[string]any
 				_ = json.Unmarshal([]byte(tc.Input), &qArgs)
 				qType, _ := qArgs["query_type"].(string)
@@ -896,52 +716,6 @@ IP whitelist policy:
 				continue
 			}
 
-			if tc.ToolName == "advance_phase" {
-				priorPhase := kg.GetCurrentPhase()
-				ok, reason := canAdvancePhase(priorPhase, completedByPhase, toolsByPhase, executor, kg, target, queriedGraphByPhase)
-				if !ok {
-					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
-						ToolCallID: tc.ToolCallID,
-						Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: advance blocked: " + reason},
-					})
-					continue
-				}
-				newPhase := kg.AdvancePhase()
-				log.Infof("PHASE_TRANSITION from=%s to=%s reason=%s", priorPhase, newPhase, reason)
-				res := fmt.Sprintf("Advanced to phase: %s", newPhase)
-				toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
-					ToolCallID: tc.ToolCallID,
-					Output:     fantasy.ToolResultOutputContentText{Text: res},
-				})
-				continue
-			}
-
-			if tc.ToolName == "mark_target_inapplicable" {
-				var args map[string]any
-				_ = json.Unmarshal([]byte(tc.Input), &args)
-				if tStr, ok := args["target"].(string); ok && tStr != "" {
-					phase := kg.GetCurrentPhase()
-					if completedByPhase[phase] == nil {
-						completedByPhase[phase] = make(map[string]map[string]bool)
-					}
-					if completedByPhase[phase]["mark_target_inapplicable"] == nil {
-						completedByPhase[phase]["mark_target_inapplicable"] = make(map[string]bool)
-					}
-					completedByPhase[phase]["mark_target_inapplicable"][normalizeTarget(tStr)] = true
-					res := fmt.Sprintf("Target %s marked as inapplicable/processed for phase %s.", tStr, phase)
-					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
-						ToolCallID: tc.ToolCallID,
-						Output:     fantasy.ToolResultOutputContentText{Text: res},
-					})
-					log.Infof("TARGET_MARKED_INAPPLICABLE target=%s phase=%s", tStr, phase)
-				} else {
-					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
-						ToolCallID: tc.ToolCallID,
-						Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: target argument missing"},
-					})
-				}
-				continue
-			}
 
 			var args map[string]any
 			if tc.Input != "" {
@@ -1019,16 +793,6 @@ IP whitelist policy:
 					targetUsed = strings.TrimSpace(ipStr)
 				}
 
-				if phase, ok := toolStageByName[tc.ToolName]; ok {
-					if completedByPhase[phase] == nil {
-						completedByPhase[phase] = make(map[string]map[string]bool)
-					}
-					if completedByPhase[phase][tc.ToolName] == nil {
-						completedByPhase[phase][tc.ToolName] = make(map[string]bool)
-					}
-
-					completedByPhase[phase][tc.ToolName][normalizeTarget(targetUsed)] = true
-				}
 
 				if t, ok := payload["target"].(string); ok && strings.TrimSpace(t) != "" {
 					kg.MarkToolExecuted(strings.TrimSpace(t), tc.ToolName)
@@ -1048,9 +812,8 @@ IP whitelist policy:
 				}
 				afterGraph := kg.Snapshot()
 				log.Infof("KNOWLEDGE_GRAPH_UPDATE tool=%s delta=%s snapshot=%s", tc.ToolName, snapshotDelta(beforeGraph, afterGraph), summarizeSnapshot(afterGraph))
-				canAdvanceAfter, advanceReasonAfter := canAdvancePhase(afterGraph.CurrentPhase, completedByPhase, toolsByPhase, executor, kg, target, queriedGraphByPhase)
-				canSubmitAfter, submitReasonAfter := canSubmit(afterGraph.CurrentPhase, completedByPhase, afterGraph, toolsByPhase, executor, kg, target)
-				log.Infof("NEXT_DECISION tool=%s recommendation=%s", tc.ToolName, recommendedNextAction(afterGraph.CurrentPhase, canAdvanceAfter, advanceReasonAfter, canSubmitAfter, submitReasonAfter))
+				canSubmitAfter, submitReasonAfter := canSubmit(afterGraph)
+				log.Infof("NEXT_DECISION tool=%s recommendation=%s", tc.ToolName, recommendedNextAction(canSubmitAfter, submitReasonAfter))
 				log.Infof("TOOL_EXECUTION_SUMMARY tool=%s summary=%q", tc.ToolName, summary)
 				res = fmt.Sprintf("=== TOOL EXECUTION SUMMARY ===\n%s", summary)
 				log.Debugf("TOOL_RESULT tool=%s status=success result=%s", tc.ToolName, resultData)
@@ -1072,7 +835,7 @@ IP whitelist policy:
 
 	}
 
-	kg.SetCurrentPhase(matrix.PhaseReporting)
+
 	reportStr := "# Final Report\n\n**WARNING: The application reached the maximum number of iterations without completing the red team process.**\n\n"
 	reportPath := "fire_starter_report.md"
 
