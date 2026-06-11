@@ -170,9 +170,29 @@ func (kg *KnowledgeGraph) triggerUpdate() {
 	}
 }
 
+func IsZeroTarget(val string) bool {
+	if val == "0.0.0.0" || val == "::" || val == "[::]" {
+		return true
+	}
+	if strings.HasPrefix(val, "0.0.0.0:") || strings.HasPrefix(val, "0.0.0.0/") {
+		return true
+	}
+	if strings.HasPrefix(val, "::/") || strings.HasPrefix(val, "[::]:") || strings.HasPrefix(val, "[::]/") {
+		return true
+	}
+	if strings.HasPrefix(val, "http://0.0.0.0") || strings.HasPrefix(val, "https://0.0.0.0") ||
+		strings.HasPrefix(val, "http://[::]") || strings.HasPrefix(val, "https://[::]") {
+		return true
+	}
+	return false
+}
+
 func (kg *KnowledgeGraph) getOrCreateTarget(value string, targetType string) *Target {
 	if targetType == "url" {
 		value = NormalizeURL(value)
+	}
+	if IsZeroTarget(value) {
+		return nil
 	}
 	if kg.Targets[value] == nil {
 		kg.Targets[value] = &Target{
@@ -434,6 +454,9 @@ func (kg *KnowledgeGraph) AddIP(ip string) {
 	defer kg.mu.Unlock()
 	
 	t := kg.getOrCreateTarget(ip, "ip")
+	if t == nil {
+		return
+	}
 	t.Score++
 	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=discovered_ips value=%s score=%d", ip, t.Score)
 }
@@ -444,6 +467,9 @@ func (kg *KnowledgeGraph) AddPort(targetValue string, port int) {
 	defer kg.mu.Unlock()
 	
 	t := kg.getOrCreateTarget(targetValue, "ip") // ports imply an IP mostly, or URL
+	if t == nil {
+		return
+	}
 	
 	for _, p := range t.OpenPorts {
 		if p == port {
@@ -505,6 +531,9 @@ func (kg *KnowledgeGraph) AddURL(u string, baseCtx string) {
 	}
 
 	t := kg.getOrCreateTarget(u, "url")
+	if t == nil {
+		return
+	}
 	t.Score += score
 	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=discovered_urls value=%s score=%d", u, t.Score)
 }
@@ -515,6 +544,9 @@ func (kg *KnowledgeGraph) AddVulnerability(targetValue string, vuln string) {
 	defer kg.mu.Unlock()
 	
 	t := kg.getOrCreateTarget(targetValue, "url") // default to url, though could be IP
+	if t == nil {
+		return
+	}
 	for _, existing := range t.Vulnerabilities {
 		if existing == vuln {
 			return
@@ -530,6 +562,9 @@ func (kg *KnowledgeGraph) AddTestCase(tc TestCase) {
 	defer kg.mu.Unlock()
 	
 	t := kg.getOrCreateTarget(tc.Target, "url")
+	if t == nil {
+		return
+	}
 	t.TestCases = append(t.TestCases, tc)
 	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=test_cases target=%s tool=%s", tc.Target, tc.ToolName)
 }
@@ -540,6 +575,9 @@ func (kg *KnowledgeGraph) AddToken(targetValue string, token string) {
 	defer kg.mu.Unlock()
 	
 	t := kg.getOrCreateTarget(targetValue, "url")
+	if t == nil {
+		return
+	}
 	for _, existing := range t.Tokens {
 		if existing == token {
 			return
@@ -558,6 +596,9 @@ func (kg *KnowledgeGraph) AddCredential(targetValue string, username string, pas
 	// If it's a completely generic credential (e.g. baseline), we could use a dummy target.
 	// But usually they belong to something.
 	t := kg.getOrCreateTarget(targetValue, "url")
+	if t == nil {
+		return
+	}
 	for _, existing := range t.Credentials {
 		if existing.Username == username && existing.Password == password {
 			return
@@ -627,6 +668,9 @@ func (kg *KnowledgeGraph) MarkToolExecuted(target string, toolName string) {
 	defer kg.mu.Unlock()
 
 	t := kg.getOrCreateTarget(target, "url") // Assume url as generic type or leave it
+	if t == nil {
+		return
+	}
 	found := false
 	for _, tool := range t.ExecutedTools {
 		if tool == toolName {
