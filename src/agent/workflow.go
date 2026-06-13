@@ -366,6 +366,10 @@ func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*m
 	kg := matrix.NewKnowledgeGraph()
 	kg.OnUpdate = onKGUpdate
 
+	if _, err := matrix.InitDB("fire_starter.db"); err != nil {
+		log.Warnf("Failed to init SQLite database: %v", err)
+	}
+
 	if u, err := url.Parse(target); err == nil && u.Hostname() != "" {
 		kg.BaseDomain = getBaseDomain(u.Hostname())
 	} else if !strings.HasPrefix(target, "http") {
@@ -780,11 +784,20 @@ IP whitelist policy:
 				}
 
 				beforeGraph := kg.Snapshot()
-				summary, extractErr := kg.ExtractIntelligence(ctx, model, tc.ToolName, targetUsed, payload, resultData)
+				summary, extractedJSON, extractErr := kg.ExtractIntelligence(ctx, model, tc.ToolName, targetUsed, payload, resultData)
 				if extractErr != nil {
 					log.Warnf("Intelligence extraction failed: %v", extractErr)
 					summary = fmt.Sprintf("Tool executed successfully but intelligence extraction failed: %v", extractErr)
+				} else {
+					if err := matrix.LogTargetReport(target, extractedJSON); err != nil {
+						log.Warnf("Failed to log target report to SQLite: %v", err)
+					}
 				}
+
+				if err := matrix.LogExecution(target, resultData); err != nil {
+					log.Warnf("Failed to log execution to SQLite: %v", err)
+				}
+
 				afterGraph := kg.Snapshot()
 				log.Infof("KNOWLEDGE_GRAPH_UPDATE tool=%s delta=%s snapshot=%s", tc.ToolName, snapshotDelta(beforeGraph, afterGraph), summarizeSnapshot(afterGraph))
 				canSubmitAfter, submitReasonAfter := canSubmit(afterGraph)
