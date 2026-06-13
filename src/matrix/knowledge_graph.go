@@ -72,16 +72,19 @@ func ResolveAndNormalizeURL(u string, baseCtx string) string {
 	if !hasScheme {
 		isAbsoluteSchemeless := false
 
-		if baseURL != nil {
-			if strings.HasPrefix(u, baseURL.Host+"/") || u == baseURL.Host {
-				isAbsoluteSchemeless = true
-			}
-		}
-		
 		firstSeg := u
 		if idx := strings.Index(u, "/"); idx != -1 {
 			firstSeg = u[:idx]
 		}
+
+		if baseURL != nil {
+			if strings.HasPrefix(u, baseURL.Host+"/") || u == baseURL.Host {
+				isAbsoluteSchemeless = true
+			} else if strings.HasSuffix(firstSeg, "."+baseURL.Host) {
+				isAbsoluteSchemeless = true
+			}
+		}
+		
 		if net.ParseIP(firstSeg) != nil || (strings.Contains(firstSeg, ":") && net.ParseIP(strings.Split(firstSeg, ":")[0]) != nil) {
 			isAbsoluteSchemeless = true
 		} else if strings.Contains(firstSeg, ".") {
@@ -224,10 +227,10 @@ type ExtractedIntelligence struct {
 	Summary         string           `json:"summary"`
 }
 
-func (kg *KnowledgeGraph) ExtractIntelligence(ctx context.Context, model fantasy.LanguageModel, toolName, target string, payload map[string]any, resultData string) (string, error) {
+func (kg *KnowledgeGraph) ExtractIntelligence(ctx context.Context, model fantasy.LanguageModel, toolName, target string, payload map[string]any, resultData string) (string, string, error) {
 	if model == nil {
 		kg.regexExtract(toolName, target, payload, resultData)
-		return "Regex extraction complete.", nil
+		return "Regex extraction complete.", "{}", nil
 	}
 
 	truncatedResult := resultData
@@ -258,7 +261,7 @@ Output:
 		Prompt: []fantasy.Message{msg},
 	})
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	var rawText string
@@ -280,7 +283,7 @@ Output:
 
 	var extracted ExtractedIntelligence
 	if err := json.Unmarshal([]byte(rawText), &extracted); err != nil {
-		return "", fmt.Errorf("failed to parse sub-agent JSON: %w (raw output: %s)", err, rawText)
+		return "", "", fmt.Errorf("failed to parse sub-agent JSON: %w (raw output: %s)", err, rawText)
 	}
 
 	var parsedResult map[string]any
@@ -328,7 +331,7 @@ Output:
 	if len(extracted.DiscoveredIPs) > 0 {
 		summary += "\n\nDiscovered IPs: " + strings.Join(extracted.DiscoveredIPs, ", ")
 	}
-	return summary, nil
+	return summary, rawText, nil
 }
 
 func (kg *KnowledgeGraph) regexExtract(toolName, target string, payload map[string]any, resultData string) {
