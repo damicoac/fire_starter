@@ -154,30 +154,28 @@ func scoreTool(def matrix.ToolDefinition, target *matrix.Target, snapshot matrix
 	return scoredTool{Definition: def, Score: score, Reasons: reasons}
 }
 
-func canSubmit(snapshot matrix.KnowledgeSnapshot) (bool, string) {
-	allReporting := true
-	allPastRecon := true
-	for _, phase := range snapshot.TargetPhases {
-		if phase != matrix.PhaseReporting {
-			allReporting = false
-		}
-		if phase == matrix.PhaseReconnaissance {
-			allPastRecon = false
-		}
+func canCompleteTarget(snapshot matrix.KnowledgeSnapshot, target string, efficiencyMode bool) (bool, string) {
+	phase, ok := snapshot.TargetPhases[target]
+	if !ok {
+		return false, "target not found in snapshot"
+	}
+
+	if phase == matrix.PhaseReporting {
+		return true, "target exhausted"
+	}
+
+	if efficiencyMode {
+		return true, "efficiency mode enabled, target can be skipped or exited early"
 	}
 
 	if snapshot.VulnerabilityCount == 0 {
-		if len(snapshot.TargetPhases) > 0 && allPastRecon {
-			return true, "no vulnerabilities found and all targets completed recon, early exit allowed"
+		if phase != matrix.PhaseReconnaissance {
+			return true, "no vulnerabilities found and target completed recon, early exit allowed"
 		}
-		return false, "no vulnerabilities found, but targets must complete recon before early exit"
+		return false, "no vulnerabilities found, but target must complete recon before early exit"
 	}
 
-	if len(snapshot.TargetPhases) > 0 && allReporting {
-		return true, "all targets exhausted"
-	}
-
-	return false, "vulnerabilities found; must exhaust all targets before submitting"
+	return false, "vulnerabilities found globally; must exhaust target before completing"
 }
 
 func summarizeSnapshot(snapshot matrix.KnowledgeSnapshot) string {
@@ -214,9 +212,9 @@ func snapshotDelta(before, after matrix.KnowledgeSnapshot) string {
 	return strings.Join(changes, ",")
 }
 
-func recommendedNextAction(canSubmitNow bool, submitReason string) string {
-	if canSubmitNow {
-		return "submit (" + submitReason + ")"
+func recommendedNextAction(canCompleteNow bool, reason string) string {
+	if canCompleteNow {
+		return "target_completed (" + reason + ")"
 	}
 	return "continue_execution"
 }
@@ -364,6 +362,7 @@ func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*m
 		return "", fmt.Errorf("failed to init executor: %w", err)
 	}
 	kg := matrix.NewKnowledgeGraph()
+	kg.ConfigTarget = target
 	kg.OnUpdate = onKGUpdate
 
 	if _, err := matrix.InitDB("fire_starter.db"); err != nil {
@@ -392,6 +391,13 @@ func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*m
 			kg.AddIP(ip)
 		}
 	}
+	if strings.Contains(target, "://") {
+		kg.AddURL(target, target)
+	} else if net.ParseIP(target) != nil {
+		kg.AddIP(target)
+	} else {
+		kg.AddURL("http://"+target, "http://"+target)
+	}
 	for _, cred := range cfg.Credentials {
 		if strings.TrimSpace(cred.Username) == "" {
 			continue
@@ -401,12 +407,89 @@ func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*m
 	kg.SetContextValue("ip_whitelist", cfg.IPWhitelist)
 	kg.SetContextValue("rules_of_engagement", cfg.RulesOfEngagement)
 
-	systemPrompt := `You are an autonomous red team agent. Your current available tools are automatically populated based on the phase of the targets you have discovered. 
-Review the 'Current Intelligence Summary' in the system messages to see what targets exist, what state they are in, and what ports/vulns they have.
+	processedTargets := make(map[string]bool)
+
+	for {
+		var pendingTargets []string
+		kg.RLock()
+		for val := range kg.Targets {
+			if !processedTargets[val] {
+				pendingTargets = append(pendingTargets, val)
+			}
+		}
+		kg.RUnlock()
+
+		if len(pendingTargets) == 0 {
+			break
+		}
+
+		for _, tVal := range pendingTargets {
+			processedTargets[tVal] = true
+			log.Infof("Starting agent loop for target: %s", tVal)
+			if err := runTargetAgent(ctx, tVal, target, cfg, kg, executor, model, allowlist); err != nil {
+				log.Errorf("Target agent for %s failed: %v", tVal, err)
+			}
+		}
+	}
+
+	var kgJSONStr string
+	if kgJSON, err := kg.ToJSON(); err == nil {
+		kgJSONStr = string(kgJSON)
+	}
+
+	reportStr := ""
+	if kgJSONStr != "" {
+		log.Infof("Generating final executive report via LLM...")
+		reportPrompt := fmt.Sprintf("You are an expert security consultant. The red team engagement has concluded. Review the following knowledge graph JSON dump which contains all findings. Write a comprehensive executive summary and final technical report. Your report should be formatted in markdown.\n\nKnowledge Graph Dump:\n```json\n%s\n```", kgJSONStr)
+		resp, err := model.Generate(ctx, fantasy.Call{
+			Prompt: []fantasy.Message{
+				{Role: "system", Content: []fantasy.MessagePart{fantasy.TextPart{Text: "You write final security reports."}}},
+				fantasy.NewUserMessage(reportPrompt),
+			},
+		})
+		if err == nil && len(resp.Content) > 0 {
+			for _, c := range resp.Content {
+				if tc, ok := c.(fantasy.TextContent); ok {
+					reportStr += tc.Text
+				}
+			}
+		} else if err != nil {
+			log.Errorf("Failed to generate final report via LLM: %v", err)
+		}
+	}
+
+	if reportStr == "" {
+		reportStr = "# Final Report\n\n**Engagement Completed (Failed to generate narrative report).**\n\n"
+	}
+
+	if kgJSONStr != "" {
+		reportStr += "\n\n## Appendix: Knowledge Graph Dump\n\n```json\n" + kgJSONStr + "\n```\n"
+	}
+
+	reportPath := "fire_starter_report.md"
+	var finalReport string
+	if err := os.WriteFile(reportPath, []byte(reportStr), 0644); err != nil {
+		log.Errorf("Failed to save report: %v", err)
+		finalReport = fmt.Sprintf("Error saving report to %s: %v", reportPath, err)
+	} else {
+		log.Infof("Saved report to: %s", reportPath)
+		finalReport = fmt.Sprintf("Report successfully saved to: %s", reportPath)
+	}
+
+	if err := matrix.LogFinalReport(target, reportStr); err != nil {
+		log.Warnf("Failed to log final report to SQLite: %v", err)
+	}
+
+	return finalReport, nil
+}
+
+func runTargetAgent(ctx context.Context, currentTarget string, initialTarget string, cfg Config, kg *matrix.KnowledgeGraph, executor *matrix.RealExecutor, model fantasy.LanguageModel, allowlist map[string]bool) error {
+	systemPrompt := `You are an autonomous red team agent assigned to a SPECIFIC target. Your current available tools are automatically populated based on the phase of the target.
+Review the 'Current Intelligence Summary' in the system messages to see the global state, but your actions should focus on your assigned target.
 
 Do not make assumptions. Turn theories into testable hypotheses, then validate them by calling available tools and using tool output as evidence for your next step. If evidence is missing or stale, call another tool instead of guessing.
 
-When you have exhausted all applicable tools for a target's current phase, you MUST call the 'advance_target_phase' tool for that target to unlock the next set of tools. If you find vulnerabilities, you MUST continue your investigation to probe deeper and attempt lateral movement. You may only call the 'submit' tool if you have exhausted all actionable tools across all targets, OR if you have found no vulnerabilities and all targets have completed their reconnaissance phase. Your report should thoroughly summarize the findings from the engagement and provide the security engineer with everything they need to do follow on work. The final report will automatically include the exact reproduction steps for the vulnerabilities based on your execution history, so you do not need to retrieve them.
+When you have exhausted all applicable tools for your target's current phase, you MUST call the 'advance_target_phase' tool for your target to unlock the next set of tools. If you find vulnerabilities, you MUST continue your investigation to probe deeper and attempt lateral movement. You may only call the 'target_completed' tool if you have exhausted all actionable tools for your assigned target, OR if you have found no vulnerabilities and your target has completed its reconnaissance phase. 
 
 CRITICAL: Do not execute the same tool against the same target more than once. The framework will block duplicate payloads.
 CRITICAL: Security testing is oriented around lateral movement within the network. Continue probing deeply.
@@ -424,13 +507,23 @@ IP whitelist policy:
 		rules = "Follow standard legal and safe engagement boundaries."
 	}
 	formattedSystemPrompt := fmt.Sprintf(systemPrompt, rules, allowlistedIPsSummary(allowlist))
+	if cfg.EfficiencyMode {
+		formattedSystemPrompt = strings.Replace(formattedSystemPrompt, 
+			"You may only call the 'target_completed' tool if you have exhausted all actionable tools for your assigned target, OR if you have found no vulnerabilities and your target has completed its reconnaissance phase.",
+			"*** EFFICIENCY MODE ENABLED ***\nYou are authorized to triage targets aggressively. You MUST evaluate if the target is worth investigating purely based on its name/IP BEFORE gathering evidence. If it appears to be a low-value asset (e.g. static CDN, out of scope, uninteresting), call 'target_completed' immediately to skip it. You do NOT need evidence to skip a target.", 1)
+	}
 
-		history := []fantasy.Message{
+	userMsg := fmt.Sprintf("Begin engagement on target: %s", currentTarget)
+	if cfg.EfficiencyMode {
+		userMsg += "\nEvaluate this target for triage like an expert penetration tester. Think critically about what this target likely is based on its name and URL structure. Is it a static CDN? A purely informational marketing site? A standard API gateway? If your professional intuition tells you this is a low-value or low-likelihood target, you MUST call 'target_completed' immediately to skip it. Be ruthless with your time management."
+	}
+
+	history := []fantasy.Message{
 		{
 			Role:    "system",
 			Content: []fantasy.MessagePart{fantasy.TextPart{Text: formattedSystemPrompt}},
 		},
-		fantasy.NewUserMessage(fmt.Sprintf("Begin engagement on target: %s", target)),
+		fantasy.NewUserMessage(userMsg),
 	}
 
 	toolStageByName := make(map[string]matrix.Phase)
@@ -442,13 +535,14 @@ IP whitelist policy:
 
 	for iter := 0; iter < cfg.MaxIters; iter++ {
 		snapshot := kg.Snapshot()
-		log.Infof("RED_TEAM_LOOP iteration=%d/%d %s", iter+1, cfg.MaxIters, summarizeSnapshot(snapshot))
+		log.Infof("RED_TEAM_LOOP target=%s iteration=%d/%d %s", currentTarget, iter+1, cfg.MaxIters, summarizeSnapshot(snapshot))
 
 		scored := make([]scoredTool, 0)
-		for _, targetObj := range kg.Targets {
+		kg.RLock()
+		targetObj := kg.Targets[currentTarget]
+		if targetObj != nil {
 			for _, t := range executor.Tools() {
 				toolStage := matrix.Phase(matrix.MapTechniqueToStage(t.Technique))
-				
 				if toolStage == targetObj.CurrentPhase || toolStage == matrix.PhaseReconnaissance {
 					st := scoreTool(t, targetObj, snapshot)
 					if st.Score >= 0 {
@@ -457,6 +551,7 @@ IP whitelist policy:
 				}
 			}
 		}
+		kg.RUnlock()
 
 		uniqueScored := make(map[string]scoredTool)
 		for _, st := range scored {
@@ -515,8 +610,8 @@ IP whitelist policy:
 			Content: []fantasy.MessagePart{fantasy.TextPart{Text: summaryBuilder.String()}},
 		})
 
-		canSubmitNow, submitReason := canSubmit(snapshot)
-		log.Debugf("Phase controls: can_submit=%t reason=%s", canSubmitNow, submitReason)
+		canCompleteNow, submitReason := canCompleteTarget(snapshot, currentTarget, cfg.EfficiencyMode)
+		log.Debugf("Phase controls: can_complete=%t reason=%s", canCompleteNow, submitReason)
 		activeTools = append(activeTools, fantasy.FunctionTool{
 			Name:        "query_knowledge_graph",
 			Description: "Query the knowledge graph for specific gathered intelligence.",
@@ -545,11 +640,11 @@ IP whitelist policy:
 			},
 		})
 		
-		if canSubmitNow {
+		if canCompleteNow || cfg.EfficiencyMode {
 			activeTools = append(activeTools, fantasy.FunctionTool{
-				Name:        "submit",
-				Description: "Submit the final engagement report.",
-				InputSchema: map[string]any{"type": "object", "properties": map[string]any{"report": map[string]any{"type": "string"}}, "required": []string{"report"}},
+				Name:        "target_completed",
+				Description: "Indicate to the orchestrator that you have completed all possible actions for your assigned target.",
+				InputSchema: map[string]any{"type": "object", "properties": map[string]any{"summary": map[string]any{"type": "string"}}, "required": []string{"summary"}},
 			})
 		}
 
@@ -586,7 +681,7 @@ IP whitelist policy:
 
 		toolCalls := resp.Content.ToolCalls()
 		if len(toolCalls) == 0 {
-			history = append(history, fantasy.NewUserMessage("You did not call any tools. Do not assume outcomes—test your theory by calling an appropriate tool, or call the 'submit' tool if you are finished."))
+			history = append(history, fantasy.NewUserMessage("You did not call any tools. Do not assume outcomes—test your theory by calling an appropriate tool, or call the 'target_completed' tool if you are finished with this target."))
 			continue
 		}
 
@@ -596,7 +691,7 @@ IP whitelist policy:
 		var otherTcs []fantasy.ToolCallContent
 
 		for _, tc := range toolCalls {
-			if tc.ToolName == "submit" {
+			if tc.ToolName == "target_completed" {
 				tcCopy := tc
 				submitTc = &tcCopy
 			} else {
@@ -735,7 +830,7 @@ IP whitelist policy:
 					ToolCallID: tc.ToolCallID,
 					Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: You have already successfully executed this tool with this exact payload. Please choose a different target, a different tool, different parameters, or advance the phase."},
 				})
-				log.Infof("TOOL_EXECUTION_BLOCKED reason=duplicate_payload tool=%s payload=%s", tc.ToolName, string(payloadBytes))
+				// log.Infof("TOOL_EXECUTION_BLOCKED reason=duplicate_payload tool=%s payload=%s", tc.ToolName, string(payloadBytes))
 				continue
 			}
 
@@ -758,12 +853,12 @@ IP whitelist policy:
 			var res string
 			if execErr != nil {
 				res = fmt.Sprintf("TOOL_ERROR: %v", execErr)
-				log.Warnf("Tool error in %s: %v", tc.ToolName, execErr)
+				// log.Warnf("Tool error in %s: %v", tc.ToolName, execErr)
 				log.Debugf("TOOL_RESULT tool=%s status=error result=%s", tc.ToolName, res)
 			} else {
 				executedPayloads[payloadHash] = true
 
-				targetUsed := target
+				targetUsed := initialTarget
 				if tStr, ok := payload["target"].(string); ok && strings.TrimSpace(tStr) != "" {
 					targetUsed = strings.TrimSpace(tStr)
 				} else if uStr, ok := payload["url"].(string); ok && strings.TrimSpace(uStr) != "" {
@@ -789,19 +884,19 @@ IP whitelist policy:
 					log.Warnf("Intelligence extraction failed: %v", extractErr)
 					summary = fmt.Sprintf("Tool executed successfully but intelligence extraction failed: %v", extractErr)
 				} else {
-					if err := matrix.LogTargetReport(target, extractedJSON); err != nil {
+					if err := matrix.LogTargetReport(initialTarget, extractedJSON); err != nil {
 						log.Warnf("Failed to log target report to SQLite: %v", err)
 					}
 				}
 
-				if err := matrix.LogExecution(target, resultData); err != nil {
+				if err := matrix.LogExecution(initialTarget, resultData); err != nil {
 					log.Warnf("Failed to log execution to SQLite: %v", err)
 				}
 
 				afterGraph := kg.Snapshot()
 				log.Infof("KNOWLEDGE_GRAPH_UPDATE tool=%s delta=%s snapshot=%s", tc.ToolName, snapshotDelta(beforeGraph, afterGraph), summarizeSnapshot(afterGraph))
-				canSubmitAfter, submitReasonAfter := canSubmit(afterGraph)
-				log.Infof("NEXT_DECISION tool=%s recommendation=%s", tc.ToolName, recommendedNextAction(canSubmitAfter, submitReasonAfter))
+				_, _ = canCompleteTarget(afterGraph, currentTarget, cfg.EfficiencyMode)
+				// log.Infof("NEXT_DECISION tool=%s recommendation=%s", tc.ToolName, recommendedNextAction(canCompleteAfter, submitReasonAfter))
 				log.Infof("TOOL_EXECUTION_SUMMARY tool=%s target=%s summary=%q", tc.ToolName, targetUsed, summary)
 				res = fmt.Sprintf("=== TOOL EXECUTION SUMMARY ===\n%s", summary)
 				log.Debugf("TOOL_RESULT tool=%s status=success result=%s", tc.ToolName, resultData)
@@ -821,45 +916,16 @@ IP whitelist policy:
 			}
 			log.Infof("TOOL_SELECTED tool=%s phase=%s", tc.ToolName, selectedPhase)
 
-			ok, reason := canSubmit(kg.Snapshot())
+			ok, reason := canCompleteTarget(kg.Snapshot(), currentTarget, cfg.EfficiencyMode)
 			if !ok {
 				toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
 					ToolCallID: tc.ToolCallID,
-					Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: submit blocked: " + reason},
+					Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: target_completed blocked: " + reason},
 				})
 			} else {
-				var args map[string]any
-				if err := json.Unmarshal([]byte(tc.Input), &args); err != nil {
-					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
-						ToolCallID: tc.ToolCallID,
-						Output:     fantasy.ToolResultOutputContentText{Text: fmt.Sprintf("TOOL_ERROR: invalid JSON: %v", err)},
-					})
-				} else {
-					reportStr, ok := args["report"].(string)
-					if !ok {
-						toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
-							ToolCallID: tc.ToolCallID,
-							Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: The 'report' argument is missing or not a string. Please call submit again with the report string."},
-						})
-					} else {
-						reportPath := "fire_starter_report.md"
-
-						if kgJSON, err := kg.ToJSON(); err == nil {
-							reportStr += "\n\n## Appendix: Knowledge Graph Dump\n\n```json\n" + string(kgJSON) + "\n```\n"
-						}
-
-						var finalReport string
-						if err := os.WriteFile(reportPath, []byte(reportStr), 0644); err != nil {
-							log.Errorf("Failed to save report: %v", err)
-							finalReport = fmt.Sprintf("Error saving report to %s: %v", reportPath, err)
-						} else {
-							log.Infof("Saved report to: %s", reportPath)
-							finalReport = fmt.Sprintf("Report successfully saved to: %s", reportPath)
-						}
-
-						return finalReport, nil
-					}
-				}
+				kg.SetTargetPhase(currentTarget, matrix.PhaseReporting)
+				log.Infof("Target %s completed successfully and moved to reporting phase.", currentTarget)
+				return nil
 			}
 		}
 
@@ -869,26 +935,8 @@ IP whitelist policy:
 				Content: toolResultParts,
 			})
 		}
-
-
 	}
 
-
-	reportStr := "# Final Report\n\n**WARNING: The application reached the maximum number of iterations without completing the red team process.**\n\n"
-	reportPath := "fire_starter_report.md"
-
-	if kgJSON, err := kg.ToJSON(); err == nil {
-		reportStr += "## Appendix: Knowledge Graph Dump\n\n```json\n" + string(kgJSON) + "\n```\n"
-	}
-
-	var finalReport string
-	if err := os.WriteFile(reportPath, []byte(reportStr), 0644); err != nil {
-		log.Errorf("Failed to save report: %v", err)
-		finalReport = fmt.Sprintf("Error saving report to %s: %v", reportPath, err)
-	} else {
-		log.Infof("Saved report to: %s", reportPath)
-		finalReport = fmt.Sprintf("Report successfully saved to: %s (Note: Max iterations reached before completion)", reportPath)
-	}
-
-	return finalReport, nil
+	log.Warnf("Target agent for %s reached MaxIters (%d) without completing.", currentTarget, cfg.MaxIters)
+	return nil
 }
