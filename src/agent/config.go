@@ -18,6 +18,7 @@ type Config struct {
 	BaseURL           string       `json:"base_url"`
 	MaxIters          int          `json:"max_iters"`
 	Verbose           bool         `json:"verbose"`
+	EfficiencyMode    bool         `json:"efficiency_mode"`
 	IPWhitelist       []string     `json:"ip_whitelist"`
 	RulesOfEngagement string       `json:"rules_of_engagement"`
 	Credentials       []Credential `json:"credentials"`
@@ -25,11 +26,12 @@ type Config struct {
 
 func DefaultConfig() Config {
 	return Config{
-		Provider:    "openai",
-		Model:       "gpt-4o",
-		MaxIters:    50,
-		IPWhitelist: make([]string, 0),
-		Credentials: make([]Credential, 0),
+		Provider:       "openai",
+		Model:          "gpt-4o",
+		MaxIters:       50,
+		EfficiencyMode: true,
+		IPWhitelist:    make([]string, 0),
+		Credentials:    make([]Credential, 0),
 	}
 }
 
