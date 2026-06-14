@@ -57,6 +57,20 @@ func InitDB(dbPath string) (*sql.DB, error) {
 			return
 		}
 
+		// Create final_reports table
+		_, err = db.Exec(`
+			CREATE TABLE IF NOT EXISTS final_reports (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				date_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+				target_domain TEXT NOT NULL,
+				report_content TEXT NOT NULL
+			);
+		`)
+		if err != nil {
+			initErr = fmt.Errorf("failed to create final_reports table: %w", err)
+			return
+		}
+
 		dbInstance = db
 	})
 
@@ -88,6 +102,19 @@ func LogTargetReport(targetDomain string, jsonData string) error {
 	_, err := dbInstance.Exec(
 		"INSERT INTO target_reports (date_time, target_domain, json_data) VALUES (?, ?, ?)",
 		time.Now().UTC(), targetDomain, jsonData,
+	)
+	return err
+}
+
+// LogFinalReport writes the final markdown report to the SQLite database
+func LogFinalReport(targetDomain string, reportContent string) error {
+	if dbInstance == nil {
+		return fmt.Errorf("database not initialized")
+	}
+
+	_, err := dbInstance.Exec(
+		"INSERT INTO final_reports (date_time, target_domain, report_content) VALUES (?, ?, ?)",
+		time.Now().UTC(), targetDomain, reportContent,
 	)
 	return err
 }
