@@ -145,6 +145,7 @@ type Target struct {
 type KnowledgeGraph struct {
 	mu           sync.RWMutex
 	BaseDomain   string             `json:"base_domain"`
+	ConfigTarget string             `json:"config_target"`
 	Targets      map[string]*Target `json:"targets"`
 	Context      map[string]any     `json:"context"`
 	OnUpdate     func(*KnowledgeGraph) `json:"-"`
@@ -173,6 +174,14 @@ func (kg *KnowledgeGraph) triggerUpdate() {
 	}
 }
 
+func (kg *KnowledgeGraph) RLock() {
+	kg.mu.RLock()
+}
+
+func (kg *KnowledgeGraph) RUnlock() {
+	kg.mu.RUnlock()
+}
+
 func IsZeroTarget(val string) bool {
 	if val == "0.0.0.0" || val == "::" || val == "[::]" {
 		return true
@@ -191,17 +200,19 @@ func IsZeroTarget(val string) bool {
 }
 
 func (kg *KnowledgeGraph) getOrCreateTarget(value string, targetType string) *Target {
-	if targetType == "url" {
-		value = NormalizeURL(value)
-	}
+	value = NormalizeURL(value)
 	if IsZeroTarget(value) {
 		return nil
 	}
 	if kg.Targets[value] == nil {
+		score := 0
+		if kg.ConfigTarget != "" && NormalizeURL(kg.ConfigTarget) == value {
+			score = 25
+		}
 		kg.Targets[value] = &Target{
 			Value:           value,
 			Type:            targetType,
-			Score:           0,
+			Score:           score,
 			CurrentPhase:    PhaseReconnaissance,
 			ExecutedTools:   make([]string, 0),
 			OpenPorts:       make([]int, 0),
@@ -652,6 +663,19 @@ func (kg *KnowledgeGraph) AdvanceTargetPhase(targetValue string) Phase {
 	t.CurrentPhase = NextPhase(t.CurrentPhase)
 	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=target_phase target=%s from=%s to=%s", targetValue, previous, t.CurrentPhase)
 	return t.CurrentPhase
+}
+
+func (kg *KnowledgeGraph) SetTargetPhase(targetValue string, phase Phase) {
+	defer kg.triggerUpdate()
+	kg.mu.Lock()
+	defer kg.mu.Unlock()
+	t, ok := kg.Targets[targetValue]
+	if !ok {
+		return
+	}
+	previous := t.CurrentPhase
+	t.CurrentPhase = phase
+	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=target_phase target=%s from=%s to=%s", targetValue, previous, t.CurrentPhase)
 }
 
 func (kg *KnowledgeGraph) GetTokens() []string {
