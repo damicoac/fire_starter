@@ -147,8 +147,9 @@ type KnowledgeGraph struct {
 	BaseDomain   string             `json:"base_domain"`
 	ConfigTarget string             `json:"config_target"`
 	Targets      map[string]*Target `json:"targets"`
-	Context      map[string]any     `json:"context"`
+	Context      map[string]any        `json:"context"`
 	OnUpdate     func(*KnowledgeGraph) `json:"-"`
+	updateChan   chan struct{}         `json:"-"`
 }
 
 type KnowledgeSnapshot struct {
@@ -162,15 +163,25 @@ type KnowledgeSnapshot struct {
 }
 
 func NewKnowledgeGraph() *KnowledgeGraph {
-	return &KnowledgeGraph{
-		Targets:      make(map[string]*Target),
-		Context:      make(map[string]any),
+	kg := &KnowledgeGraph{
+		Targets:    make(map[string]*Target),
+		Context:    make(map[string]any),
+		updateChan: make(chan struct{}, 1),
 	}
+	go func() {
+		for range kg.updateChan {
+			if kg.OnUpdate != nil {
+				kg.OnUpdate(kg)
+			}
+		}
+	}()
+	return kg
 }
 
 func (kg *KnowledgeGraph) triggerUpdate() {
-	if kg.OnUpdate != nil {
-		go kg.OnUpdate(kg)
+	select {
+	case kg.updateChan <- struct{}{}:
+	default:
 	}
 }
 
@@ -747,3 +758,66 @@ func (kg *KnowledgeGraph) Snapshot() KnowledgeSnapshot {
 		OpenPorts:           allPorts,
 	}
 }
+
+func getHostOfNormalizedTarget(target string) string {
+	target = strings.TrimSpace(target)
+	if idx := strings.Index(target, "/"); idx != -1 {
+		return target[:idx]
+	}
+	return target
+}
+
+func getHostnameOfNormalizedTarget(target string) string {
+	host := getHostOfNormalizedTarget(target)
+	if strings.Contains(host, ":") {
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			return h
+		}
+	}
+	return host
+}
+
+func isDomainOrSubdomain(host, parentDomain string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	parentDomain = strings.ToLower(strings.TrimSpace(parentDomain))
+	if host == parentDomain {
+		return true
+	}
+	// IPs must match exactly
+	if net.ParseIP(host) != nil || net.ParseIP(parentDomain) != nil {
+		return host == parentDomain
+	}
+	return strings.HasSuffix(host, "."+parentDomain)
+}
+
+func (kg *KnowledgeGraph) GetTokensForTarget(targetValue string) []string {
+	kg.mu.RLock()
+	defer kg.mu.RUnlock()
+
+	targetValue = NormalizeURL(targetValue)
+	targetHost := getHostnameOfNormalizedTarget(targetValue)
+	if targetHost == "" {
+		return nil
+	}
+
+	var tokens []string
+	seen := make(map[string]bool)
+
+	for _, t := range kg.Targets {
+		storedHost := getHostnameOfNormalizedTarget(t.Value)
+		if storedHost == "" {
+			continue
+		}
+
+		if isDomainOrSubdomain(targetHost, storedHost) || isDomainOrSubdomain(storedHost, targetHost) {
+			for _, tok := range t.Tokens {
+				if !seen[tok] {
+					seen[tok] = true
+					tokens = append(tokens, tok)
+				}
+			}
+		}
+	}
+	return tokens
+}
+

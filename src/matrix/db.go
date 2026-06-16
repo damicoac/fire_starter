@@ -63,13 +63,17 @@ func InitDB(dbPath string) (*sql.DB, error) {
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				date_time DATETIME DEFAULT CURRENT_TIMESTAMP,
 				target_domain TEXT NOT NULL,
-				report_content TEXT NOT NULL
+				report_content TEXT NOT NULL,
+				type TEXT NOT NULL DEFAULT 'final'
 			);
 		`)
 		if err != nil {
 			initErr = fmt.Errorf("failed to create final_reports table: %w", err)
 			return
 		}
+
+		// Migrate existing table to add type column if it doesn't exist
+		_, _ = db.Exec("ALTER TABLE final_reports ADD COLUMN type TEXT NOT NULL DEFAULT 'final'")
 
 		dbInstance = db
 	})
@@ -106,15 +110,44 @@ func LogTargetReport(targetDomain string, jsonData string) error {
 	return err
 }
 
+// TargetReportInfo holds target domain and the report content
+type TargetReportInfo struct {
+	TargetDomain  string
+	ReportContent string
+}
+
+// GetTargetReports retrieves all target-specific reports from final_reports table
+func GetTargetReports() ([]TargetReportInfo, error) {
+	if dbInstance == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+
+	rows, err := dbInstance.Query("SELECT target_domain, report_content FROM final_reports WHERE type = 'target'")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var reports []TargetReportInfo
+	for rows.Next() {
+		var info TargetReportInfo
+		if err := rows.Scan(&info.TargetDomain, &info.ReportContent); err != nil {
+			return nil, err
+		}
+		reports = append(reports, info)
+	}
+	return reports, nil
+}
+
 // LogFinalReport writes the final markdown report to the SQLite database
-func LogFinalReport(targetDomain string, reportContent string) error {
+func LogFinalReport(targetDomain string, reportContent string, reportType string) error {
 	if dbInstance == nil {
 		return fmt.Errorf("database not initialized")
 	}
 
 	_, err := dbInstance.Exec(
-		"INSERT INTO final_reports (date_time, target_domain, report_content) VALUES (?, ?, ?)",
-		time.Now().UTC(), targetDomain, reportContent,
+		"INSERT INTO final_reports (date_time, target_domain, report_content, type) VALUES (?, ?, ?, ?)",
+		time.Now().UTC(), targetDomain, reportContent, reportType,
 	)
 	return err
 }
