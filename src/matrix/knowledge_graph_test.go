@@ -1,7 +1,10 @@
 package matrix
 
 import (
+	"context"
 	"testing"
+
+	"charm.land/fantasy"
 )
 
 func TestKnowledgeGraph_Scoring(t *testing.T) {
@@ -185,6 +188,53 @@ func TestKnowledgeGraph_TargetDomainsWhitelist(t *testing.T) {
 	kg.AddIP("8.8.8.8")
 	if kg.Targets["8.8.8.8"] == nil {
 		t.Errorf("Expected 8.8.8.8 to be ingested via dynamic allowed list")
+	}
+}
+
+type mockModel struct {
+	fantasy.LanguageModel
+	responseStr string
+	err         error
+}
+
+func (m *mockModel) Generate(ctx context.Context, call fantasy.Call) (*fantasy.Response, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return &fantasy.Response{
+		Content: fantasy.ResponseContent{
+			fantasy.TextContent{Text: m.responseStr},
+		},
+	}, nil
+}
+
+func TestKnowledgeGraph_EvaluateScopeWithLLM(t *testing.T) {
+	kg := NewKnowledgeGraph()
+	kg.TargetDomains = []string{"*.example.com"}
+
+	mockJSON := `{
+		"results": [
+			{"candidate": "sub.example.com", "should_add": true, "reason": "subdomain"},
+			{"candidate": "attacker.com", "should_add": false, "reason": "unrelated"},
+			{"candidate": "192.168.1.1", "should_add": true, "reason": "in scope"}
+		]
+	}`
+
+	model := &mockModel{
+		responseStr: mockJSON,
+	}
+
+	ips := []string{"192.168.1.1"}
+	urls := []string{"sub.example.com", "attacker.com"}
+
+	allowedIPs, allowedURLs := kg.evaluateScopeWithLLM(context.Background(), model, ips, urls)
+
+	if len(allowedIPs) != 1 || allowedIPs[0] != "192.168.1.1" {
+		t.Errorf("Expected 192.168.1.1 to be allowed, got: %v", allowedIPs)
+	}
+
+	if len(allowedURLs) != 1 || allowedURLs[0] != "sub.example.com" {
+		t.Errorf("Expected sub.example.com to be allowed, got: %v", allowedURLs)
 	}
 }
 

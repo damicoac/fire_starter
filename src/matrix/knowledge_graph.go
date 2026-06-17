@@ -254,6 +254,126 @@ type ExtractedIntelligence struct {
 	Summary         string           `json:"summary"`
 }
 
+func (kg *KnowledgeGraph) evaluateScopeWithLLM(ctx context.Context, model fantasy.LanguageModel, ips []string, urls []string) ([]string, []string) {
+	if len(ips) == 0 && len(urls) == 0 {
+		return nil, nil
+	}
+
+	domains := kg.TargetDomains
+	if len(domains) == 0 && kg.BaseDomain != "" {
+		domains = []string{kg.BaseDomain}
+	}
+
+	// If no whitelist targets are configured at all, allow everything
+	if len(domains) == 0 {
+		return ips, urls
+	}
+
+	candidates := append([]string{}, ips...)
+	candidates = append(candidates, urls...)
+
+	type DecisionItem struct {
+		Candidate string `json:"candidate"`
+		ShouldAdd bool   `json:"should_add"`
+		Reason    string `json:"reason"`
+	}
+	type BatchDecision struct {
+		Results []DecisionItem `json:"results"`
+	}
+
+	prompt := fmt.Sprintf(`You are a security boundary guard sub-agent.
+Your task is to evaluate a list of candidate IPs and URLs/domains discovered during a red team engagement, and decide if they are related to the whitelisted targets.
+We must ONLY target/add systems that are in-scope and related.
+
+Whitelisted Targets:
+%s
+
+Candidate Targets to Evaluate:
+%s
+
+For each candidate, decide if it should be added to the knowledge graph (should_add = true) or ignored (should_add = false).
+Rules for deciding:
+1. Subdomains of a whitelisted domain are related and should be added.
+2. IPs that belong to the whitelisted domains or configured target networks are related.
+3. Common third-party domains (e.g. googleapis.com, jquery.com, cloudflare.com, bootstrapcdn.com) or external CDNs/apis should NOT be added.
+4. Unrelated IPs should NOT be added.
+5. Provide a clear, concise reason explaining your decision.
+
+Respond STRICTLY in the following JSON format:
+{
+  "results": [
+    {
+      "candidate": "candidate name",
+      "should_add": true,
+      "reason": "explanation of relationship or lack thereof"
+    }
+  ]
+}`, strings.Join(domains, ", "), strings.Join(candidates, "\n"))
+
+	msg := fantasy.NewUserMessage(prompt)
+	resp, err := model.Generate(ctx, fantasy.Call{
+		Prompt: []fantasy.Message{msg},
+	})
+	if err != nil {
+		log.Errorf("Decision agent failed to generate: %v. Falling back to default whitelisting check.", err)
+		return ips, urls
+	}
+
+	var rawText string
+	for _, part := range resp.Content {
+		if textPart, ok := part.(fantasy.TextContent); ok {
+			rawText += textPart.Text
+		}
+	}
+
+	rawText = strings.TrimSpace(rawText)
+	if strings.HasPrefix(rawText, "```json") {
+		rawText = strings.TrimPrefix(rawText, "```json")
+		rawText = strings.TrimSuffix(rawText, "```")
+	} else if strings.HasPrefix(rawText, "```") {
+		rawText = strings.TrimPrefix(rawText, "```")
+		rawText = strings.TrimSuffix(rawText, "```")
+	}
+	rawText = strings.TrimSpace(rawText)
+
+	var decision BatchDecision
+	if err := json.Unmarshal([]byte(rawText), &decision); err != nil {
+		log.Errorf("Decision agent returned invalid JSON: %v. Falling back to default whitelisting check.", err)
+		return ips, urls
+	}
+
+	shouldAddMap := make(map[string]bool)
+	for _, item := range decision.Results {
+		shouldAddMap[item.Candidate] = item.ShouldAdd
+		log.Infof("DECISION_TO_ADD candidate=%s should_add=%v reason=%s", item.Candidate, item.ShouldAdd, item.Reason)
+	}
+
+	var allowedIPs []string
+	var allowedURLs []string
+	for _, ip := range ips {
+		if val, exists := shouldAddMap[ip]; exists {
+			if val {
+				allowedIPs = append(allowedIPs, ip)
+			}
+		} else {
+			// If not returned by LLM, default to false (safe approach)
+			log.Warnf("Decision agent omitted candidate IP: %s. Defaulting to ignore.", ip)
+		}
+	}
+	for _, u := range urls {
+		if val, exists := shouldAddMap[u]; exists {
+			if val {
+				allowedURLs = append(allowedURLs, u)
+			}
+		} else {
+			// If not returned by LLM, default to false
+			log.Warnf("Decision agent omitted candidate URL: %s. Defaulting to ignore.", u)
+		}
+	}
+
+	return allowedIPs, allowedURLs
+}
+
 func (kg *KnowledgeGraph) ExtractIntelligence(ctx context.Context, model fantasy.LanguageModel, toolName, target string, payload map[string]any, resultData string) (string, string, error) {
 	if model == nil {
 		kg.regexExtract(toolName, target, payload, resultData)
@@ -322,10 +442,12 @@ Output:
 		}
 	}
 
-	for _, ip := range extracted.DiscoveredIPs {
+	allowedIPs, allowedURLs := kg.evaluateScopeWithLLM(ctx, model, extracted.DiscoveredIPs, extracted.DiscoveredURLs)
+
+	for _, ip := range allowedIPs {
 		kg.AddIP(ip)
 	}
-	for _, u := range extracted.DiscoveredURLs {
+	for _, u := range allowedURLs {
 		kg.AddURL(u, target)
 	}
 	for _, p := range extracted.OpenPorts {
@@ -352,11 +474,11 @@ Output:
 	}
 
 	summary := extracted.Summary
-	if len(extracted.DiscoveredURLs) > 0 {
-		summary += "\n\nDiscovered URLs: " + strings.Join(extracted.DiscoveredURLs, ", ")
+	if len(allowedURLs) > 0 {
+		summary += "\n\nDiscovered URLs: " + strings.Join(allowedURLs, ", ")
 	}
-	if len(extracted.DiscoveredIPs) > 0 {
-		summary += "\n\nDiscovered IPs: " + strings.Join(extracted.DiscoveredIPs, ", ")
+	if len(allowedIPs) > 0 {
+		summary += "\n\nDiscovered IPs: " + strings.Join(allowedIPs, ", ")
 	}
 	return summary, rawText, nil
 }
