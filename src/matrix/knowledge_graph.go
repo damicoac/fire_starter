@@ -345,7 +345,7 @@ Respond STRICTLY in the following JSON format:
 	shouldAddMap := make(map[string]bool)
 	for _, item := range decision.Results {
 		shouldAddMap[item.Candidate] = item.ShouldAdd
-		log.Infof("DECISION_TO_ADD candidate=%s should_add=%v reason=%s", item.Candidate, item.ShouldAdd, item.Reason)
+		log.Debugf("DECISION_TO_ADD candidate=%s should_add=%v reason=%s", item.Candidate, item.ShouldAdd, item.Reason)
 	}
 
 	var allowedIPs []string
