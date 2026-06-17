@@ -13,6 +13,7 @@ type Credential struct {
 
 type Config struct {
 	Target            string       `json:"target"`
+	TargetDomains     []string     `json:"target_domains"`
 	Provider          string       `json:"provider"`
 	Model             string       `json:"model"`
 	BaseURL           string       `json:"base_url"`
@@ -31,6 +32,7 @@ func DefaultConfig() Config {
 		MaxIters:       50,
 		EfficiencyMode: true,
 		IPWhitelist:    make([]string, 0),
+		TargetDomains:  make([]string, 0),
 		Credentials:    make([]Credential, 0),
 	}
 }
@@ -69,6 +71,9 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if cfg.IPWhitelist == nil {
 		cfg.IPWhitelist = make([]string, 0)
+	}
+	if cfg.TargetDomains == nil {
+		cfg.TargetDomains = make([]string, 0)
 	}
 	if cfg.Credentials == nil {
 		cfg.Credentials = make([]Credential, 0)

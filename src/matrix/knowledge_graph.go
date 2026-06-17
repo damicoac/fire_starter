@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -143,13 +144,15 @@ type Target struct {
 }
 
 type KnowledgeGraph struct {
-	mu           sync.RWMutex
-	BaseDomain   string             `json:"base_domain"`
-	ConfigTarget string             `json:"config_target"`
-	Targets      map[string]*Target `json:"targets"`
-	Context      map[string]any        `json:"context"`
-	OnUpdate     func(*KnowledgeGraph) `json:"-"`
-	updateChan   chan struct{}         `json:"-"`
+	mu            sync.RWMutex
+	BaseDomain    string             `json:"base_domain"`
+	TargetDomains []string           `json:"target_domains"`
+	allowedIPs    map[string]bool
+	ConfigTarget  string             `json:"config_target"`
+	Targets       map[string]*Target `json:"targets"`
+	Context       map[string]any        `json:"context"`
+	OnUpdate      func(*KnowledgeGraph) `json:"-"`
+	updateChan    chan struct{}         `json:"-"`
 }
 
 type KnowledgeSnapshot struct {
@@ -164,9 +167,11 @@ type KnowledgeSnapshot struct {
 
 func NewKnowledgeGraph() *KnowledgeGraph {
 	kg := &KnowledgeGraph{
-		Targets:    make(map[string]*Target),
-		Context:    make(map[string]any),
-		updateChan: make(chan struct{}, 1),
+		Targets:       make(map[string]*Target),
+		Context:       make(map[string]any),
+		TargetDomains: make([]string, 0),
+		allowedIPs:    make(map[string]bool),
+		updateChan:    make(chan struct{}, 1),
 	}
 	go func() {
 		for range kg.updateChan {
@@ -460,6 +465,40 @@ func (kg *KnowledgeGraph) regexExtract(toolName, target string, payload map[stri
 		})
 	}
 }
+func MatchDomainOrIP(input string, pattern string) bool {
+	input = strings.ToLower(strings.TrimSpace(input))
+	pattern = strings.ToLower(strings.TrimSpace(pattern))
+
+	if pattern == "*" {
+		return true
+	}
+
+	// Support *.domain.com matching domain.com and *.domain.com
+	if strings.HasPrefix(pattern, "*.") {
+		base := pattern[2:]
+		if input == base {
+			return true
+		}
+		return strings.HasSuffix(input, "."+base)
+	}
+
+	// Fallback to filepath.Match for other wildcard patterns (e.g. 192.168.1.*)
+	if strings.Contains(pattern, "*") {
+		matched, err := filepath.Match(pattern, input)
+		return err == nil && matched
+	}
+
+	return input == pattern
+}
+
+func (kg *KnowledgeGraph) AddAllowedIP(ip string) {
+	kg.mu.Lock()
+	defer kg.mu.Unlock()
+	if kg.allowedIPs == nil {
+		kg.allowedIPs = make(map[string]bool)
+	}
+	kg.allowedIPs[ip] = true
+}
 
 func (kg *KnowledgeGraph) ToJSON() ([]byte, error) {
 	kg.mu.RLock()
@@ -477,7 +516,60 @@ func (kg *KnowledgeGraph) AddIP(ip string) {
 	defer kg.triggerUpdate()
 	kg.mu.Lock()
 	defer kg.mu.Unlock()
-	
+
+	// 1. Check if allowed by IP whitelist if it is configured
+	var ipWhitelist []string
+	if val, ok := kg.Context["ip_whitelist"]; ok {
+		if slice, ok := val.([]string); ok {
+			ipWhitelist = slice
+		} else if slice, ok := val.([]any); ok {
+			for _, item := range slice {
+				if s, ok := item.(string); ok {
+					ipWhitelist = append(ipWhitelist, s)
+				}
+			}
+		}
+	}
+
+	if len(ipWhitelist) > 0 {
+		allowed := false
+		for _, wIP := range ipWhitelist {
+			if wIP == ip {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return
+		}
+	}
+
+	// 2. Check if allowed by TargetDomains
+	domains := kg.TargetDomains
+	if len(domains) == 0 && kg.BaseDomain != "" {
+		domains = []string{kg.BaseDomain}
+	}
+
+	if len(domains) > 0 {
+		allowedByDomainOrIP := false
+		for _, pattern := range domains {
+			if pattern == "*" {
+				allowedByDomainOrIP = true
+				break
+			}
+			if MatchDomainOrIP(ip, pattern) {
+				allowedByDomainOrIP = true
+				break
+			}
+		}
+		if !allowedByDomainOrIP && kg.allowedIPs != nil && kg.allowedIPs[ip] {
+			allowedByDomainOrIP = true
+		}
+		if !allowedByDomainOrIP {
+			return
+		}
+	}
+
 	t := kg.getOrCreateTarget(ip, "ip")
 	if t == nil {
 		return
@@ -518,7 +610,12 @@ func (kg *KnowledgeGraph) AddURL(u string, baseCtx string) {
 
 	u = ResolveAndNormalizeURL(u, baseCtx)
 
-	if kg.BaseDomain != "" {
+	domains := kg.TargetDomains
+	if len(domains) == 0 && kg.BaseDomain != "" {
+		domains = []string{kg.BaseDomain}
+	}
+
+	if len(domains) > 0 {
 		parsed, err := url.Parse("https://" + u)
 		if err != nil {
 			return
@@ -526,7 +623,14 @@ func (kg *KnowledgeGraph) AddURL(u string, baseCtx string) {
 
 		if parsed.Hostname() != "" {
 			host := parsed.Hostname()
-			if host != kg.BaseDomain && !strings.HasSuffix(host, "."+kg.BaseDomain) {
+			matched := false
+			for _, pattern := range domains {
+				if MatchDomainOrIP(host, pattern) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
 				return
 			}
 
@@ -535,7 +639,10 @@ func (kg *KnowledgeGraph) AddURL(u string, baseCtx string) {
 				for _, ip := range ips {
 					if ip.String() != "0.0.0.0" && ip.String() != "::" && !ip.IsLoopback() {
 						allPlaceholder = false
-						break
+						if kg.allowedIPs == nil {
+							kg.allowedIPs = make(map[string]bool)
+						}
+						kg.allowedIPs[ip.String()] = true
 					}
 				}
 				if allPlaceholder {

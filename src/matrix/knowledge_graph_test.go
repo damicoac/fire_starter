@@ -119,3 +119,72 @@ func TestKnowledgeGraph_GetTokensForTarget(t *testing.T) {
 	}
 }
 
+func TestMatchDomainOrIP(t *testing.T) {
+	tests := []struct {
+		input   string
+		pattern string
+		want    bool
+	}{
+		{"example.com", "example.com", true},
+		{"sub.example.com", "example.com", false},
+		{"example.com", "*.example.com", true},
+		{"sub.example.com", "*.example.com", true},
+		{"sub.sub.example.com", "*.example.com", true},
+		{"other.com", "*.example.com", false},
+		{"example.com.attacker.com", "*.example.com", false},
+		{"notexample.com", "*.example.com", false},
+		{"192.168.1.5", "192.168.1.*", true},
+		{"192.168.2.5", "192.168.1.*", false},
+		{"10.0.0.1", "*", true},
+	}
+
+	for _, tt := range tests {
+		got := MatchDomainOrIP(tt.input, tt.pattern)
+		if got != tt.want {
+			t.Errorf("MatchDomainOrIP(%q, %q) = %v, want %v", tt.input, tt.pattern, got, tt.want)
+		}
+	}
+}
+
+func TestKnowledgeGraph_TargetDomainsWhitelist(t *testing.T) {
+	kg := NewKnowledgeGraph()
+	kg.TargetDomains = []string{"*.example.com", "192.168.1.*"}
+
+	// URL within whitelist
+	kg.AddURL("http://example.com/api", "")
+	if kg.Targets["example.com/api"] == nil {
+		t.Errorf("Expected example.com/api to be ingested")
+	}
+
+	// Subdomain URL within whitelist
+	kg.AddURL("https://sub.example.com/test", "")
+	if kg.Targets["sub.example.com/test"] == nil {
+		t.Errorf("Expected sub.example.com/test to be ingested")
+	}
+
+	// URL outside whitelist
+	kg.AddURL("http://attacker.com/api", "")
+	if kg.Targets["attacker.com/api"] != nil {
+		t.Errorf("Expected attacker.com/api to be ignored")
+	}
+
+	// IP matching wildcard pattern
+	kg.AddIP("192.168.1.100")
+	if kg.Targets["192.168.1.100"] == nil {
+		t.Errorf("Expected 192.168.1.100 to be ingested via wildcard match")
+	}
+
+	// IP not matching wildcard pattern
+	kg.AddIP("10.0.0.1")
+	if kg.Targets["10.0.0.1"] != nil {
+		t.Errorf("Expected 10.0.0.1 to be ignored")
+	}
+
+	// Dynamically allowed IP (manually added or resolved)
+	kg.AddAllowedIP("8.8.8.8")
+	kg.AddIP("8.8.8.8")
+	if kg.Targets["8.8.8.8"] == nil {
+		t.Errorf("Expected 8.8.8.8 to be ingested via dynamic allowed list")
+	}
+}
+
