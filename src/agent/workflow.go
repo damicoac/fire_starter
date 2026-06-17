@@ -333,12 +333,32 @@ func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*m
 		log.Warnf("Failed to init SQLite database: %v", err)
 	}
 
-	if u, err := url.Parse(target); err == nil && u.Hostname() != "" {
-		kg.BaseDomain = getBaseDomain(u.Hostname())
-	} else if !strings.HasPrefix(target, "http") {
-		u, err := url.Parse("https://" + target)
-		if err == nil && u.Hostname() != "" {
-			kg.BaseDomain = getBaseDomain(u.Hostname())
+	// Populate TargetDomains whitelist from config
+	if len(cfg.TargetDomains) > 0 {
+		kg.TargetDomains = cfg.TargetDomains
+	} else {
+		// Fallback to the single-domain restriction using the initial target's base domain
+		var baseDomain string
+		if u, err := url.Parse(target); err == nil && u.Hostname() != "" {
+			baseDomain = getBaseDomain(u.Hostname())
+		} else if !strings.HasPrefix(target, "http") {
+			u, err := url.Parse("https://" + target)
+			if err == nil && u.Hostname() != "" {
+				baseDomain = getBaseDomain(u.Hostname())
+			}
+		}
+		if baseDomain != "" {
+			kg.TargetDomains = []string{baseDomain}
+		}
+	}
+
+	// For backwards compatibility, set BaseDomain to the first target domain
+	if len(kg.TargetDomains) > 0 {
+		first := kg.TargetDomains[0]
+		if strings.HasPrefix(first, "*.") {
+			kg.BaseDomain = first[2:]
+		} else {
+			kg.BaseDomain = first
 		}
 	}
 
@@ -347,19 +367,34 @@ func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*m
 		trimmed := strings.TrimSpace(ip)
 		if parsed := net.ParseIP(trimmed); parsed != nil {
 			allowlist[parsed.String()] = true
+			kg.AddAllowedIP(parsed.String())
 			kg.AddIP(parsed.String())
 		}
 	}
 	for _, ip := range extractIPsFromTarget(target) {
 		if len(allowlist) == 0 || allowlist[ip] {
+			kg.AddAllowedIP(ip)
 			kg.AddIP(ip)
 		}
 	}
 	if strings.Contains(target, "://") {
+		if u, err := url.Parse(target); err == nil && u.Hostname() != "" {
+			if ips, err := net.LookupIP(u.Hostname()); err == nil {
+				for _, ip := range ips {
+					kg.AddAllowedIP(ip.String())
+				}
+			}
+		}
 		kg.AddURL(target, target)
 	} else if net.ParseIP(target) != nil {
+		kg.AddAllowedIP(target)
 		kg.AddIP(target)
 	} else {
+		if ips, err := net.LookupIP(target); err == nil {
+			for _, ip := range ips {
+				kg.AddAllowedIP(ip.String())
+			}
+		}
 		kg.AddURL("http://"+target, "http://"+target)
 	}
 	for _, cred := range cfg.Credentials {
@@ -372,6 +407,7 @@ func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*m
 	kg.SetContextValue("rules_of_engagement", cfg.RulesOfEngagement)
 
 	processedTargets := make(map[string]bool)
+	globalIters := 0
 
 	for {
 		var pendingTargets []string
@@ -390,7 +426,7 @@ func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*m
 		for _, tVal := range pendingTargets {
 			processedTargets[tVal] = true
 			log.Infof("Starting agent loop for target: %s", tVal)
-			if err := runTargetAgent(ctx, tVal, target, cfg, kg, executor, model, allowlist); err != nil {
+			if err := runTargetAgent(ctx, tVal, target, cfg, kg, executor, model, allowlist, &globalIters); err != nil {
 				log.Errorf("Target agent for %s failed: %v", tVal, err)
 			}
 		}
@@ -461,7 +497,7 @@ func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*m
 	return finalReport, nil
 }
 
-func runTargetAgent(ctx context.Context, currentTarget string, initialTarget string, cfg Config, kg *matrix.KnowledgeGraph, executor *matrix.RealExecutor, model fantasy.LanguageModel, allowlist map[string]bool) error {
+func runTargetAgent(ctx context.Context, currentTarget string, initialTarget string, cfg Config, kg *matrix.KnowledgeGraph, executor *matrix.RealExecutor, model fantasy.LanguageModel, allowlist map[string]bool, globalIters *int) error {
 	systemPrompt := `You are an autonomous red team agent assigned to a SPECIFIC target. Your current available tools are automatically populated based on the phase of the target.
 Review the 'Current Intelligence Summary' in the system messages to see the global state, but your actions should focus on your assigned target.
 
@@ -511,9 +547,13 @@ IP whitelist policy:
 	}
 	executedPayloads := make(map[string]bool)
 
-	for iter := 0; iter < cfg.MaxIters; iter++ {
+	for {
+		if *globalIters >= cfg.MaxIters {
+			break
+		}
 		snapshot := kg.Snapshot()
-		log.Infof("RED_TEAM_LOOP target=%s iteration=%d/%d %s", currentTarget, iter+1, cfg.MaxIters, summarizeSnapshot(snapshot))
+		log.Infof("RED_TEAM_LOOP target=%s iteration=%d/%d %s", currentTarget, *globalIters+1, cfg.MaxIters, summarizeSnapshot(snapshot))
+		*globalIters++
 
 		scored := make([]scoredTool, 0)
 		kg.RLock()
