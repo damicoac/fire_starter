@@ -15,51 +15,48 @@ func TestDatabaseOperations(t *testing.T) {
 		t.Fatalf("InitDB failed: %v", err)
 	}
 
-	// Insert various reports using LogFinalReport
-	err = LogFinalReport("target1.com", "Target 1 Report Content", "target")
+	// Insert various vulnerabilities using LogVulnerability
+	err = LogVulnerability("target1.com", "SQL Injection", "curl -X POST target1.com/login -d 'user=admin&pass=123'")
 	if err != nil {
-		t.Fatalf("LogFinalReport failed for target: %v", err)
+		t.Fatalf("LogVulnerability failed: %v", err)
 	}
 
-	err = LogFinalReport("target1.com", `{"nodes": []}`, "knowledge graph")
+	err = LogVulnerability("target2.com", "Cross-Site Scripting", "payload: <script>alert(1)</script>")
 	if err != nil {
-		t.Fatalf("LogFinalReport failed for knowledge graph: %v", err)
+		t.Fatalf("LogVulnerability failed: %v", err)
 	}
 
-	err = LogFinalReport("target2.com", "Target 2 Report Content", "target")
+	// Retrieve vulnerabilities and verify
+	vulns, err := GetVulnerabilities()
 	if err != nil {
-		t.Fatalf("LogFinalReport failed for target: %v", err)
+		t.Fatalf("GetVulnerabilities failed: %v", err)
 	}
 
-	err = LogFinalReport("global", "Final Report Content", "final")
-	if err != nil {
-		t.Fatalf("LogFinalReport failed for final: %v", err)
+	if len(vulns) != 2 {
+		t.Errorf("Expected 2 vulnerabilities, got %d", len(vulns))
 	}
 
-	// Retrieve target reports and verify
-	reports, err := GetTargetReports()
-	if err != nil {
-		t.Fatalf("GetTargetReports failed: %v", err)
+	// Check content of retrieved vulnerabilities
+	expectedMap := map[string]struct {
+		finding  string
+		testCode string
+	}{
+		"target1.com": {finding: "SQL Injection", testCode: "curl -X POST target1.com/login -d 'user=admin&pass=123'"},
+		"target2.com": {finding: "Cross-Site Scripting", testCode: "payload: <script>alert(1)</script>"},
 	}
 
-	if len(reports) != 2 {
-		t.Errorf("Expected 2 target reports, got %d", len(reports))
-	}
-
-	// Check content of retrieved reports
-	expectedMap := map[string]string{
-		"target1.com": "Target 1 Report Content",
-		"target2.com": "Target 2 Report Content",
-	}
-
-	for _, rep := range reports {
-		expectedContent, ok := expectedMap[rep.TargetDomain]
+	for _, v := range vulns {
+		expected, ok := expectedMap[v.TargetDomain]
 		if !ok {
-			t.Errorf("Unexpected target domain in reports: %s", rep.TargetDomain)
+			t.Errorf("Unexpected target domain in vulnerabilities: %s", v.TargetDomain)
 			continue
 		}
-		if rep.ReportContent != expectedContent {
-			t.Errorf("Expected report content %q for target %s, got %q", expectedContent, rep.TargetDomain, rep.ReportContent)
+		if v.Finding != expected.finding {
+			t.Errorf("Expected finding %q for target %s, got %q", expected.finding, v.TargetDomain, v.Finding)
+		}
+		if v.TestCode != expected.testCode {
+			t.Errorf("Expected test code %q for target %s, got %q", expected.testCode, v.TargetDomain, v.TestCode)
 		}
 	}
 }
+

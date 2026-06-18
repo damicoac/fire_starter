@@ -43,37 +43,20 @@ func InitDB(dbPath string) (*sql.DB, error) {
 			return
 		}
 
-		// Create target_reports table
+		// Create vuln table
 		_, err = db.Exec(`
-			CREATE TABLE IF NOT EXISTS target_reports (
+			CREATE TABLE IF NOT EXISTS vuln (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				date_time DATETIME DEFAULT CURRENT_TIMESTAMP,
 				target_domain TEXT NOT NULL,
-				json_data TEXT NOT NULL
+				finding TEXT NOT NULL,
+				test_code TEXT NOT NULL
 			);
 		`)
 		if err != nil {
-			initErr = fmt.Errorf("failed to create target_reports table: %w", err)
+			initErr = fmt.Errorf("failed to create vuln table: %w", err)
 			return
 		}
-
-		// Create final_reports table
-		_, err = db.Exec(`
-			CREATE TABLE IF NOT EXISTS final_reports (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				date_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-				target_domain TEXT NOT NULL,
-				report_content TEXT NOT NULL,
-				type TEXT NOT NULL DEFAULT 'final'
-			);
-		`)
-		if err != nil {
-			initErr = fmt.Errorf("failed to create final_reports table: %w", err)
-			return
-		}
-
-		// Migrate existing table to add type column if it doesn't exist
-		_, _ = db.Exec("ALTER TABLE final_reports ADD COLUMN type TEXT NOT NULL DEFAULT 'final'")
 
 		dbInstance = db
 	})
@@ -97,57 +80,61 @@ func LogExecution(targetDomain string, jsonOutput string) error {
 	return err
 }
 
-// LogTargetReport writes parsed target intelligence to the SQLite database
-func LogTargetReport(targetDomain string, jsonData string) error {
+// VulnInfo holds vulnerability details retrieved from the database
+type VulnInfo struct {
+	ID           int
+	DateTime     time.Time
+	TargetDomain string
+	Finding      string
+	TestCode     string
+}
+
+// LogVulnerability writes a vulnerability finding with its test code to the SQLite database
+func LogVulnerability(targetDomain string, finding string, testCode string) error {
 	if dbInstance == nil {
 		return fmt.Errorf("database not initialized")
 	}
 
 	_, err := dbInstance.Exec(
-		"INSERT INTO target_reports (date_time, target_domain, json_data) VALUES (?, ?, ?)",
-		time.Now().UTC(), targetDomain, jsonData,
+		"INSERT INTO vuln (date_time, target_domain, finding, test_code) VALUES (?, ?, ?, ?)",
+		time.Now().UTC(), targetDomain, finding, testCode,
 	)
 	return err
 }
 
-// TargetReportInfo holds target domain and the report content
-type TargetReportInfo struct {
-	TargetDomain  string
-	ReportContent string
-}
-
-// GetTargetReports retrieves all target-specific reports from final_reports table
-func GetTargetReports() ([]TargetReportInfo, error) {
+// GetVulnerabilities retrieves all vulnerability findings from the database
+func GetVulnerabilities() ([]VulnInfo, error) {
 	if dbInstance == nil {
 		return nil, fmt.Errorf("database not initialized")
 	}
 
-	rows, err := dbInstance.Query("SELECT target_domain, report_content FROM final_reports WHERE type = 'target'")
+	rows, err := dbInstance.Query("SELECT id, date_time, target_domain, finding, test_code FROM vuln")
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var reports []TargetReportInfo
+	var vulns []VulnInfo
 	for rows.Next() {
-		var info TargetReportInfo
-		if err := rows.Scan(&info.TargetDomain, &info.ReportContent); err != nil {
+		var v VulnInfo
+		var dtStr string
+		if err := rows.Scan(&v.ID, &dtStr, &v.TargetDomain, &v.Finding, &v.TestCode); err != nil {
 			return nil, err
 		}
-		reports = append(reports, info)
+		
+		// Parse date_time string
+		if t, err := time.Parse("2006-01-02 15:04:05.999999999-07:00", dtStr); err == nil {
+			v.DateTime = t
+		} else if t, err := time.Parse(time.RFC3339, dtStr); err == nil {
+			v.DateTime = t
+		} else if t, err := time.Parse("2006-01-02 15:04:05", dtStr); err == nil {
+			v.DateTime = t
+		} else {
+			v.DateTime = time.Now()
+		}
+
+		vulns = append(vulns, v)
 	}
-	return reports, nil
+	return vulns, nil
 }
 
-// LogFinalReport writes the final markdown report to the SQLite database
-func LogFinalReport(targetDomain string, reportContent string, reportType string) error {
-	if dbInstance == nil {
-		return fmt.Errorf("database not initialized")
-	}
-
-	_, err := dbInstance.Exec(
-		"INSERT INTO final_reports (date_time, target_domain, report_content, type) VALUES (?, ?, ?, ?)",
-		time.Now().UTC(), targetDomain, reportContent, reportType,
-	)
-	return err
-}

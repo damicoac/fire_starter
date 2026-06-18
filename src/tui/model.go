@@ -411,13 +411,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if !m.ready {
 			m.logsViewport = viewport.New(logsWidth, max(0, msg.Height-verticalMarginHeight))
-			m.kgViewport = viewport.New(kgWidth, kgHeight - 2)
+			m.kgViewport = viewport.New(kgWidth, kgHeight)
 			m.ready = true
 		} else {
 			m.logsViewport.Width = logsWidth
 			m.logsViewport.Height = max(0, msg.Height-verticalMarginHeight)
 			m.kgViewport.Width = kgWidth
-			m.kgViewport.Height = max(0, kgHeight - 2)
+			m.kgViewport.Height = max(0, kgHeight)
 		}
 
 		m.logsViewport.SetContent(wordwrap.String(strings.Join(m.logs, "\n"), m.logsViewport.Width))
@@ -440,6 +440,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case AgentFinishedMsg:
 		m.finished = true
 		m.finalReport = msg.Report
+		if m.finalReport != "" {
+			reportText := "\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Render("--- Final Report ---\n"+m.finalReport)
+			m.logs = append(m.logs, reportText)
+			if m.ready {
+				m.logsViewport.SetContent(wordwrap.String(strings.Join(m.logs, "\n"), m.logsViewport.Width))
+				m.logsViewport.GotoBottom()
+			}
+		}
 
 
 
@@ -505,10 +513,6 @@ func (m Model) View() string {
 	}
 
 	logsContent := m.logsViewport.View()
-
-	if m.finished && m.finalReport != "" {
-		logsContent = m.logsViewport.View() + "\n\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Render("--- Final Report ---\n"+m.finalReport)
-	}
 
 	activeColor := lipgloss.Color("205")
 	inactiveColor := lipgloss.Color("62")

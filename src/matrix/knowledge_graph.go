@@ -821,6 +821,26 @@ func (kg *KnowledgeGraph) AddTestCase(tc TestCase) {
 	}
 	t.TestCases = append(t.TestCases, tc)
 	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=test_cases target=%s tool=%s", tc.Target, tc.ToolName)
+
+	// Format test_code: prioritize PoC requests, fallback to tool payload JSON
+	var testCode string
+	if len(tc.PoCs) > 0 {
+		var pocParts []string
+		for _, poc := range tc.PoCs {
+			if poc.Request != "" {
+				pocParts = append(pocParts, fmt.Sprintf("%s\n%s", poc.Description, poc.Request))
+			} else {
+				pocParts = append(pocParts, poc.Description)
+			}
+		}
+		testCode = strings.Join(pocParts, "\n\n")
+	} else {
+		testCode = tc.Payload
+	}
+
+	if err := LogVulnerability(tc.Target, tc.Description, testCode); err != nil {
+		log.Warnf("Failed to log vulnerability to database: %v", err)
+	}
 }
 
 func (kg *KnowledgeGraph) AddToken(targetValue string, token string) {
