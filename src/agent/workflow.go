@@ -10,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/anthropic"
@@ -432,31 +433,29 @@ func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*m
 		}
 	}
 
-	var kgJSONStr string
-	if kgJSON, err := kg.ToJSON(); err == nil {
-		kgJSONStr = string(kgJSON)
-	}
-
-	var targetReportsStr string
-	targetReports, err := matrix.GetTargetReports()
+	var vulnsListStr string
+	vulns, err := matrix.GetVulnerabilities()
 	if err != nil {
-		log.Warnf("Failed to query target reports: %v", err)
-	} else if len(targetReports) > 0 {
+		log.Warnf("Failed to query vulnerabilities: %v", err)
+		vulnsListStr = "Error retrieving vulnerabilities from database."
+	} else if len(vulns) > 0 {
 		var sb strings.Builder
-		sb.WriteString("\nTarget-specific reports generated during this engagement:\n")
-		for _, tr := range targetReports {
-			sb.WriteString(fmt.Sprintf("\n--- Target: %s ---\n%s\n", tr.TargetDomain, tr.ReportContent))
+		sb.WriteString("Vulnerabilities detected during this engagement:\n\n")
+		for _, v := range vulns {
+			sb.WriteString(fmt.Sprintf("- Target Domain: %s\n  Finding: %s\n  Date/Time: %s\n\n", v.TargetDomain, v.Finding, v.DateTime.Format(time.RFC3339)))
 		}
-		targetReportsStr = sb.String()
+		vulnsListStr = sb.String()
+	} else {
+		vulnsListStr = "No vulnerabilities were detected during the assessment."
 	}
 
 	reportStr := ""
-	if kgJSONStr != "" {
+	if model != nil {
 		log.Infof("Generating final executive report via LLM...")
-		reportPrompt := fmt.Sprintf("You are an expert security consultant. The red team engagement has concluded. Review the following knowledge graph JSON dump which contains all findings, as well as the target-specific reports collected below. Write a comprehensive final executive summary and technical report. Your report should be formatted in markdown.\n\n%s\n\nKnowledge Graph Dump:\n```json\n%s\n```", targetReportsStr, kgJSONStr)
+		reportPrompt := fmt.Sprintf("You are an expert security consultant. The red team engagement has concluded. Review the following summary of vulnerabilities detected. Write a comprehensive final executive summary and technical report. Your report should be formatted in markdown. Do NOT include any reproduction steps, commands, or code in the final report; focus on summarizing the scope, targets, and findings.\n\n%s", vulnsListStr)
 		resp, err := model.Generate(ctx, fantasy.Call{
 			Prompt: []fantasy.Message{
-				{Role: "system", Content: []fantasy.MessagePart{fantasy.TextPart{Text: "You write final security reports."}}},
+				{Role: "system", Content: []fantasy.MessagePart{fantasy.TextPart{Text: "You write final executive security reports."}}},
 				fantasy.NewUserMessage(reportPrompt),
 			},
 		})
@@ -483,15 +482,6 @@ func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*m
 	} else {
 		log.Infof("Saved report to: %s", reportPath)
 		finalReport = fmt.Sprintf("Report successfully saved to: %s", reportPath)
-	}
-
-	if err := matrix.LogFinalReport(target, reportStr, "final"); err != nil {
-		log.Warnf("Failed to log final report to SQLite: %v", err)
-	}
-	if kgJSONStr != "" {
-		if err := matrix.LogFinalReport(target, kgJSONStr, "knowledge graph"); err != nil {
-			log.Warnf("Failed to log final knowledge graph to SQLite: %v", err)
-		}
 	}
 
 	return finalReport, nil
@@ -906,14 +896,10 @@ IP whitelist policy:
 				}
 
 				beforeGraph := kg.Snapshot()
-				summary, extractedJSON, extractErr := kg.ExtractIntelligence(ctx, model, tc.ToolName, targetUsed, payload, resultData)
+				summary, _, extractErr := kg.ExtractIntelligence(ctx, model, tc.ToolName, targetUsed, payload, resultData)
 				if extractErr != nil {
 					log.Warnf("Intelligence extraction failed: %v", extractErr)
 					summary = fmt.Sprintf("Tool executed successfully but intelligence extraction failed: %v", extractErr)
-				} else {
-					if err := matrix.LogTargetReport(initialTarget, extractedJSON); err != nil {
-						log.Warnf("Failed to log target report to SQLite: %v", err)
-					}
 				}
 
 				if err := matrix.LogExecution(initialTarget, resultData); err != nil {
@@ -972,47 +958,5 @@ IP whitelist policy:
 }
 
 func saveTargetReport(ctx context.Context, target string, cfg Config, kg *matrix.KnowledgeGraph, model fantasy.LanguageModel) {
-	var kgJSONStr string
-	if kgJSON, err := kg.ToJSON(); err == nil {
-		kgJSONStr = string(kgJSON)
-	}
-
-	reportStr := ""
-	if kgJSONStr != "" && model != nil {
-		log.Infof("Generating report for target %s via LLM...", target)
-		reportPrompt := fmt.Sprintf("You are an expert security consultant. The security assessment for the target '%s' has concluded. Review the following knowledge graph JSON dump. Write a detailed target-specific security report in Markdown.\n\nYour report MUST include:\n1. Executive Summary for this target.\n2. Technical findings (including open ports, credentials, vulnerabilities, or test cases specific to this target).\n3. Tools executed against this target.\n\nIf no vulnerabilities were found, explicitly summarize the host status and port scanning results, and state that no vulnerabilities were detected. Do not output a simple title or just the target name. Produce a full, professional assessment report.\n\nKnowledge Graph Dump:\n```json\n%s\n```", target, kgJSONStr)
-		resp, err := model.Generate(ctx, fantasy.Call{
-			Prompt: []fantasy.Message{
-				{Role: "system", Content: []fantasy.MessagePart{fantasy.TextPart{Text: "You write detailed, comprehensive target security reports in Markdown. Always explain findings and details."}}},
-				fantasy.NewUserMessage(reportPrompt),
-			},
-		})
-		if err == nil && len(resp.Content) > 0 {
-			for _, c := range resp.Content {
-				if tc, ok := c.(fantasy.TextContent); ok {
-					reportStr += tc.Text
-				}
-			}
-		} else if err != nil {
-			log.Errorf("Failed to generate report for target %s via LLM: %v", target, err)
-		}
-	}
-
-	if reportStr == "" {
-		reportStr = fmt.Sprintf("# Target Report: %s\n\n**Assessment Completed (Failed to generate narrative report).**\n\n", target)
-	}
-
-	if err := matrix.LogFinalReport(target, reportStr, "target"); err != nil {
-		log.Warnf("Failed to log target report to SQLite: %v", err)
-	} else {
-		log.Infof("Successfully saved report for target %s to final_reports table.", target)
-	}
-
-	if kgJSONStr != "" {
-		if err := matrix.LogFinalReport(target, kgJSONStr, "knowledge graph"); err != nil {
-			log.Warnf("Failed to log target knowledge graph to SQLite: %v", err)
-		} else {
-			log.Infof("Successfully saved knowledge graph for target %s to final_reports table.", target)
-		}
-	}
+	log.Infof("Assessment completed for target: %s. Transitioned to reporting phase.", target)
 }

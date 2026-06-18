@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/charmbracelet/log"
 )
 
 type SQLCmdType string
@@ -155,7 +157,7 @@ func (m *SQLInjectionTesting) Execute(ctx context.Context) ([]SQLInjectionTestin
 		baseBody, err := m.getBaseResponse(ctx, parsedURL, vector)
 		if err != nil {
 			// Log and continue with other vectors
-			fmt.Printf("Warning: failed to get base response for vector %s: %v\n", vector.Key, err)
+			log.Warnf("Warning: failed to get base response for vector %s: %v", vector.Key, err)
 			continue
 		}
 
