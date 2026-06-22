@@ -2,6 +2,8 @@ package matrix
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -122,6 +124,7 @@ type ProofOfConcept struct {
 }
 
 type TestCase struct {
+	VulnID      string           `json:"vuln_id"`
 	ToolName    string           `json:"tool_name"`
 	Target      string           `json:"target"`
 	Payload     string           `json:"payload"`
@@ -819,8 +822,14 @@ func (kg *KnowledgeGraph) AddTestCase(tc TestCase) {
 	if t == nil {
 		return
 	}
+
+	if tc.VulnID == "" {
+		hash := md5.Sum([]byte(NormalizeURL(tc.Target) + tc.Description))
+		tc.VulnID = hex.EncodeToString(hash[:])
+	}
+
 	t.TestCases = append(t.TestCases, tc)
-	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=test_cases target=%s tool=%s", tc.Target, tc.ToolName)
+	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=test_cases target=%s tool=%s vuln_id=%s", tc.Target, tc.ToolName, tc.VulnID)
 
 	// Format test_code: prioritize PoC requests, fallback to tool payload JSON
 	var testCode string
@@ -838,8 +847,10 @@ func (kg *KnowledgeGraph) AddTestCase(tc TestCase) {
 		testCode = tc.Payload
 	}
 
-	if err := LogVulnerability(tc.Target, tc.Description, testCode); err != nil {
-		log.Warnf("Failed to log vulnerability to database: %v", err)
+	if t.CurrentPhase == PhaseReconnaissance || t.CurrentPhase == PhaseScanning || t.CurrentPhase == PhaseVulnerabilityAnalysis {
+		if err := LogVulnerability(tc.VulnID, NormalizeURL(tc.Target), tc.Description, testCode, "no", "no"); err != nil {
+			log.Warnf("Failed to log vulnerability to database: %v", err)
+		}
 	}
 }
 

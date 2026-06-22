@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -305,6 +307,360 @@ func isPayloadAllowedByIPWhitelist(payload map[string]any, allowlist map[string]
 	return true
 }
 
+func collectHelperVulnQueue(currentTarget string, kg *matrix.KnowledgeGraph) []matrix.VulnInfo {
+	queue := make([]matrix.VulnInfo, 0)
+	seen := make(map[string]bool)
+	normalizedTarget := normalizeTarget(currentTarget)
+
+	processedFindings := make(map[string]bool)
+	if vulns, err := matrix.GetVulnerabilities(); err == nil {
+		for _, v := range vulns {
+			if normalizeTarget(v.TargetDomain) == normalizedTarget {
+				if strings.EqualFold(v.Processed, "yes") {
+					processedFindings[strings.TrimSpace(v.Finding)] = true
+				}
+			}
+		}
+	}
+
+	kg.RLock()
+	if t, ok := kg.Targets[normalizedTarget]; ok {
+		for _, finding := range t.Vulnerabilities {
+			trimmed := strings.TrimSpace(finding)
+			if trimmed != "" && !seen[trimmed] && !processedFindings[trimmed] {
+				seen[trimmed] = true
+				
+				// Generate a vuln_id hash if missing
+				hash := md5.Sum([]byte(normalizedTarget + trimmed))
+				vid := hex.EncodeToString(hash[:])
+				
+				queue = append(queue, matrix.VulnInfo{Finding: trimmed, VulnID: vid})
+			}
+		}
+	}
+	kg.RUnlock()
+
+	if vulns, err := matrix.GetVulnerabilities(); err == nil {
+		for _, v := range vulns {
+			if normalizeTarget(v.TargetDomain) != normalizedTarget {
+				continue
+			}
+			if strings.EqualFold(v.Processed, "no") {
+				trimmed := strings.TrimSpace(v.Finding)
+				if trimmed != "" && !seen[trimmed] && !processedFindings[trimmed] {
+					seen[trimmed] = true
+					queue = append(queue, v)
+				}
+			}
+		}
+	}
+
+	return queue
+}
+
+func runVulnerabilityHelperSubAgent(
+	ctx context.Context,
+	model fantasy.LanguageModel,
+	currentTarget string,
+	finding string,
+	vulnID string,
+	activeTools []fantasy.Tool,
+	kg *matrix.KnowledgeGraph,
+	executor *matrix.RealExecutor,
+	initialTarget string,
+	allowlist map[string]bool,
+	toolStageByName map[string]matrix.Phase,
+) string {
+	rawGraph, _ := kg.ToJSON()
+	prompt := fmt.Sprintf("You are a vulnerability helper sub-agent. Focus only on target '%s' and finding '%s' (vuln_id: %s). Use the available tools to validate exploitability and refine proof-of-concept evidence. If confirmed, call log_vulnerability with vuln_id, target, finding, exploitable yes/no and include concise test_code. If not enough evidence, propose the next exact test.", currentTarget, finding, vulnID)
+
+	history := []fantasy.Message{
+		{Role: "system", Content: []fantasy.MessagePart{fantasy.TextPart{Text: "You are a focused vulnerability helper sub-agent."}}},
+		fantasy.NewUserMessage(prompt + "\n\nKnowledge Graph Snapshot:\n" + string(rawGraph)),
+	}
+
+	var out strings.Builder
+
+	for turn := 0; turn < 5; turn++ {
+		resp, err := model.Generate(ctx, fantasy.Call{
+			Prompt: history,
+			Tools:  activeTools,
+		})
+		if err != nil {
+			log.Errorf("Helper LLM error: %v", err)
+			break
+		}
+
+		assistantMsg := fantasy.Message{Role: "assistant"}
+		var textParts []string
+		for _, c := range resp.Content {
+			switch v := c.(type) {
+			case fantasy.TextContent:
+				if strings.TrimSpace(v.Text) != "" {
+					textParts = append(textParts, v.Text)
+					assistantMsg.Content = append(assistantMsg.Content, fantasy.TextPart{Text: v.Text})
+				}
+			case fantasy.ToolCallContent:
+				assistantMsg.Content = append(assistantMsg.Content, fantasy.ToolCallPart{
+					ToolCallID: v.ToolCallID,
+					ToolName:   v.ToolName,
+					Input:      v.Input,
+				})
+			}
+		}
+		history = append(history, assistantMsg)
+
+		toolCalls := resp.Content.ToolCalls()
+		if len(toolCalls) == 0 {
+			for _, t := range textParts {
+				if out.Len() > 0 {
+					out.WriteString("\n")
+				}
+				out.WriteString(t)
+			}
+			break
+		}
+
+		var toolResultParts []fantasy.MessagePart
+		for _, tc := range toolCalls {
+			log.Infof("Helper tool call: %s", tc.ToolName)
+			if tc.ToolName == "log_vulnerability" {
+				var args map[string]any
+				if err := json.Unmarshal([]byte(tc.Input), &args); err != nil {
+					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+						ToolCallID: tc.ToolCallID,
+						Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: Invalid JSON input."},
+					})
+					continue
+				}
+				vulnID, _ := args["vuln_id"].(string)
+				targetStr, _ := args["target"].(string)
+				fnd, _ := args["finding"].(string)
+				testCode, _ := args["test_code"].(string)
+				exploitable, _ := args["exploitable"].(string)
+				if strings.TrimSpace(vulnID) == "" || strings.TrimSpace(targetStr) == "" || strings.TrimSpace(fnd) == "" || strings.TrimSpace(testCode) == "" || (exploitable != "yes" && exploitable != "no") {
+					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+						ToolCallID: tc.ToolCallID,
+						Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: vuln_id, target, finding, test_code, and exploitable ('yes'|'no') are required."},
+					})
+					continue
+				}
+				normalizedTgt := normalizeTarget(targetStr)
+				if err := matrix.LogVulnerability(vulnID, normalizedTgt, fnd, testCode, exploitable, "yes"); err != nil {
+					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+						ToolCallID: tc.ToolCallID,
+						Output:     fantasy.ToolResultOutputContentText{Text: fmt.Sprintf("TOOL_ERROR: failed to log vulnerability: %v", err)},
+					})
+					continue
+				}
+				toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+					ToolCallID: tc.ToolCallID,
+					Output:     fantasy.ToolResultOutputContentText{Text: "Vulnerability logged and marked processed."},
+				})
+				continue
+			}
+
+			if tc.ToolName == "query_knowledge_graph" {
+				var qArgs map[string]any
+				_ = json.Unmarshal([]byte(tc.Input), &qArgs)
+				qType, _ := qArgs["query_type"].(string)
+
+				var resBytes []byte
+				switch qType {
+				case "ips":
+					var ips []string
+					for _, t := range kg.Targets {
+						if t.Type == "ip" {
+							ips = append(ips, t.Value)
+						}
+					}
+					resBytes, _ = json.Marshal(ips)
+				case "urls":
+					var urls []string
+					for _, t := range kg.Targets {
+						if t.Type == "url" {
+							urls = append(urls, t.Value)
+						}
+					}
+					resBytes, _ = json.Marshal(urls)
+				case "ports":
+					ports := make(map[string][]int)
+					for _, t := range kg.Targets {
+						if len(t.OpenPorts) > 0 {
+							ports[t.Value] = t.OpenPorts
+						}
+					}
+					resBytes, _ = json.Marshal(ports)
+				case "credentials":
+					resBytes, _ = json.Marshal(kg.GetCredentials())
+				case "vulnerabilities":
+					vulns, err := matrix.GetVulnerabilities()
+					if err != nil {
+						resBytes, _ = json.Marshal(map[string]string{"error": fmt.Sprintf("failed to query vulnerabilities: %v", err)})
+					} else {
+						resBytes, _ = json.Marshal(vulns)
+					}
+				case "tokens":
+					resBytes, _ = json.Marshal(kg.GetTokens())
+				default:
+					rawBytes, _ := kg.ToJSON()
+					var data map[string]any
+					if err := json.Unmarshal(rawBytes, &data); err == nil {
+						delete(data, "test_cases")
+						resBytes, _ = json.Marshal(data)
+					} else {
+						resBytes = rawBytes
+					}
+				}
+
+				toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+					ToolCallID: tc.ToolCallID,
+					Output:     fantasy.ToolResultOutputContentText{Text: string(resBytes)},
+				})
+				continue
+			}
+
+			if tc.ToolName == "advance_target_phase" {
+				var args map[string]any
+				if err := json.Unmarshal([]byte(tc.Input), &args); err == nil {
+					if tStr, ok := args["target"].(string); ok && tStr != "" {
+						normalizedTarget := normalizeTarget(tStr)
+						newPhase := kg.AdvanceTargetPhase(normalizedTarget)
+						toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+							ToolCallID: tc.ToolCallID,
+							Output:     fantasy.ToolResultOutputContentText{Text: "Target advanced to next phase successfully."},
+						})
+						log.Infof("Helper advanced target phase: target=%s new_phase=%s", tStr, newPhase)
+					} else {
+						toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+							ToolCallID: tc.ToolCallID,
+							Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: Missing target."},
+						})
+					}
+				} else {
+					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+						ToolCallID: tc.ToolCallID,
+						Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: Invalid JSON input."},
+					})
+				}
+				continue
+			}
+
+			if tc.ToolName == "target_completed" {
+				toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+					ToolCallID: tc.ToolCallID,
+					Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: helper sub-agent cannot complete the orchestrator target."},
+				})
+				continue
+			}
+
+			var args map[string]any
+			if tc.Input != "" {
+				if err := json.Unmarshal([]byte(tc.Input), &args); err != nil {
+					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+						ToolCallID: tc.ToolCallID,
+						Output:     fantasy.ToolResultOutputContentText{Text: fmt.Sprintf("TOOL_ERROR: Failed to parse tool input JSON: %v", err)},
+					})
+					continue
+				}
+			}
+
+			payload := make(map[string]any)
+			if nested, ok := args["payload"].(map[string]any); ok {
+				for k, v := range nested {
+					payload[k] = v
+				}
+			}
+			for k, v := range args {
+				if k != "payload" {
+					payload[k] = v
+				}
+			}
+
+			if len(allowlist) > 0 && !isPayloadAllowedByIPWhitelist(payload, allowlist) {
+				toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+					ToolCallID: tc.ToolCallID,
+					Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: blocked by IP whitelist policy. Allowed IPs: " + allowlistedIPsSummary(allowlist)},
+				})
+				continue
+			}
+
+			targetUsed := initialTarget
+			if tStr, ok := payload["target"].(string); ok && strings.TrimSpace(tStr) != "" {
+				targetUsed = strings.TrimSpace(tStr)
+			} else if uStr, ok := payload["url"].(string); ok && strings.TrimSpace(uStr) != "" {
+				targetUsed = strings.TrimSpace(uStr)
+			} else if ipStr, ok := payload["ip"].(string); ok && strings.TrimSpace(ipStr) != "" {
+				targetUsed = strings.TrimSpace(ipStr)
+			}
+
+			tokens := kg.GetTokensForTarget(targetUsed)
+			if len(tokens) > 0 {
+				payload["cookies"] = strings.Join(tokens, "; ")
+			}
+			if _, hasUsername := payload["username"]; !hasUsername {
+				credentials := kg.GetCredentials()
+				if len(credentials) > 0 {
+					payload["username"] = credentials[0].Username
+					payload["password"] = credentials[0].Password
+				}
+			}
+
+			resultData, execErr := executor.ExecuteByToolName(tc.ToolName, payload, func(s string) {
+				log.Debug(s)
+			})
+
+			var res string
+			if execErr != nil {
+				res = fmt.Sprintf("TOOL_ERROR: %v", execErr)
+				log.Debugf("Helper tool execution failed: tool=%s error=%s", tc.ToolName, res)
+			} else {
+				if t, ok := payload["target"].(string); ok && strings.TrimSpace(t) != "" {
+					kg.MarkToolExecuted(strings.TrimSpace(t), tc.ToolName)
+				}
+				if u, ok := payload["url"].(string); ok && strings.TrimSpace(u) != "" {
+					kg.MarkToolExecuted(strings.TrimSpace(u), tc.ToolName)
+				}
+				if ip, ok := payload["ip"].(string); ok && strings.TrimSpace(ip) != "" {
+					kg.MarkToolExecuted(strings.TrimSpace(ip), tc.ToolName)
+				}
+
+				summary, _, extractErr := kg.ExtractIntelligence(ctx, model, tc.ToolName, targetUsed, payload, resultData)
+				if extractErr != nil {
+					log.Warnf("Helper intelligence extraction failed: %v", extractErr)
+					summary = fmt.Sprintf("Tool executed successfully but intelligence extraction failed: %v", extractErr)
+				}
+
+				if err := matrix.LogExecution(initialTarget, resultData); err != nil {
+					log.Warnf("Failed to log execution to SQLite: %v", err)
+				}
+
+				log.Infof("Helper tool execution success: tool=%s summary=%q", tc.ToolName, summary)
+				res = fmt.Sprintf("=== TOOL EXECUTION SUMMARY ===\n%s", summary)
+			}
+
+			toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+				ToolCallID: tc.ToolCallID,
+				Output:     fantasy.ToolResultOutputContentText{Text: res},
+			})
+		}
+
+		history = append(history, fantasy.Message{
+			Role:    "tool",
+			Content: toolResultParts,
+		})
+
+		for _, t := range textParts {
+			if out.Len() > 0 {
+				out.WriteString("\n")
+			}
+			out.WriteString(t)
+		}
+	}
+
+	return out.String()
+}
+
 func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*matrix.KnowledgeGraph)) (string, error) {
 	model, err := initializeModel(ctx, cfg)
 	if err != nil {
@@ -493,7 +849,11 @@ Review the 'Current Intelligence Summary' in the system messages to see the glob
 
 Do not make assumptions. Turn theories into testable hypotheses, then validate them by calling available tools and using tool output as evidence for your next step. If evidence is missing or stale, call another tool instead of guessing.
 
-When you have exhausted all applicable tools for your target's current phase, you MUST call the 'advance_target_phase' tool for your target to unlock the next set of tools. If you find vulnerabilities, you MUST continue your investigation to probe deeper and attempt lateral movement. You may only call the 'target_completed' tool if you have exhausted all actionable tools for your assigned target, OR if you have found no vulnerabilities and your target has completed its reconnaissance phase. 
+When you have exhausted all applicable tools for your target's current phase, you MUST call the 'advance_target_phase' tool for your target to unlock the next set of tools. If you find vulnerabilities, you MUST continue your investigation to probe deeper and attempt lateral movement. You may only call the 'target_completed' tool if you have exhausted all actionable tools for your assigned target, OR if you have found no vulnerabilities and your target has completed its reconnaissance phase.
+
+When a vulnerability is confirmed, you MUST call 'log_vulnerability' with vuln_id, target, finding, test_code, and exploitable. Every confirmed vulnerability must be marked processed via this tool before moving from exploitation to post-exploitation. Use 'query_knowledge_graph' with query_type='vulnerabilities' to inspect the database-backed status list and get the vuln_id. If a vuln_id is missing, generate an md5 hash of (target + finding) to use as the vuln_id.
+
+In vulnerability-analysis and exploitation phases, create and run one helper sub-agent per vulnerability per target to iterate and refine proof-of-concept testing against that target before deciding exploitability.
 
 CRITICAL: Do not execute the same tool against the same target more than once. The framework will block duplicate payloads.
 CRITICAL: Security testing is oriented around lateral movement within the network. Continue probing deeply.
@@ -536,6 +896,7 @@ IP whitelist policy:
 		toolStageByName[t.Name] = stage
 	}
 	executedPayloads := make(map[string]bool)
+	spawnedHelpers := make(map[string]bool)
 
 	for {
 		if *globalIters >= cfg.MaxIters {
@@ -647,6 +1008,21 @@ IP whitelist policy:
 				"required": []string{"target"},
 			},
 		})
+		activeTools = append(activeTools, fantasy.FunctionTool{
+			Name:        "log_vulnerability",
+			Description: "Log or update a confirmed vulnerability finding for a target, including exploitability status. This marks the finding as processed.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"vuln_id": map[string]any{"type": "string"},
+					"target": map[string]any{"type": "string"},
+					"finding": map[string]any{"type": "string"},
+					"test_code": map[string]any{"type": "string"},
+					"exploitable": map[string]any{"type": "string", "enum": []string{"yes", "no"}},
+				},
+				"required": []string{"vuln_id", "target", "finding", "test_code", "exploitable"},
+			},
+		})
 		
 		if canCompleteNow || cfg.EfficiencyMode {
 			activeTools = append(activeTools, fantasy.FunctionTool{
@@ -654,6 +1030,26 @@ IP whitelist policy:
 				Description: "Indicate to the orchestrator that you have completed all possible actions for your assigned target.",
 				InputSchema: map[string]any{"type": "object", "properties": map[string]any{"summary": map[string]any{"type": "string"}}, "required": []string{"summary"}},
 			})
+		}
+
+		currentPhase := kg.GetTargetPhase(currentTarget)
+		if currentPhase == matrix.PhaseVulnerabilityAnalysis || currentPhase == matrix.PhaseExploitation {
+			helperQueue := collectHelperVulnQueue(currentTarget, kg)
+			for _, v := range helperQueue {
+				key := fmt.Sprintf("%s|%s", normalizeTarget(currentTarget), v.Finding)
+				if spawnedHelpers[key] {
+					continue
+				}
+				spawnedHelpers[key] = true
+
+				helperOutput := runVulnerabilityHelperSubAgent(ctx, model, currentTarget, v.Finding, v.VulnID, activeTools, kg, executor, initialTarget, allowlist, toolStageByName)
+				if strings.TrimSpace(helperOutput) != "" {
+					history = append(history, fantasy.Message{
+						Role:    "system",
+						Content: []fantasy.MessagePart{fantasy.TextPart{Text: fmt.Sprintf("Helper sub-agent result for target '%s' finding '%s':\n%s", currentTarget, v.Finding, helperOutput)}},
+					})
+				}
+			}
 		}
 
 		resp, err := model.Generate(ctx, fantasy.Call{
@@ -718,6 +1114,32 @@ IP whitelist policy:
 				var args map[string]any
 				if err := json.Unmarshal([]byte(tc.Input), &args); err == nil {
 					if tStr, ok := args["target"].(string); ok && tStr != "" {
+						normalizedTarget := normalizeTarget(tStr)
+						currentPhase := kg.GetTargetPhase(normalizedTarget)
+						if currentPhase == matrix.PhaseExploitation {
+							vulns, err := matrix.GetVulnerabilities()
+							if err != nil {
+								toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+									ToolCallID: tc.ToolCallID,
+									Output:     fantasy.ToolResultOutputContentText{Text: fmt.Sprintf("TOOL_ERROR: failed to query vulnerabilities before phase transition: %v", err)},
+								})
+								continue
+							}
+							hasUnprocessed := false
+							for _, v := range vulns {
+								if normalizeTarget(v.TargetDomain) == normalizedTarget && strings.EqualFold(v.Processed, "no") {
+									hasUnprocessed = true
+									break
+								}
+							}
+							if hasUnprocessed {
+								toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+									ToolCallID: tc.ToolCallID,
+									Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: cannot advance to post-exploitation while unprocessed vulnerabilities remain for this target. Call log_vulnerability for each finding first."},
+								})
+								continue
+							}
+						}
 						newPhase := kg.AdvanceTargetPhase(normalizeTarget(tStr))
 						toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
 							ToolCallID: tc.ToolCallID,
@@ -736,6 +1158,41 @@ IP whitelist policy:
 						Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: Invalid JSON input."},
 					})
 				}
+				continue
+			}
+
+			if tc.ToolName == "log_vulnerability" {
+				var args map[string]any
+				if err := json.Unmarshal([]byte(tc.Input), &args); err != nil {
+					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+						ToolCallID: tc.ToolCallID,
+						Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: Invalid JSON input."},
+					})
+					continue
+				}
+				vulnID, _ := args["vuln_id"].(string)
+				targetStr, _ := args["target"].(string)
+				finding, _ := args["finding"].(string)
+				testCode, _ := args["test_code"].(string)
+				exploitable, _ := args["exploitable"].(string)
+				if strings.TrimSpace(vulnID) == "" || strings.TrimSpace(targetStr) == "" || strings.TrimSpace(finding) == "" || strings.TrimSpace(testCode) == "" || (exploitable != "yes" && exploitable != "no") {
+					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+						ToolCallID: tc.ToolCallID,
+						Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: vuln_id, target, finding, test_code, and exploitable ('yes'|'no') are required."},
+					})
+					continue
+				}
+				if err := matrix.LogVulnerability(vulnID, normalizeTarget(targetStr), finding, testCode, exploitable, "yes"); err != nil {
+					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+						ToolCallID: tc.ToolCallID,
+						Output:     fantasy.ToolResultOutputContentText{Text: fmt.Sprintf("TOOL_ERROR: failed to log vulnerability: %v", err)},
+					})
+					continue
+				}
+				toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+					ToolCallID: tc.ToolCallID,
+					Output:     fantasy.ToolResultOutputContentText{Text: "Vulnerability logged and marked processed."},
+				})
 				continue
 			}
 
@@ -773,11 +1230,12 @@ IP whitelist policy:
 				case "credentials":
 					resBytes, _ = json.Marshal(kg.GetCredentials())
 				case "vulnerabilities":
-					var vulns []string
-					for _, t := range kg.Targets {
-						vulns = append(vulns, t.Vulnerabilities...)
+					vulns, err := matrix.GetVulnerabilities()
+					if err != nil {
+						resBytes, _ = json.Marshal(map[string]string{"error": fmt.Sprintf("failed to query vulnerabilities: %v", err)})
+					} else {
+						resBytes, _ = json.Marshal(vulns)
 					}
-					resBytes, _ = json.Marshal(vulns)
 				case "tokens":
 					resBytes, _ = json.Marshal(kg.GetTokens())
 				default:

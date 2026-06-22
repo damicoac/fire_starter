@@ -2,6 +2,8 @@ package matrix
 
 import (
 	"context"
+	"path/filepath"
+	"sync"
 	"testing"
 
 	"charm.land/fantasy"
@@ -235,6 +237,99 @@ func TestKnowledgeGraph_EvaluateScopeWithLLM(t *testing.T) {
 
 	if len(allowedURLs) != 1 || allowedURLs[0] != "sub.example.com" {
 		t.Errorf("Expected sub.example.com to be allowed, got: %v", allowedURLs)
+	}
+}
+
+func TestAddTestCase_PhaseFiltering(t *testing.T) {
+	// Reset the singleton database instance for testing
+	dbInstance = nil
+	dbOnce = sync.Once{}
+
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "test_add_testcase.db")
+	_, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+
+	// Helper to count entries in database
+	countVulns := func() int {
+		v, err := GetVulnerabilities()
+		if err != nil {
+			t.Fatalf("GetVulnerabilities failed: %v", err)
+		}
+		return len(v)
+	}
+
+	// Truncate table first to ensure a clean state
+	_, err = dbInstance.Exec("DELETE FROM vuln")
+	if err != nil {
+		t.Fatalf("failed to truncate vuln table: %v", err)
+	}
+
+	kg := NewKnowledgeGraph()
+	targetVal := "test-target.com"
+
+	// 1. Target is in PhaseVulnerabilityAnalysis (Discovery phase)
+	target := kg.getOrCreateTarget(targetVal, "url")
+	target.CurrentPhase = PhaseVulnerabilityAnalysis
+
+	tc1 := TestCase{
+		ToolName:    "discovery_tool",
+		Target:      targetVal,
+		Payload:     `{"q": "test"}`,
+		Description: "Potential SQL Injection",
+	}
+
+	kg.AddTestCase(tc1)
+
+	// Verify it was logged to DB as unprocessed/non-exploitable
+	if count := countVulns(); count != 1 {
+		t.Fatalf("Expected 1 logged vulnerability during discovery phase, got %d", count)
+	}
+	vulns, err := GetVulnerabilities()
+	if err != nil {
+		t.Fatalf("GetVulnerabilities failed: %v", err)
+	}
+	if vulns[0].Exploitable != "no" {
+		t.Errorf("Expected exploitable status 'no' during discovery phase, got %q", vulns[0].Exploitable)
+	}
+	if vulns[0].Processed != "no" {
+		t.Errorf("Expected processed status 'no' during discovery phase, got %q", vulns[0].Processed)
+	}
+
+	// 2. Target is in PhaseExploitation (Exploit phase)
+	target.CurrentPhase = PhaseExploitation
+
+	tc2 := TestCase{
+		ToolName:    "exploit_tool",
+		Target:      targetVal,
+		Payload:     `{"q": "exploit"}`,
+		Description: "Confirmed SQL Injection",
+	}
+
+	kg.AddTestCase(tc2)
+
+	// Verify no additional DB log was created in exploitation phase (manual log_vulnerability required)
+	if count := countVulns(); count != 1 {
+		t.Errorf("Expected vulnerability count to remain 1 during exploit phase, got %d", count)
+	}
+
+	// 3. Target is in PhasePostExploitation (Post-exploit phase)
+	target.CurrentPhase = PhasePostExploitation
+
+	tc3 := TestCase{
+		ToolName:    "post_exploit_tool",
+		Target:      targetVal,
+		Payload:     `{"cmd": "whoami"}`,
+		Description: "Post-Exploit Finding",
+	}
+
+	kg.AddTestCase(tc3)
+
+	// Verify no additional DB log was created in post-exploitation phase
+	if count := countVulns(); count != 1 {
+		t.Errorf("Expected vulnerability count to remain 1 during post-exploit phase, got %d", count)
 	}
 }
 
