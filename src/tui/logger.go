@@ -27,6 +27,9 @@ func (w *ProgramWriter) Write(p []byte) (n int, err error) {
 		if strings.Contains(text, "KNOWLEDGE_GRAPH_UPDATE") {
 			return len(p), nil // Suppress this log, we'll use the sidebar instead
 		}
+		if strings.Contains(text, "Cookie.Value; dropping invalid bytes") || strings.Contains(text, "net/http: invalid byte") {
+			return len(p), nil
+		}
 
 		// Strip charmbracelet/log default prefix (date time level)
 		parts := strings.SplitN(text, " ", 4)

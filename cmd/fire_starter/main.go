@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	stdlog "log"
 
 	"os"
 
@@ -24,6 +25,9 @@ func main() {
 	baseURL := flag.String("base-url", "", "Custom base URL for the provider")
 	maxIters := flag.Int("max-iters", 0, "Maximum execution loop iterations")
 	verbose := flag.Bool("verbose", false, "Enable verbose logging")
+	
+	// Create a custom flag variable that defaults to the config's value (true).
+	efficiency := flag.Bool("efficiency", true, "Enable efficiency mode to skip low value targets (default true, use -efficiency=false to disable)")
 
 	flag.Parse()
 
@@ -51,6 +55,22 @@ func main() {
 	if *verbose {
 		cfg.Verbose = true
 	}
+	
+	// Override the config value with the flag's value. 
+	// If the user specifies -efficiency=false, this overrides the default true.
+	// If the config file had "efficiency_mode": false, we only override it if the user explicitly provided the flag,
+	// but flag.Bool doesn't easily let us check if it was provided vs defaulted.
+	// However, we can check if the flag was explicitly set:
+	flagSet := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "efficiency" {
+			flagSet = true
+		}
+	})
+	
+	if flagSet {
+		cfg.EfficiencyMode = *efficiency
+	}
 
 	if cfg.Verbose {
 		log.SetLevel(log.DebugLevel)
@@ -64,6 +84,7 @@ func main() {
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	log.SetOutput(tui.NewProgramWriter(p))
+	stdlog.SetOutput(tui.NewProgramWriter(p))
 
 	go func() {
 		log.Infof("Starting Fire Starter Agent. Target: %s, Provider: %s, Model: %s", cfg.Target, cfg.Provider, cfg.Model)

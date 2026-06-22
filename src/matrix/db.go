@@ -47,14 +47,35 @@ func InitDB(dbPath string) (*sql.DB, error) {
 		_, err = db.Exec(`
 			CREATE TABLE IF NOT EXISTS vuln (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				vuln_id TEXT UNIQUE,
 				date_time DATETIME DEFAULT CURRENT_TIMESTAMP,
 				target_domain TEXT NOT NULL,
 				finding TEXT NOT NULL,
-				test_code TEXT NOT NULL
+				test_code TEXT NOT NULL,
+				exploitable TEXT NOT NULL DEFAULT 'no',
+				processed TEXT NOT NULL DEFAULT 'no'
 			);
 		`)
 		if err != nil {
 			initErr = fmt.Errorf("failed to create vuln table: %w", err)
+			return
+		}
+
+		if err := ensureVulnColumn(db, "exploitable", "TEXT NOT NULL DEFAULT 'no'"); err != nil {
+			initErr = err
+			return
+		}
+		if err := ensureVulnColumn(db, "processed", "TEXT NOT NULL DEFAULT 'no'"); err != nil {
+			initErr = err
+			return
+		}
+		if err := ensureVulnColumn(db, "vuln_id", "TEXT"); err != nil {
+			initErr = err
+			return
+		}
+		_, err = db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_vuln_id ON vuln(vuln_id);`)
+		if err != nil && err.Error() != "index idx_vuln_id already exists" { // SQLite might ignore IF NOT EXISTS depending on version, so just in case
+			initErr = fmt.Errorf("failed to create unique index on vuln_id: %w", err)
 			return
 		}
 
@@ -65,6 +86,38 @@ func InitDB(dbPath string) (*sql.DB, error) {
 		return nil, initErr
 	}
 	return dbInstance, nil
+}
+
+func ensureVulnColumn(db *sql.DB, columnName string, columnDef string) error {
+	rows, err := db.Query("PRAGMA table_info(vuln)")
+	if err != nil {
+		return fmt.Errorf("failed to inspect vuln table schema: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var colType string
+		var notnull int
+		var dfltValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notnull, &dfltValue, &pk); err != nil {
+			return fmt.Errorf("failed to inspect vuln table schema row: %w", err)
+		}
+		if name == columnName {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("failed to iterate vuln table schema rows: %w", err)
+	}
+
+	_, err = db.Exec(fmt.Sprintf("ALTER TABLE vuln ADD COLUMN %s %s", columnName, columnDef))
+	if err != nil {
+		return fmt.Errorf("failed to add %s column to vuln table: %w", columnName, err)
+	}
+	return nil
 }
 
 // LogExecution writes an execution output to the SQLite database
@@ -83,21 +136,30 @@ func LogExecution(targetDomain string, jsonOutput string) error {
 // VulnInfo holds vulnerability details retrieved from the database
 type VulnInfo struct {
 	ID           int
+	VulnID       string
 	DateTime     time.Time
 	TargetDomain string
 	Finding      string
 	TestCode     string
+	Exploitable  string
+	Processed    string
 }
 
-// LogVulnerability writes a vulnerability finding with its test code to the SQLite database
-func LogVulnerability(targetDomain string, finding string, testCode string) error {
+// LogVulnerability writes or updates a vulnerability finding with its test code to the SQLite database
+func LogVulnerability(vulnID string, targetDomain string, finding string, testCode string, exploitable string, processed string) error {
 	if dbInstance == nil {
 		return fmt.Errorf("database not initialized")
 	}
 
 	_, err := dbInstance.Exec(
-		"INSERT INTO vuln (date_time, target_domain, finding, test_code) VALUES (?, ?, ?, ?)",
-		time.Now().UTC(), targetDomain, finding, testCode,
+		`INSERT INTO vuln (vuln_id, date_time, target_domain, finding, test_code, exploitable, processed) 
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(vuln_id) DO UPDATE SET 
+			date_time = excluded.date_time,
+			test_code = excluded.test_code,
+			exploitable = excluded.exploitable,
+			processed = excluded.processed`,
+		vulnID, time.Now().UTC(), targetDomain, finding, testCode, exploitable, processed,
 	)
 	return err
 }
@@ -108,7 +170,7 @@ func GetVulnerabilities() ([]VulnInfo, error) {
 		return nil, fmt.Errorf("database not initialized")
 	}
 
-	rows, err := dbInstance.Query("SELECT id, date_time, target_domain, finding, test_code FROM vuln")
+	rows, err := dbInstance.Query("SELECT id, vuln_id, date_time, target_domain, finding, test_code, exploitable, processed FROM vuln")
 	if err != nil {
 		return nil, err
 	}
@@ -118,10 +180,14 @@ func GetVulnerabilities() ([]VulnInfo, error) {
 	for rows.Next() {
 		var v VulnInfo
 		var dtStr string
-		if err := rows.Scan(&v.ID, &dtStr, &v.TargetDomain, &v.Finding, &v.TestCode); err != nil {
+		var vulnID sql.NullString
+		if err := rows.Scan(&v.ID, &vulnID, &dtStr, &v.TargetDomain, &v.Finding, &v.TestCode, &v.Exploitable, &v.Processed); err != nil {
 			return nil, err
 		}
-		
+		if vulnID.Valid {
+			v.VulnID = vulnID.String
+		}
+
 		// Parse date_time string
 		if t, err := time.Parse("2006-01-02 15:04:05.999999999-07:00", dtStr); err == nil {
 			v.DateTime = t
@@ -137,4 +203,3 @@ func GetVulnerabilities() ([]VulnInfo, error) {
 	}
 	return vulns, nil
 }
-
