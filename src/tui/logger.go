@@ -51,6 +51,7 @@ var (
 	chatBadge   = lipgloss.NewStyle().Background(lipgloss.Color("111")).Foreground(lipgloss.Color("0")).Bold(true).Padding(0, 1)
 	errorBadge  = lipgloss.NewStyle().Background(lipgloss.Color("196")).Foreground(lipgloss.Color("255")).Bold(true).Padding(0, 1)
 	updateBadge = lipgloss.NewStyle().Background(lipgloss.Color("42")).Foreground(lipgloss.Color("0")).Bold(true).Padding(0, 1)
+	helperToolBadge = lipgloss.NewStyle().Background(lipgloss.Color("28")).Foreground(lipgloss.Color("255")).Bold(true).Padding(0, 1)
 
 	quoteStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("111")).
@@ -76,6 +77,16 @@ func formatLogLine(line string) string {
 	if strings.Contains(line, "TOOL_SELECTED") {
 		badge := toolBadge.Render("TOOL_SELECTED")
 		rest := strings.Replace(line, "TOOL_SELECTED", badge, 1)
+		return ts + " " + rest
+	}
+	if strings.Contains(line, "Helper tool call:") {
+		badge := helperToolBadge.Render("HELPER_TOOL_CALL")
+		rest := strings.Replace(line, "Helper tool call:", badge, 1)
+		return ts + " " + rest
+	}
+	if strings.Contains(line, "Helper tool execution success:") {
+		badge := helperToolBadge.Render("HELPER_TOOL_SUCCESS")
+		rest := strings.Replace(line, "Helper tool execution success:", badge, 1)
 		return ts + " " + rest
 	}
 	if strings.Contains(line, "KNOWLEDGE_GRAPH_UPDATE") {

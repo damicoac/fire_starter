@@ -17,6 +17,14 @@ import (
 	"github.com/charmbracelet/log"
 )
 
+// GenerateVulnID generates a deterministic hash for a vulnerability based on its target and description.
+func GenerateVulnID(target, finding string) string {
+	normalizedTarget := NormalizeURL(target)
+	trimmedFinding := strings.TrimSpace(finding)
+	hash := md5.Sum([]byte(normalizedTarget + trimmedFinding))
+	return hex.EncodeToString(hash[:])
+}
+
 func NormalizeURL(u string) string {
 	u = strings.TrimSpace(u)
 	lower := strings.ToLower(u)
@@ -850,8 +858,7 @@ func (kg *KnowledgeGraph) AddTestCase(tc TestCase) {
 	}
 
 	if tc.VulnID == "" {
-		hash := md5.Sum([]byte(NormalizeURL(tc.Target) + tc.Description))
-		tc.VulnID = hex.EncodeToString(hash[:])
+		tc.VulnID = GenerateVulnID(tc.Target, tc.Description)
 	}
 
 	t.TestCases = append(t.TestCases, tc)
