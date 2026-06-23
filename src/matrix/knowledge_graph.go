@@ -625,10 +625,36 @@ func (kg *KnowledgeGraph) AddAllowedIP(ip string) {
 	kg.allowedIPs[ip] = true
 }
 
-func (kg *KnowledgeGraph) ToJSON() ([]byte, error) {
+func (kg *KnowledgeGraph) ToJSON(target string) ([]byte, error) {
 	kg.mu.RLock()
 	defer kg.mu.RUnlock()
-	return json.Marshal(kg)
+
+	targetsCopy := make(map[string]*Target)
+	for k, v := range kg.Targets {
+		tCopy := *v
+		if target != "" && NormalizeURL(k) != NormalizeURL(target) {
+			tCopy.Tokens = nil // Omit tokens and cookies for other targets
+		}
+		targetsCopy[k] = &tCopy
+	}
+
+	type KGWrapper struct {
+		BaseDomain    string             `json:"base_domain"`
+		TargetDomains []string           `json:"target_domains"`
+		ConfigTarget  string             `json:"config_target"`
+		Targets       map[string]*Target `json:"targets"`
+		Context       map[string]any     `json:"context"`
+	}
+
+	wrapper := KGWrapper{
+		BaseDomain:    kg.BaseDomain,
+		TargetDomains: kg.TargetDomains,
+		ConfigTarget:  kg.ConfigTarget,
+		Targets:       targetsCopy,
+		Context:       kg.Context,
+	}
+
+	return json.Marshal(wrapper)
 }
 
 func (kg *KnowledgeGraph) AddIP(ip string) {

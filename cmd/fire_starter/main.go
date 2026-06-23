@@ -90,7 +90,7 @@ func main() {
 		log.Infof("Starting Fire Starter Agent. Target: %s, Provider: %s, Model: %s", cfg.Target, cfg.Provider, cfg.Model)
 
 		onKGUpdate := func(kg *matrix.KnowledgeGraph) {
-			b, err := kg.ToJSON()
+			b, err := kg.ToJSON("")
 			if err == nil {
 				p.Send(tui.KGUpdateMsg{Data: b})
 			}
