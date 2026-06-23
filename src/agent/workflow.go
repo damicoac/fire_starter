@@ -371,7 +371,7 @@ func runVulnerabilityHelperSubAgent(
 	allowlist map[string]bool,
 	toolStageByName map[string]matrix.Phase,
 ) string {
-	rawGraph, _ := kg.ToJSON()
+	rawGraph, _ := kg.ToJSON(currentTarget)
 	prompt := fmt.Sprintf("You are a vulnerability helper sub-agent. Focus only on target '%s' and finding '%s' (vuln_id: %s). Use the available tools to validate exploitability and refine proof-of-concept evidence. If confirmed, call log_vulnerability with vuln_id, target, finding, exploitable yes/no and include concise test_code. If not enough evidence, propose the next exact test.", currentTarget, finding, vulnID)
 
 	history := []fantasy.Message{
@@ -503,7 +503,7 @@ func runVulnerabilityHelperSubAgent(
 				case "tokens":
 					resBytes, _ = json.Marshal(kg.GetTokens())
 				default:
-					rawBytes, _ := kg.ToJSON()
+					rawBytes, _ := kg.ToJSON(currentTarget)
 					var data map[string]any
 					if err := json.Unmarshal(rawBytes, &data); err == nil {
 						delete(data, "test_cases")
@@ -1239,7 +1239,7 @@ IP whitelist policy:
 				case "tokens":
 					resBytes, _ = json.Marshal(kg.GetTokens())
 				default:
-					rawBytes, _ := kg.ToJSON()
+					rawBytes, _ := kg.ToJSON(currentTarget)
 					var data map[string]any
 					if err := json.Unmarshal(rawBytes, &data); err == nil {
 						delete(data, "test_cases")
