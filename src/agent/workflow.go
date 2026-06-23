@@ -2,8 +2,6 @@ package agent
 
 import (
 	"context"
-	"crypto/md5"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -307,6 +305,45 @@ func isPayloadAllowedByIPWhitelist(payload map[string]any, allowlist map[string]
 	return true
 }
 
+func requiresCredentialValidation(finding string) bool {
+	lowerFinding := strings.ToLower(strings.TrimSpace(finding))
+	if lowerFinding == "" {
+		return false
+	}
+	if strings.Contains(lowerFinding, ".env") {
+		return true
+	}
+	credentialLeakIndicators := []string{"credential", "password", "username", "token", "secret", "api key", "apikey", "session"}
+	for _, indicator := range credentialLeakIndicators {
+		if strings.Contains(lowerFinding, indicator) {
+			if strings.Contains(lowerFinding, "leak") || strings.Contains(lowerFinding, "exposed") || strings.Contains(lowerFinding, "public") || strings.Contains(lowerFinding, "disclos") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func credentialUseEvidenceInTestCode(testCode string) bool {
+	lowerTestCode := strings.ToLower(strings.TrimSpace(testCode))
+	if lowerTestCode == "" {
+		return false
+	}
+	hasCredentialAttempt := strings.Contains(lowerTestCode, "login") || strings.Contains(lowerTestCode, "auth") || strings.Contains(lowerTestCode, "credential") || strings.Contains(lowerTestCode, "username") || strings.Contains(lowerTestCode, "password") || strings.Contains(lowerTestCode, "session")
+	hasSuccessEvidence := strings.Contains(lowerTestCode, "authenticated") || strings.Contains(lowerTestCode, "logged in") || strings.Contains(lowerTestCode, "success") || strings.Contains(lowerTestCode, "valid") || strings.Contains(lowerTestCode, "200") || strings.Contains(lowerTestCode, "token issued")
+	return hasCredentialAttempt && hasSuccessEvidence
+}
+
+func validateVulnerabilityLogInput(vulnID string, target string, finding string, testCode string, exploitable string) error {
+	if strings.TrimSpace(vulnID) == "" || strings.TrimSpace(target) == "" || strings.TrimSpace(finding) == "" || strings.TrimSpace(testCode) == "" || (exploitable != "yes" && exploitable != "no") {
+		return fmt.Errorf("vuln_id, target, finding, test_code, and exploitable ('yes'|'no') are required")
+	}
+	if exploitable == "yes" && requiresCredentialValidation(finding) && !credentialUseEvidenceInTestCode(testCode) {
+		return fmt.Errorf("credential leaks cannot be marked exploitable='yes' without evidence of a successful credential-based authentication attempt in test_code")
+	}
+	return nil
+}
+
 func collectHelperVulnQueue(currentTarget string, kg *matrix.KnowledgeGraph) []matrix.VulnInfo {
 	queue := make([]matrix.VulnInfo, 0)
 	seen := make(map[string]bool)
@@ -330,9 +367,8 @@ func collectHelperVulnQueue(currentTarget string, kg *matrix.KnowledgeGraph) []m
 			if trimmed != "" && !seen[trimmed] && !processedFindings[trimmed] {
 				seen[trimmed] = true
 				
-				// Generate a vuln_id hash if missing
-				hash := md5.Sum([]byte(normalizedTarget + trimmed))
-				vid := hex.EncodeToString(hash[:])
+				// Generate a consistent vuln_id hash
+				vid := matrix.GenerateVulnID(normalizedTarget, trimmed)
 				
 				queue = append(queue, matrix.VulnInfo{Finding: trimmed, VulnID: vid})
 			}
@@ -371,8 +407,24 @@ func runVulnerabilityHelperSubAgent(
 	allowlist map[string]bool,
 	toolStageByName map[string]matrix.Phase,
 ) string {
-	rawGraph, _ := kg.ToJSON(currentTarget)
-	prompt := fmt.Sprintf("You are a vulnerability helper sub-agent. Focus only on target '%s' and finding '%s' (vuln_id: %s). Use the available tools to validate exploitability and refine proof-of-concept evidence. If confirmed, call log_vulnerability with vuln_id, target, finding, exploitable yes/no and include concise test_code. If not enough evidence, propose the next exact test.", currentTarget, finding, vulnID)
+	var rawGraph []byte
+	if rawBytes, err := kg.ToJSON(currentTarget); err == nil {
+		var data map[string]any
+		if err := json.Unmarshal(rawBytes, &data); err == nil {
+			// Strip test cases from targets to reduce prompt bloat
+			if targets, ok := data["targets"].(map[string]any); ok {
+				for _, tgt := range targets {
+					if tgtMap, ok := tgt.(map[string]any); ok {
+						delete(tgtMap, "test_cases")
+					}
+				}
+			}
+			rawGraph, _ = json.Marshal(data)
+		} else {
+			rawGraph = rawBytes
+		}
+	}
+	prompt := fmt.Sprintf("You are a vulnerability helper sub-agent. Focus only on target '%s' and finding '%s' (vuln_id: %s). Use the available tools to validate exploitability and refine proof-of-concept evidence. If confirmed, call log_vulnerability with vuln_id, target, finding, exploitable yes/no and include concise test_code. Make sure the 'finding' parameter contains a detailed description of how the vulnerability works and step-by-step instructions to recreate it. For exposed credentials (e.g. .env leaks), do not set exploitable='yes' unless you successfully authenticate using the leaked credentials and include that evidence in test_code. If not enough evidence, propose the next exact test.", currentTarget, finding, vulnID)
 
 	history := []fantasy.Message{
 		{Role: "system", Content: []fantasy.MessagePart{fantasy.TextPart{Text: "You are a focused vulnerability helper sub-agent."}}},
@@ -438,10 +490,13 @@ func runVulnerabilityHelperSubAgent(
 				fnd, _ := args["finding"].(string)
 				testCode, _ := args["test_code"].(string)
 				exploitable, _ := args["exploitable"].(string)
-				if strings.TrimSpace(vulnID) == "" || strings.TrimSpace(targetStr) == "" || strings.TrimSpace(fnd) == "" || strings.TrimSpace(testCode) == "" || (exploitable != "yes" && exploitable != "no") {
+
+				// Enforce consistent vuln_id naming convention
+				vulnID = matrix.GenerateVulnID(targetStr, fnd)
+				if validationErr := validateVulnerabilityLogInput(vulnID, targetStr, fnd, testCode, exploitable); validationErr != nil {
 					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
 						ToolCallID: tc.ToolCallID,
-						Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: vuln_id, target, finding, test_code, and exploitable ('yes'|'no') are required."},
+						Output:     fantasy.ToolResultOutputContentText{Text: fmt.Sprintf("TOOL_ERROR: %v", validationErr)},
 					})
 					continue
 				}
@@ -506,7 +561,14 @@ func runVulnerabilityHelperSubAgent(
 					rawBytes, _ := kg.ToJSON(currentTarget)
 					var data map[string]any
 					if err := json.Unmarshal(rawBytes, &data); err == nil {
-						delete(data, "test_cases")
+						// Strip test cases from targets to reduce prompt bloat
+						if targets, ok := data["targets"].(map[string]any); ok {
+							for _, tgt := range targets {
+								if tgtMap, ok := tgt.(map[string]any); ok {
+									delete(tgtMap, "test_cases")
+								}
+							}
+						}
 						resBytes, _ = json.Marshal(data)
 					} else {
 						resBytes = rawBytes
@@ -789,6 +851,50 @@ func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*m
 		}
 	}
 
+	if preVulns, preErr := matrix.GetVulnerabilities(); preErr == nil {
+		toolStageByName := make(map[string]matrix.Phase)
+		var activeTools []fantasy.Tool
+		for _, t := range executor.Tools() {
+			toolStageByName[t.Name] = matrix.Phase(matrix.MapTechniqueToStage(t.Technique))
+			activeTools = append(activeTools, fantasy.FunctionTool{
+				Name:        t.Name,
+				Description: t.Description,
+				InputSchema: t.InputSchema,
+			})
+		}
+
+		activeTools = append(activeTools, fantasy.FunctionTool{
+			Name:        "query_knowledge_graph",
+			Description: "Query the knowledge graph for specific gathered intelligence.",
+			InputSchema: map[string]any{"type": "object", "properties": map[string]any{"query_type": map[string]any{"type": "string", "enum": []string{"ips", "urls", "ports", "credentials", "vulnerabilities", "tokens", "all"}}}, "required": []string{"query_type"}},
+		})
+		activeTools = append(activeTools, fantasy.FunctionTool{
+			Name:        "log_vulnerability",
+			Description: "Log or update a confirmed vulnerability finding for a target, including exploitability status. This marks the finding as processed.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"vuln_id": map[string]any{"type": "string"},
+					"target":  map[string]any{"type": "string"},
+					"finding": map[string]any{
+						"type":        "string",
+						"description": "A detailed description of the finding, including how it works, a descriptive summary, and step-by-step instructions to recreate the finding for further testing.",
+					},
+					"test_code":   map[string]any{"type": "string"},
+					"exploitable": map[string]any{"type": "string", "enum": []string{"yes", "no"}},
+				},
+				"required": []string{"vuln_id", "target", "finding", "test_code", "exploitable"},
+			},
+		})
+
+		for _, v := range preVulns {
+			if strings.EqualFold(strings.TrimSpace(v.Processed), "no") {
+				log.Infof("Processing remaining unprocessed vulnerability: target=%s vuln_id=%s finding=%q", v.TargetDomain, v.VulnID, v.Finding)
+				_ = runVulnerabilityHelperSubAgent(ctx, model, v.TargetDomain, v.Finding, v.VulnID, activeTools, kg, executor, target, allowlist, toolStageByName)
+			}
+		}
+	}
+
 	var vulnsListStr string
 	vulns, err := matrix.GetVulnerabilities()
 	if err != nil {
@@ -830,6 +936,10 @@ func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*m
 		reportStr = "# Final Report\n\n**Engagement Completed (Failed to generate narrative report).**\n\n"
 	}
 
+	if rawGraph, err := kg.ToJSON(""); err == nil {
+		reportStr += "\n\n## Knowledge Graph Dump\n\n```json\n" + string(rawGraph) + "\n```\n"
+	}
+
 	reportPath := "fire_starter_report.md"
 	var finalReport string
 	if err := os.WriteFile(reportPath, []byte(reportStr), 0644); err != nil {
@@ -851,7 +961,7 @@ Do not make assumptions. Turn theories into testable hypotheses, then validate t
 
 When you have exhausted all applicable tools for your target's current phase, you MUST call the 'advance_target_phase' tool for your target to unlock the next set of tools. If you find vulnerabilities, you MUST continue your investigation to probe deeper and attempt lateral movement. You may only call the 'target_completed' tool if you have exhausted all actionable tools for your assigned target, OR if you have found no vulnerabilities and your target has completed its reconnaissance phase.
 
-When a vulnerability is confirmed, you MUST call 'log_vulnerability' with vuln_id, target, finding, test_code, and exploitable. Every confirmed vulnerability must be marked processed via this tool before moving from exploitation to post-exploitation. Use 'query_knowledge_graph' with query_type='vulnerabilities' to inspect the database-backed status list and get the vuln_id. If a vuln_id is missing, generate an md5 hash of (target + finding) to use as the vuln_id.
+When a vulnerability is confirmed, you MUST call 'log_vulnerability' with vuln_id, target, finding, test_code, and exploitable. Make sure the 'finding' parameter contains a detailed description of how the vulnerability works and step-by-step instructions to recreate it. Every confirmed vulnerability must be marked processed via this tool before moving from exploitation to post-exploitation. Use 'query_knowledge_graph' with query_type='vulnerabilities' to inspect the database-backed status list and get the vuln_id. If a vuln_id is missing, generate an md5 hash of (target + finding) to use as the vuln_id. For credential leaks (for example exposed .env), exploitable='yes' is only valid after you attempt credential-based authentication and verify it succeeds.
 
 In vulnerability-analysis and exploitation phases, create and run one helper sub-agent per vulnerability per target to iterate and refine proof-of-concept testing against that target before deciding exploitability.
 
@@ -964,15 +1074,56 @@ IP whitelist policy:
 
 		var summaryBuilder strings.Builder
 		summaryBuilder.WriteString("Current Intelligence Summary (Context for Tools):\n")
+		normalizedCurrent := normalizeTarget(currentTarget)
 		for _, t := range kg.Targets {
-			summaryBuilder.WriteString(fmt.Sprintf("- Target: %s (Phase: %s)\n", t.Value, t.CurrentPhase))
-			if len(t.OpenPorts) > 0 {
-				summaryBuilder.WriteString(fmt.Sprintf("  - Open Ports: %v\n", t.OpenPorts))
-			}
-			if len(t.Vulnerabilities) > 0 {
-				summaryBuilder.WriteString(fmt.Sprintf("  - Vulns: %d found\n", len(t.Vulnerabilities)))
+			normalizedT := normalizeTarget(t.Value)
+			if normalizedT == normalizedCurrent {
+				summaryBuilder.WriteString(fmt.Sprintf("- Target: %s (Phase: %s) [CURRENT TARGET]\n", t.Value, t.CurrentPhase))
+				if len(t.OpenPorts) > 0 {
+					summaryBuilder.WriteString(fmt.Sprintf("  - Open Ports: %v\n", t.OpenPorts))
+				}
+				if len(t.Vulnerabilities) > 0 {
+					summaryBuilder.WriteString("  - Vulnerabilities:\n")
+					for _, vuln := range t.Vulnerabilities {
+						summaryBuilder.WriteString(fmt.Sprintf("    * %s\n", vuln))
+					}
+				}
+				if len(t.Tokens) > 0 {
+					summaryBuilder.WriteString(fmt.Sprintf("  - Session Tokens: %d harvested\n", len(t.Tokens)))
+				}
+				if len(t.Credentials) > 0 {
+					summaryBuilder.WriteString("  - Credentials:\n")
+					for _, cred := range t.Credentials {
+						summaryBuilder.WriteString(fmt.Sprintf("    * Username: %s\n", cred.Username))
+					}
+				}
+			} else {
+				summaryBuilder.WriteString(fmt.Sprintf("- Target: %s (Phase: %s)\n", t.Value, t.CurrentPhase))
+				if len(t.OpenPorts) > 0 {
+					summaryBuilder.WriteString(fmt.Sprintf("  - Open Ports: %v\n", t.OpenPorts))
+				}
+				if len(t.Vulnerabilities) > 0 {
+					summaryBuilder.WriteString(fmt.Sprintf("  - Vulns: %d found\n", len(t.Vulnerabilities)))
+				}
 			}
 		}
+
+		// Filter out any previous system summary messages to prevent history context accumulation
+		cleanedHistory := make([]fantasy.Message, 0, len(history))
+		for _, msg := range history {
+			isOldSummary := false
+			if msg.Role == "system" && len(msg.Content) > 0 {
+				if tp, ok := msg.Content[0].(fantasy.TextPart); ok {
+					if strings.HasPrefix(tp.Text, "Current Intelligence Summary") {
+						isOldSummary = true
+					}
+				}
+			}
+			if !isOldSummary {
+				cleanedHistory = append(cleanedHistory, msg)
+			}
+		}
+		history = cleanedHistory
 
 		history = append(history, fantasy.Message{
 			Role:    "system",
@@ -1015,9 +1166,12 @@ IP whitelist policy:
 				"type": "object",
 				"properties": map[string]any{
 					"vuln_id": map[string]any{"type": "string"},
-					"target": map[string]any{"type": "string"},
-					"finding": map[string]any{"type": "string"},
-					"test_code": map[string]any{"type": "string"},
+					"target":  map[string]any{"type": "string"},
+					"finding": map[string]any{
+						"type":        "string",
+						"description": "A detailed description of the finding, including how it works, a descriptive summary, and step-by-step instructions to recreate the finding for further testing.",
+					},
+					"test_code":   map[string]any{"type": "string"},
 					"exploitable": map[string]any{"type": "string", "enum": []string{"yes", "no"}},
 				},
 				"required": []string{"vuln_id", "target", "finding", "test_code", "exploitable"},
@@ -1175,10 +1329,13 @@ IP whitelist policy:
 				finding, _ := args["finding"].(string)
 				testCode, _ := args["test_code"].(string)
 				exploitable, _ := args["exploitable"].(string)
-				if strings.TrimSpace(vulnID) == "" || strings.TrimSpace(targetStr) == "" || strings.TrimSpace(finding) == "" || strings.TrimSpace(testCode) == "" || (exploitable != "yes" && exploitable != "no") {
+
+				// Enforce consistent vuln_id naming convention
+				vulnID = matrix.GenerateVulnID(targetStr, finding)
+				if validationErr := validateVulnerabilityLogInput(vulnID, targetStr, finding, testCode, exploitable); validationErr != nil {
 					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
 						ToolCallID: tc.ToolCallID,
-						Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: vuln_id, target, finding, test_code, and exploitable ('yes'|'no') are required."},
+						Output:     fantasy.ToolResultOutputContentText{Text: fmt.Sprintf("TOOL_ERROR: %v", validationErr)},
 					})
 					continue
 				}
@@ -1242,7 +1399,14 @@ IP whitelist policy:
 					rawBytes, _ := kg.ToJSON(currentTarget)
 					var data map[string]any
 					if err := json.Unmarshal(rawBytes, &data); err == nil {
-						delete(data, "test_cases")
+						// Strip test cases from targets to reduce prompt bloat
+						if targets, ok := data["targets"].(map[string]any); ok {
+							for _, tgt := range targets {
+								if tgtMap, ok := tgt.(map[string]any); ok {
+									delete(tgtMap, "test_cases")
+								}
+							}
+						}
 						resBytes, _ = json.Marshal(data)
 					} else {
 						resBytes = rawBytes
