@@ -399,7 +399,7 @@ func runVulnerabilityHelperSubAgent(
 	model fantasy.LanguageModel,
 	currentTarget string,
 	finding string,
-	vulnID string,
+	origVulnID string,
 	activeTools []fantasy.Tool,
 	kg *matrix.KnowledgeGraph,
 	executor *matrix.RealExecutor,
@@ -424,14 +424,15 @@ func runVulnerabilityHelperSubAgent(
 			rawGraph = rawBytes
 		}
 	}
-	prompt := fmt.Sprintf("You are a vulnerability helper sub-agent. Focus only on target '%s' and finding '%s' (vuln_id: %s). Use the available tools to validate exploitability and refine proof-of-concept evidence. If confirmed, call log_vulnerability with vuln_id, target, finding, exploitable yes/no and include concise test_code. Make sure the 'finding' parameter contains a detailed description of how the vulnerability works and step-by-step instructions to recreate it. For exposed credentials (e.g. .env leaks), do not set exploitable='yes' unless you successfully authenticate using the leaked credentials and include that evidence in test_code. If not enough evidence, propose the next exact test.", currentTarget, finding, vulnID)
+	prompt := fmt.Sprintf("You are a vulnerability helper sub-agent. Focus only on target '%s' and finding '%s' (vuln_id: %s). Use the available tools to validate exploitability and refine proof-of-concept evidence. DO NOT write your own custom tools or scripts; you must use the provided tools for testing. If confirmed, call log_vulnerability with vuln_id, target, finding, exploitable yes/no and include concise test_code. Make sure the 'finding' parameter contains a detailed description of how the vulnerability works and step-by-step instructions to recreate it. For exposed credentials (e.g. .env leaks), do not set exploitable='yes' unless you successfully authenticate using the leaked credentials and include that evidence in test_code. If not enough evidence, propose the next exact test.", currentTarget, finding, origVulnID)
 
 	history := []fantasy.Message{
-		{Role: "system", Content: []fantasy.MessagePart{fantasy.TextPart{Text: "You are a focused vulnerability helper sub-agent."}}},
+		{Role: "system", Content: []fantasy.MessagePart{fantasy.TextPart{Text: "You are a focused vulnerability helper sub-agent. DO NOT write your own custom tools or scripts; you must use the provided tools for testing."}}},
 		fantasy.NewUserMessage(prompt + "\n\nKnowledge Graph Snapshot:\n" + string(rawGraph)),
 	}
 
 	var out strings.Builder
+	vulnLogged := false
 
 	for turn := 0; turn < 5; turn++ {
 		resp, err := model.Generate(ctx, fantasy.Call{
@@ -485,15 +486,14 @@ func runVulnerabilityHelperSubAgent(
 					})
 					continue
 				}
-				vulnID, _ := args["vuln_id"].(string)
+				_, _ = args["vuln_id"].(string)
 				targetStr, _ := args["target"].(string)
 				fnd, _ := args["finding"].(string)
 				testCode, _ := args["test_code"].(string)
 				exploitable, _ := args["exploitable"].(string)
 
-				// Enforce consistent vuln_id naming convention
-				vulnID = matrix.GenerateVulnID(targetStr, fnd)
-				if validationErr := validateVulnerabilityLogInput(vulnID, targetStr, fnd, testCode, exploitable); validationErr != nil {
+				// Update the existing vulnerability record keeping the ID the same
+				if validationErr := validateVulnerabilityLogInput(origVulnID, targetStr, fnd, testCode, exploitable); validationErr != nil {
 					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
 						ToolCallID: tc.ToolCallID,
 						Output:     fantasy.ToolResultOutputContentText{Text: fmt.Sprintf("TOOL_ERROR: %v", validationErr)},
@@ -501,13 +501,16 @@ func runVulnerabilityHelperSubAgent(
 					continue
 				}
 				normalizedTgt := normalizeTarget(targetStr)
-				if err := matrix.LogVulnerability(vulnID, normalizedTgt, fnd, testCode, exploitable, "yes"); err != nil {
+				if err := matrix.LogVulnerability(origVulnID, normalizedTgt, fnd, testCode, exploitable, "yes"); err != nil {
 					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
 						ToolCallID: tc.ToolCallID,
 						Output:     fantasy.ToolResultOutputContentText{Text: fmt.Sprintf("TOOL_ERROR: failed to log vulnerability: %v", err)},
 					})
 					continue
 				}
+				
+				vulnLogged = true
+				
 				toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
 					ToolCallID: tc.ToolCallID,
 					Output:     fantasy.ToolResultOutputContentText{Text: "Vulnerability logged and marked processed."},
@@ -720,6 +723,11 @@ func runVulnerabilityHelperSubAgent(
 		}
 	}
 
+	if !vulnLogged {
+		log.Infof("Helper exhausted iterations without logging, marking exploitable=no for vuln_id=%s", origVulnID)
+		_ = matrix.LogVulnerability(origVulnID, currentTarget, finding, "", "no", "yes")
+	}
+
 	return out.String()
 }
 
@@ -891,6 +899,7 @@ func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*m
 			if strings.EqualFold(strings.TrimSpace(v.Processed), "no") {
 				log.Infof("Processing remaining unprocessed vulnerability: target=%s vuln_id=%s finding=%q", v.TargetDomain, v.VulnID, v.Finding)
 				_ = runVulnerabilityHelperSubAgent(ctx, model, v.TargetDomain, v.Finding, v.VulnID, activeTools, kg, executor, target, allowlist, toolStageByName)
+				_ = matrix.MarkVulnerabilityProcessed(v.VulnID)
 			}
 		}
 	}
@@ -957,7 +966,7 @@ func runTargetAgent(ctx context.Context, currentTarget string, initialTarget str
 	systemPrompt := `You are an autonomous red team agent assigned to a SPECIFIC target. Your current available tools are automatically populated based on the phase of the target.
 Review the 'Current Intelligence Summary' in the system messages to see the global state, but your actions should focus on your assigned target.
 
-Do not make assumptions. Turn theories into testable hypotheses, then validate them by calling available tools and using tool output as evidence for your next step. If evidence is missing or stale, call another tool instead of guessing.
+Do not make assumptions. Turn theories into testable hypotheses, then validate them by calling available tools and using tool output as evidence for your next step. If evidence is missing or stale, call another tool instead of guessing. DO NOT write your own custom tools or scripts; you must use the provided tools for testing.
 
 When you have exhausted all applicable tools for your target's current phase, you MUST call the 'advance_target_phase' tool for your target to unlock the next set of tools. If you find vulnerabilities, you MUST continue your investigation to probe deeper and attempt lateral movement. You may only call the 'target_completed' tool if you have exhausted all actionable tools for your assigned target, OR if you have found no vulnerabilities and your target has completed its reconnaissance phase.
 
