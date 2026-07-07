@@ -16,6 +16,7 @@ import (
 
 	"charm.land/fantasy"
 	"github.com/charmbracelet/log"
+	"golang.org/x/net/publicsuffix"
 )
 
 // GenerateVulnID generates a deterministic hash for a vulnerability based on its target and description.
@@ -38,16 +39,14 @@ func NormalizeURL(u string) string {
 	if strings.HasPrefix(lower, "www.") {
 		u = u[4:]
 	}
-	// Strip fragment
 	if idx := strings.Index(u, "#"); idx != -1 {
 		u = u[:idx]
 	}
-	// Strip query parameters
 	if idx := strings.Index(u, "?"); idx != -1 {
 		u = u[:idx]
 	}
 	u = strings.TrimRight(u, "/")
-	
+
 	slashIdx := strings.Index(u, "/")
 	if slashIdx != -1 {
 		u = strings.ToLower(u[:slashIdx]) + u[slashIdx:]
@@ -96,7 +95,7 @@ func ResolveAndNormalizeURL(u string, baseCtx string) string {
 				isAbsoluteSchemeless = true
 			}
 		}
-		
+
 		if net.ParseIP(firstSeg) != nil || (strings.Contains(firstSeg, ":") && net.ParseIP(strings.Split(firstSeg, ":")[0]) != nil) {
 			isAbsoluteSchemeless = true
 		} else if strings.Contains(firstSeg, ".") {
@@ -278,6 +277,8 @@ func (kg *KnowledgeGraph) evaluateScopeWithLLM(ctx context.Context, model fantas
 		return nil, nil
 	}
 
+	fallbackAllowedIPs, fallbackAllowedURLs := kg.filterCandidatesByScope(ips, urls)
+
 	domains := kg.TargetDomains
 	if len(domains) == 0 && kg.BaseDomain != "" {
 		domains = []string{kg.BaseDomain}
@@ -335,7 +336,7 @@ Respond STRICTLY in the following JSON format:
 	})
 	if err != nil {
 		log.Errorf("Decision agent failed to generate: %v. Falling back to default whitelisting check.", err)
-		return ips, urls
+		return fallbackAllowedIPs, fallbackAllowedURLs
 	}
 
 	var rawText string
@@ -358,7 +359,7 @@ Respond STRICTLY in the following JSON format:
 	var decision BatchDecision
 	if err := json.Unmarshal([]byte(rawText), &decision); err != nil {
 		log.Errorf("Decision agent returned invalid JSON: %v. Falling back to default whitelisting check.", err)
-		return ips, urls
+		return fallbackAllowedIPs, fallbackAllowedURLs
 	}
 
 	shouldAddMap := make(map[string]bool)
@@ -575,7 +576,7 @@ func (kg *KnowledgeGraph) regexExtract(toolName, target string, payload map[stri
 	}
 
 	ipRegex := regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
-	urlRegex := regexp.MustCompile(`https?://[^\s"']+`)
+	urlRegex := regexp.MustCompile(`(?i)(?:https?://|www\.)[^\s"'<>]+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/[^\s"'<>]*)?|/(?:[a-z0-9._~!$&'()*+,;=:@%-]+/?)+`)
 
 	ips := ipRegex.FindAllString(resultData, -1)
 	for _, ip := range ips {
@@ -606,30 +607,111 @@ func (kg *KnowledgeGraph) regexExtract(toolName, target string, payload map[stri
 		})
 	}
 }
+func registrableDomain(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" || net.ParseIP(host) != nil {
+		return ""
+	}
+	base, err := publicsuffix.EffectiveTLDPlusOne(host)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(base)
+}
+
 func MatchDomainOrIP(input string, pattern string) bool {
 	input = strings.ToLower(strings.TrimSpace(input))
 	pattern = strings.ToLower(strings.TrimSpace(pattern))
 
+	if pattern == "" || input == "" {
+		return false
+	}
 	if pattern == "*" {
 		return true
 	}
 
-	// Support *.domain.com matching domain.com and *.domain.com
 	if strings.HasPrefix(pattern, "*.") {
-		base := pattern[2:]
+		base := strings.TrimPrefix(pattern, "*.")
+		if base == "" {
+			return false
+		}
 		if input == base {
 			return true
 		}
-		return strings.HasSuffix(input, "."+base)
+		if strings.HasSuffix(input, "."+base) {
+			return true
+		}
+		return registrableDomain(input) == base
 	}
 
-	// Fallback to filepath.Match for other wildcard patterns (e.g. 192.168.1.*)
 	if strings.Contains(pattern, "*") {
 		matched, err := filepath.Match(pattern, input)
 		return err == nil && matched
 	}
 
 	return input == pattern
+}
+
+func (kg *KnowledgeGraph) filterCandidatesByScope(ips []string, urls []string) ([]string, []string) {
+	kg.mu.RLock()
+	defer kg.mu.RUnlock()
+
+	domains := kg.TargetDomains
+	if len(domains) == 0 && kg.BaseDomain != "" {
+		domains = []string{kg.BaseDomain}
+	}
+
+	if len(domains) == 0 {
+		allowedIPs := append([]string(nil), ips...)
+		allowedURLs := append([]string(nil), urls...)
+		return allowedIPs, allowedURLs
+	}
+
+	allowedIPs := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		if kg.ipAllowedByScopeLocked(ip, domains) {
+			allowedIPs = append(allowedIPs, ip)
+		}
+	}
+
+	allowedURLs := make([]string, 0, len(urls))
+	for _, candidateURL := range urls {
+		if kg.urlAllowedByScopeLocked(candidateURL, domains) {
+			allowedURLs = append(allowedURLs, candidateURL)
+		}
+	}
+
+	return allowedIPs, allowedURLs
+}
+
+func (kg *KnowledgeGraph) ipAllowedByScopeLocked(ip string, domains []string) bool {
+	for _, pattern := range domains {
+		if pattern == "*" || MatchDomainOrIP(ip, pattern) {
+			return true
+		}
+	}
+	return kg.allowedIPs != nil && kg.allowedIPs[ip]
+}
+
+func (kg *KnowledgeGraph) urlAllowedByScopeLocked(candidateURL string, domains []string) bool {
+	normalized := ResolveAndNormalizeURL(candidateURL, "")
+	if normalized == "" {
+		return false
+	}
+
+	parsed, err := url.Parse("https://" + normalized)
+	if err != nil || parsed.Hostname() == "" {
+		return false
+	}
+
+	host := strings.ToLower(parsed.Hostname())
+	for _, pattern := range domains {
+		if MatchDomainOrIP(host, pattern) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (kg *KnowledgeGraph) AddAllowedIP(ip string) {
@@ -767,6 +849,19 @@ func (kg *KnowledgeGraph) AddPort(targetValue string, port int) {
 	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=open_ports target=%s port=%d", targetValue, port)
 }
 
+func isStaticAssetPath(path string) bool {
+	path = strings.ToLower(strings.TrimSpace(path))
+	if path == "" {
+		return false
+	}
+	return strings.HasSuffix(path, ".css") || strings.HasSuffix(path, ".js") ||
+		strings.HasSuffix(path, ".png") || strings.HasSuffix(path, ".jpg") ||
+		strings.HasSuffix(path, ".jpeg") || strings.HasSuffix(path, ".svg") ||
+		strings.HasSuffix(path, ".gif") || strings.HasSuffix(path, ".woff") ||
+		strings.HasSuffix(path, ".woff2") || strings.HasSuffix(path, ".ico") ||
+		strings.HasSuffix(path, ".ttf") || strings.HasSuffix(path, ".eot")
+}
+
 func (kg *KnowledgeGraph) AddURL(u string, baseCtx string) {
 	defer kg.triggerUpdate()
 	kg.mu.Lock()
@@ -778,56 +873,51 @@ func (kg *KnowledgeGraph) AddURL(u string, baseCtx string) {
 	}
 
 	u = ResolveAndNormalizeURL(u, baseCtx)
+	if u == "" {
+		return
+	}
+
+	parsed, err := url.Parse("https://" + u)
+	if err != nil || parsed.Hostname() == "" {
+		return
+	}
+
+	if isStaticAssetPath(parsed.Path) {
+		return
+	}
 
 	domains := kg.TargetDomains
 	if len(domains) == 0 && kg.BaseDomain != "" {
 		domains = []string{kg.BaseDomain}
 	}
 
+	host := strings.ToLower(parsed.Hostname())
 	if len(domains) > 0 {
-		parsed, err := url.Parse("https://" + u)
-		if err != nil {
+		matched := false
+		for _, pattern := range domains {
+			if MatchDomainOrIP(host, pattern) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
 			return
 		}
 
-		if parsed.Hostname() != "" {
-			host := parsed.Hostname()
-			matched := false
-			for _, pattern := range domains {
-				if MatchDomainOrIP(host, pattern) {
-					matched = true
-					break
+		if ips, err := net.LookupIP(host); err == nil && len(ips) > 0 {
+			allPlaceholder := true
+			for _, ip := range ips {
+				if ip.String() != "0.0.0.0" && ip.String() != "::" && !ip.IsLoopback() {
+					allPlaceholder = false
+					if kg.allowedIPs == nil {
+						kg.allowedIPs = make(map[string]bool)
+					}
+					kg.allowedIPs[ip.String()] = true
 				}
 			}
-			if !matched {
+			if allPlaceholder {
 				return
 			}
-
-			if ips, err := net.LookupIP(host); err == nil && len(ips) > 0 {
-				allPlaceholder := true
-				for _, ip := range ips {
-					if ip.String() != "0.0.0.0" && ip.String() != "::" && !ip.IsLoopback() {
-						allPlaceholder = false
-						if kg.allowedIPs == nil {
-							kg.allowedIPs = make(map[string]bool)
-						}
-						kg.allowedIPs[ip.String()] = true
-					}
-				}
-				if allPlaceholder {
-					return
-				}
-			}
-		}
-
-		path := strings.ToLower(parsed.Path)
-		if strings.HasSuffix(path, ".css") || strings.HasSuffix(path, ".js") || 
-		   strings.HasSuffix(path, ".png") || strings.HasSuffix(path, ".jpg") || 
-		   strings.HasSuffix(path, ".jpeg") || strings.HasSuffix(path, ".svg") || 
-		   strings.HasSuffix(path, ".gif") || strings.HasSuffix(path, ".woff") || 
-		   strings.HasSuffix(path, ".woff2") || strings.HasSuffix(path, ".ico") ||
-		   strings.HasSuffix(path, ".ttf") || strings.HasSuffix(path, ".eot") {
-			return
 		}
 	}
 

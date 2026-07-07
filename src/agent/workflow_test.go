@@ -80,3 +80,41 @@ func TestValidateVulnerabilityLogInput(t *testing.T) {
 		t.Fatalf("unexpected error for non-credential finding: %v", err)
 	}
 }
+
+func TestDeriveDefaultTargetDomains(t *testing.T) {
+	tests := []struct {
+		name   string
+		target string
+		want   []string
+	}{
+		{
+			name:   "subdomain target keeps exact host and wildcard",
+			target: "https://app.example.com/login",
+			want:   []string{"app.example.com", "*.app.example.com"},
+		},
+		{
+			name:   "hostname without scheme",
+			target: "api.internal.example.com",
+			want:   []string{"api.internal.example.com", "*.api.internal.example.com"},
+		},
+		{
+			name:   "ip target stays exact only",
+			target: "10.0.0.15",
+			want:   []string{"10.0.0.15"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := deriveDefaultTargetDomains(tc.target)
+			if len(got) != len(tc.want) {
+				t.Fatalf("deriveDefaultTargetDomains(%q) len=%d want=%d (%v)", tc.target, len(got), len(tc.want), got)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Fatalf("deriveDefaultTargetDomains(%q)[%d]=%q want %q", tc.target, i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}

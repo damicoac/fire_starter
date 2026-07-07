@@ -11,8 +11,11 @@ func TestDatabaseOperations(t *testing.T) {
 	dbPath := filepath.Join(tempDir, "test_fire_starter.db")
 
 	// Reset singleton for isolated test DB
+	if dbInstance != nil {
+		_ = dbInstance.Close()
+	}
 	dbInstance = nil
-	dbOnce = sync.Once{}
+	dbMu = sync.Mutex{}
 
 	// Initialize database
 	_, err := InitDB(dbPath)
@@ -32,7 +35,7 @@ func TestDatabaseOperations(t *testing.T) {
 	}
 
 	// Upsert existing vulnerability
-	err = LogVulnerability("vid-1", "target1.com", "SQL Injection", "poc-1-updated", "yes", "yes")
+	err = LogVulnerability("vid-1", "target1.com-updated", "Refined SQL Injection", "poc-1-updated", "yes", "yes")
 	if err != nil {
 		t.Fatalf("LogVulnerability upsert failed: %v", err)
 	}
@@ -52,7 +55,7 @@ func TestDatabaseOperations(t *testing.T) {
 		exploitable  string
 		processed    string
 	}{
-		"target1.com": {finding: "SQL Injection", testCode: "poc-1-updated", exploitable: "yes", processed: "yes"},
+		"target1.com-updated": {finding: "Refined SQL Injection", testCode: "poc-1-updated", exploitable: "yes", processed: "yes"},
 		"target2.com": {finding: "Cross-Site Scripting", testCode: "poc-2", exploitable: "yes", processed: "yes"},
 	}
 

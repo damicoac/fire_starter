@@ -11,80 +11,79 @@ import (
 
 var (
 	dbInstance *sql.DB
-	dbOnce     sync.Once
+	dbMu       sync.Mutex
 )
 
 // InitDB initializes the SQLite database connection and creates tables if they don't exist.
 func InitDB(dbPath string) (*sql.DB, error) {
-	var initErr error
-	dbOnce.Do(func() {
-		db, err := sql.Open("sqlite3", dbPath)
-		if err != nil {
-			initErr = fmt.Errorf("failed to open database: %w", err)
-			return
-		}
+	dbMu.Lock()
+	defer dbMu.Unlock()
 
-		if err := db.Ping(); err != nil {
-			initErr = fmt.Errorf("failed to ping database: %w", err)
-			return
-		}
-
-		// Create execution_log table
-		_, err = db.Exec(`
-			CREATE TABLE IF NOT EXISTS execution_log (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				date_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-				target_domain TEXT NOT NULL,
-				json_output TEXT NOT NULL
-			);
-		`)
-		if err != nil {
-			initErr = fmt.Errorf("failed to create execution_log table: %w", err)
-			return
-		}
-
-		// Create vuln table
-		_, err = db.Exec(`
-			CREATE TABLE IF NOT EXISTS vuln (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				vuln_id TEXT UNIQUE,
-				date_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-				target_domain TEXT NOT NULL,
-				finding TEXT NOT NULL,
-				test_code TEXT NOT NULL,
-				exploitable TEXT NOT NULL DEFAULT 'no',
-				processed TEXT NOT NULL DEFAULT 'no'
-			);
-		`)
-		if err != nil {
-			initErr = fmt.Errorf("failed to create vuln table: %w", err)
-			return
-		}
-
-		if err := ensureVulnColumn(db, "exploitable", "TEXT NOT NULL DEFAULT 'no'"); err != nil {
-			initErr = err
-			return
-		}
-		if err := ensureVulnColumn(db, "processed", "TEXT NOT NULL DEFAULT 'no'"); err != nil {
-			initErr = err
-			return
-		}
-		if err := ensureVulnColumn(db, "vuln_id", "TEXT"); err != nil {
-			initErr = err
-			return
-		}
-		_, err = db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_vuln_id ON vuln(vuln_id);`)
-		if err != nil && err.Error() != "index idx_vuln_id already exists" { // SQLite might ignore IF NOT EXISTS depending on version, so just in case
-			initErr = fmt.Errorf("failed to create unique index on vuln_id: %w", err)
-			return
-		}
-
-		dbInstance = db
-	})
-
-	if initErr != nil {
-		return nil, initErr
+	if dbInstance != nil {
+		return dbInstance, nil
 	}
+
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
+
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to ping database: %w", err)
+	}
+
+	// Create execution_log table
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS execution_log (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			date_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+			target_domain TEXT NOT NULL,
+			json_output TEXT NOT NULL
+		);
+	`)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to create execution_log table: %w", err)
+	}
+
+	// Create vuln table
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS vuln (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			vuln_id TEXT UNIQUE,
+			date_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+			target_domain TEXT NOT NULL,
+			finding TEXT NOT NULL,
+			test_code TEXT NOT NULL,
+			exploitable TEXT NOT NULL DEFAULT 'no',
+			processed TEXT NOT NULL DEFAULT 'no'
+		);
+	`)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to create vuln table: %w", err)
+	}
+
+	if err := ensureVulnColumn(db, "exploitable", "TEXT NOT NULL DEFAULT 'no'"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureVulnColumn(db, "processed", "TEXT NOT NULL DEFAULT 'no'"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := ensureVulnColumn(db, "vuln_id", "TEXT"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	_, err = db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_vuln_id ON vuln(vuln_id);`)
+	if err != nil && err.Error() != "index idx_vuln_id already exists" { // SQLite might ignore IF NOT EXISTS depending on version, so just in case
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to create unique index on vuln_id: %w", err)
+	}
+
+	dbInstance = db
 	return dbInstance, nil
 }
 
@@ -156,6 +155,8 @@ func LogVulnerability(vulnID string, targetDomain string, finding string, testCo
 		 VALUES (?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(vuln_id) DO UPDATE SET 
 			date_time = excluded.date_time,
+			target_domain = excluded.target_domain,
+			finding = excluded.finding,
 			test_code = excluded.test_code,
 			exploitable = excluded.exploitable,
 			processed = excluded.processed`,

@@ -25,19 +25,38 @@ var (
 			Foreground(lipgloss.Color("240"))
 
 	phaseColors = map[string]lipgloss.Color{
-		"pre-engagement":         lipgloss.Color("245"), // Grey
-		"reconnaissance":         lipgloss.Color("33"),  // Blue
-		"scanning-enumeration":   lipgloss.Color("214"), // Orange
-		"vulnerability-analysis": lipgloss.Color("196"), // Red
-		"exploitation":           lipgloss.Color("129"), // Purple
-		"post-exploitation":      lipgloss.Color("201"), // Pink
-		"reporting":              lipgloss.Color("46"),  // Green
+		"pre-engagement":         lipgloss.Color("245"),
+		"reconnaissance":         lipgloss.Color("33"),
+		"scanning-enumeration":   lipgloss.Color("214"),
+		"vulnerability-analysis": lipgloss.Color("196"),
+		"exploitation":           lipgloss.Color("129"),
+		"post-exploitation":      lipgloss.Color("201"),
+		"reporting":              lipgloss.Color("46"),
 	}
+
+	cardBaseStyle = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("238")).
+		Padding(0, 1)
+
+	cardSelectedStyle = cardBaseStyle.
+		BorderForeground(lipgloss.Color("205")).
+		Background(lipgloss.Color("236"))
+
+	cardTitleStyle = lipgloss.NewStyle().Bold(true)
+	sectionTitleStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Bold(true)
+	mutedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	footerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("248")).Padding(0, 1)
+	statusBarStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("255")).
+		Background(lipgloss.Color("62")).
+		Padding(0, 1)
+	activeFilterStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("205")).Bold(true).Padding(0, 1)
+	inactiveFilterStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("248")).Background(lipgloss.Color("237")).Padding(0, 1)
 )
 
-// Messages
 type LogMsg struct {
-	Text string
+	Entry LogEntry
 }
 
 type AgentFinishedMsg struct {
@@ -63,20 +82,22 @@ type KGTarget struct {
 }
 
 type Model struct {
-	logsViewport    viewport.Model
-	kgViewport      viewport.Model
-	spinner         spinner.Model
-	logs            []string
-	kgTargets       []KGTarget
-	dashboardCursor int
-	inspectorMode   bool
-	ready           bool
-	finished        bool
-	finalReport     string
-	width           int
-	height          int
-
-	activePane      int // 0 = logs, 1 = sidebar
+	logsViewport      viewport.Model
+	kgViewport        viewport.Model
+	spinner           spinner.Model
+	allLogs           []LogEntry
+	visibleLogs       []string
+	kgTargets         []KGTarget
+	dashboardCursor   int
+	inspectorMode     bool
+	ready             bool
+	finished          bool
+	finalReport       string
+	width             int
+	height            int
+	activePane        int
+	activeLogFilter   LogCategory
+	collapsedSummaries bool
 }
 
 func InitialModel() Model {
@@ -85,8 +106,11 @@ func InitialModel() Model {
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 
 	return Model{
-		spinner: s,
-		logs:    make([]string, 0),
+		spinner:            s,
+		allLogs:            make([]LogEntry, 0),
+		visibleLogs:        make([]string, 0),
+		activeLogFilter:    LogCategoryGeneral,
+		collapsedSummaries: true,
 	}
 }
 
@@ -139,6 +163,100 @@ func parseKG(data []byte, existingTargets []KGTarget) []KGTarget {
 	return newTargets
 }
 
+func (m *Model) rebuildLogsViewport(stickBottom bool) {
+	if !m.ready {
+		return
+	}
+	m.visibleLogs = filterLogs(m.allLogs, m.activeLogFilter, m.collapsedSummaries)
+	m.logsViewport.SetContent(wordwrap.String(strings.Join(m.visibleLogs, "\n"), m.logsViewport.Width))
+	if stickBottom {
+		m.logsViewport.GotoBottom()
+	}
+}
+
+func filterLogs(entries []LogEntry, filter LogCategory, collapsed bool) []string {
+	filtered := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if filter != LogCategoryGeneral && entry.Category != filter {
+			continue
+		}
+		text := entry.Text
+		if collapsed && entry.Category == LogCategoryTools && strings.Contains(text, "TOOL_EXECUTION_SUMMARY") {
+			lines := strings.Split(text, "\n")
+			if len(lines) > 1 {
+				text = lines[0]
+			}
+		}
+		filtered = append(filtered, text)
+	}
+	if len(filtered) == 0 {
+		filtered = append(filtered, mutedStyle.Render("No log entries for the current filter yet."))
+	}
+	return filtered
+}
+
+func phaseShortName(phase string) string {
+	switch phase {
+	case "pre-engagement":
+		return "Pre"
+	case "reconnaissance":
+		return "Recon"
+	case "scanning-enumeration":
+		return "Scan"
+	case "vulnerability-analysis":
+		return "Vuln"
+	case "exploitation":
+		return "Exploit"
+	case "post-exploitation":
+		return "Post"
+	case "reporting":
+		return "Report"
+	default:
+		return phase
+	}
+}
+
+func phaseBadge(phase string) string {
+	color := lipgloss.Color("214")
+	if c, ok := phaseColors[phase]; ok {
+		color = c
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Background(color).Bold(true).Padding(0, 1).Render(phaseShortName(phase))
+}
+
+func countBadge(label string, count int, color lipgloss.Color) string {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Background(color).Padding(0, 1).Render(fmt.Sprintf("%s %d", label, count))
+}
+
+func joinNonEmpty(parts []string, sep string) string {
+	filtered := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if strings.TrimSpace(part) != "" {
+			filtered = append(filtered, part)
+		}
+	}
+	return strings.Join(filtered, sep)
+}
+
+func phaseBreakdown(targets []KGTarget) string {
+	phases := []string{"pre-engagement", "reconnaissance", "scanning-enumeration", "vulnerability-analysis", "exploitation", "post-exploitation", "reporting"}
+	parts := make([]string, 0, len(phases))
+	counts := make(map[string]int)
+	for _, target := range targets {
+		counts[target.CurrentPhase]++
+	}
+	for _, phase := range phases {
+		if counts[phase] == 0 {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s %d", phaseBadge(phase), counts[phase]))
+	}
+	if len(parts) == 0 {
+		return mutedStyle.Render("No active phases yet")
+	}
+	return strings.Join(parts, " ")
+}
+
 func (m *Model) updateKGViewport() {
 	if !m.ready {
 		return
@@ -148,187 +266,118 @@ func (m *Model) updateKGViewport() {
 
 	if m.inspectorMode && m.dashboardCursor < len(m.kgTargets) {
 		t := m.kgTargets[m.dashboardCursor]
-		header := lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Bold(true).Render("⬅ Press Esc to return")
+		header := sectionTitleStyle.Render("Press Esc to return")
 		contentBuilder.WriteString(header + "\n\n")
 
-		titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true)
-		valueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
-		
-		icon := "🌐"
-		if t.Type == "ip" {
-			icon = "🖥️ "
-		}
-		
-		contentBuilder.WriteString(titleStyle.Render(fmt.Sprintf("%s Target: ", icon)) + valueStyle.Render(t.Value) + "\n")
-		contentBuilder.WriteString(titleStyle.Render("Score: ") + valueStyle.Render(fmt.Sprintf("%d", t.Score)) + "\n")
-		
-		phaseColor := valueStyle.GetForeground()
-		if c, ok := phaseColors[t.CurrentPhase]; ok {
-			phaseColor = c
-		}
-		contentBuilder.WriteString(titleStyle.Render("Phase: ") + lipgloss.NewStyle().Foreground(phaseColor).Render(t.CurrentPhase) + "\n")
-		
-		contentBuilder.WriteString(titleStyle.Render("Type: ") + valueStyle.Render(t.Type) + "\n\n")
+		titleRow := lipgloss.JoinHorizontal(lipgloss.Left, cardTitleStyle.Foreground(lipgloss.Color("205")).Render(t.Value), " ", phaseBadge(t.CurrentPhase))
+		metaRow := mutedStyle.Render(fmt.Sprintf("Type: %s   Score: %d", t.Type, t.Score))
+		contentBuilder.WriteString(titleRow + "\n" + metaRow + "\n\n")
 
 		if len(t.OpenPorts) > 0 {
-			contentBuilder.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("99")).Bold(true).Render("🔌 Open Ports") + "\n")
+			contentBuilder.WriteString(sectionTitleStyle.Foreground(lipgloss.Color("99")).Render("Open Ports") + "\n")
 			for _, p := range t.OpenPorts {
-				contentBuilder.WriteString(fmt.Sprintf("  - %d\n", p))
+				contentBuilder.WriteString(fmt.Sprintf("  • %d\n", p))
 			}
 			contentBuilder.WriteString("\n")
 		}
 
 		if len(t.Vulnerabilities) > 0 {
-			contentBuilder.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true).Render("⚠️  Vulnerabilities") + "\n")
+			contentBuilder.WriteString(sectionTitleStyle.Foreground(lipgloss.Color("196")).Render("Vulnerabilities") + "\n")
 			for _, v := range t.Vulnerabilities {
-				contentBuilder.WriteString(fmt.Sprintf("  - %s\n", v))
+				contentBuilder.WriteString(fmt.Sprintf("  • %s\n", v))
 			}
 			contentBuilder.WriteString("\n")
 		}
 
 		if len(t.Tokens) > 0 {
-			contentBuilder.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true).Render("🔑 Tokens / Cookies") + "\n")
+			contentBuilder.WriteString(sectionTitleStyle.Foreground(lipgloss.Color("220")).Render("Tokens / Cookies") + "\n")
 			for _, token := range t.Tokens {
-				contentBuilder.WriteString(fmt.Sprintf("  - %s\n", token))
+				contentBuilder.WriteString(fmt.Sprintf("  • %s\n", token))
 			}
 			contentBuilder.WriteString("\n")
 		}
 
 		if len(t.Credentials) > 0 {
-			contentBuilder.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Bold(true).Render("👤 Credentials") + "\n")
+			contentBuilder.WriteString(sectionTitleStyle.Foreground(lipgloss.Color("250")).Render("Credentials") + "\n")
 			for _, cred := range t.Credentials {
-				contentBuilder.WriteString(fmt.Sprintf("  - %s:%s\n", cred.Username, cred.Password))
+				contentBuilder.WriteString(fmt.Sprintf("  • %s:%s\n", cred.Username, cred.Password))
 			}
 			contentBuilder.WriteString("\n")
 		}
-
 	} else {
-		// Dashboard Mode: break down by phase
-		phases := []string{"pre-engagement", "reconnaissance", "scanning-enumeration", "vulnerability-analysis", "exploitation", "post-exploitation", "reporting"}
-		shortPhases := map[string]string{
-			"pre-engagement": "Pre",
-			"reconnaissance": "Recon",
-			"scanning-enumeration": "Scan",
-			"vulnerability-analysis": "Vuln",
-			"exploitation": "Exploit",
-			"post-exploitation": "Post",
-			"reporting": "Report",
-		}
-		
-		phaseCounts := make(map[string]int)
 		totalPorts, totalVulns, totalTokens, totalCreds := 0, 0, 0, 0
 		for _, t := range m.kgTargets {
-			phaseCounts[t.CurrentPhase]++
 			totalPorts += len(t.OpenPorts)
 			totalVulns += len(t.Vulnerabilities)
 			totalTokens += len(t.Tokens)
 			totalCreds += len(t.Credentials)
 		}
-		
-		var phaseSummary []string
-		for _, p := range phases {
-			if count := phaseCounts[p]; count > 0 {
-				color := lipgloss.Color("214") // fallback
-				if c, ok := phaseColors[p]; ok {
-					color = c
-				}
-				phaseLabel := lipgloss.NewStyle().Foreground(color).Render(shortPhases[p])
-				countStr := lipgloss.NewStyle().Foreground(lipgloss.Color("255")).Render(fmt.Sprintf("%d", count))
-				phaseSummary = append(phaseSummary, fmt.Sprintf("%s: %s", phaseLabel, countStr))
-			}
-		}
-		
-		metricStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Bold(true)
-		valStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("255"))
-		
-		metricsLine1 := fmt.Sprintf("%s %s | %s %s | %s %s | %s %s",
-			metricStyle.Render("Targets:"), valStyle.Render(fmt.Sprintf("%d", len(m.kgTargets))),
-			metricStyle.Render("Vulns:"), valStyle.Render(fmt.Sprintf("%d", totalVulns)),
-			metricStyle.Render("Creds:"), valStyle.Render(fmt.Sprintf("%d", totalCreds)),
-			metricStyle.Render("Tokens:"), valStyle.Render(fmt.Sprintf("%d", totalTokens)))
-		
-		metricsLine2 := strings.Join(phaseSummary, " | ")
-		
-		contentBuilder.WriteString(metricsLine1 + "\n" + metricsLine2 + "\n" + strings.Repeat("─", m.kgViewport.Width) + "\n\n")
+
+		summaryTop := joinNonEmpty([]string{
+			countBadge("Targets", len(m.kgTargets), lipgloss.Color("62")),
+			countBadge("Vulns", totalVulns, lipgloss.Color("196")),
+			countBadge("Creds", totalCreds, lipgloss.Color("220")),
+			countBadge("Tokens", totalTokens, lipgloss.Color("99")),
+			countBadge("Ports", totalPorts, lipgloss.Color("33")),
+		}, " ")
+		contentBuilder.WriteString(summaryTop + "\n")
+		contentBuilder.WriteString(phaseBreakdown(m.kgTargets) + "\n\n")
 
 		if len(m.kgTargets) == 0 {
-			contentBuilder.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("  No targets discovered yet.\n"))
+			contentBuilder.WriteString(mutedStyle.Render("No targets discovered yet."))
 		}
 
 		for i, t := range m.kgTargets {
-			cursor := "  "
-			if i == m.dashboardCursor {
-				cursor = "> "
+			cardStyle := cardBaseStyle
+			if i == m.dashboardCursor && m.activePane == 1 {
+				cardStyle = cardSelectedStyle
 			}
-			
-			icon := "🌐"
-			color := lipgloss.Color("33") // Blue
+
+			icon := "Host"
+			nameColor := lipgloss.Color("33")
 			if t.Type == "ip" {
-				icon = "🖥️ "
-				color = lipgloss.Color("46") // Green
+				icon = "IP"
+				nameColor = lipgloss.Color("46")
 			}
 
-			style := lipgloss.NewStyle().Foreground(color)
-			if i == m.dashboardCursor && m.activePane == 1 {
-				style = style.Bold(true).Background(lipgloss.Color("236"))
-			}
+			headerLeft := lipgloss.NewStyle().Foreground(nameColor).Bold(true).Render(icon + "  " + t.Value)
+			headerRight := mutedStyle.Render(fmt.Sprintf("score %d", t.Score))
+			headerWidth := max(0, m.kgViewport.Width-8-lipgloss.Width(headerRight))
+			header := lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(headerWidth).Render(headerLeft), headerRight)
 
-			bgStyle := lipgloss.NewStyle()
-			if i == m.dashboardCursor && m.activePane == 1 {
-				bgStyle = bgStyle.Background(lipgloss.Color("236"))
-			}
+			badges := joinNonEmpty([]string{
+				phaseBadge(t.CurrentPhase),
+				countBadge("Ports", len(t.OpenPorts), lipgloss.Color("33")),
+				countBadge("Vulns", len(t.Vulnerabilities), lipgloss.Color("196")),
+				countBadge("Creds", len(t.Credentials), lipgloss.Color("220")),
+				countBadge("Tokens", len(t.Tokens), lipgloss.Color("99")),
+			}, " ")
 
-			baseStyle := bgStyle.Copy().Foreground(lipgloss.Color("245"))
-
-			phaseColor := lipgloss.Color("214")
-			if c, ok := phaseColors[t.CurrentPhase]; ok {
-				phaseColor = c
-			}
-			phaseStr := bgStyle.Copy().Foreground(phaseColor).Render(shortPhases[t.CurrentPhase])
-
-			portStr := fmt.Sprintf("%d", len(t.OpenPorts))
-			if len(t.OpenPorts) > 0 {
-				portStr = bgStyle.Copy().Foreground(lipgloss.Color("99")).Render(portStr)
-			} else {
-				portStr = baseStyle.Render(portStr)
-			}
-
-			vulnStr := fmt.Sprintf("%d", len(t.Vulnerabilities))
+			previewItems := []string{}
 			if len(t.Vulnerabilities) > 0 {
-				vulnStr = bgStyle.Copy().Foreground(lipgloss.Color("196")).Render(vulnStr)
-			} else {
-				vulnStr = baseStyle.Render(vulnStr)
+				previewItems = append(previewItems, t.Vulnerabilities[0])
 			}
-
-			credStr := fmt.Sprintf("%d", len(t.Credentials))
 			if len(t.Credentials) > 0 {
-				credStr = bgStyle.Copy().Foreground(lipgloss.Color("220")).Render(credStr)
-			} else {
-				credStr = baseStyle.Render(credStr)
+				previewItems = append(previewItems, fmt.Sprintf("%s:%s", t.Credentials[0].Username, t.Credentials[0].Password))
 			}
-
-			tokenStr := fmt.Sprintf("%d", len(t.Tokens))
 			if len(t.Tokens) > 0 {
-				tokenStr = bgStyle.Copy().Foreground(lipgloss.Color("220")).Render(tokenStr)
-			} else {
-				tokenStr = baseStyle.Render(tokenStr)
+				previewItems = append(previewItems, t.Tokens[0])
+			}
+			preview := mutedStyle.Render("Select to inspect details")
+			if len(previewItems) > 0 {
+				preview = mutedStyle.Render(strings.Join(previewItems, "  •  "))
 			}
 
-			summary := baseStyle.Render("    ↳ Phase: ") + phaseStr + baseStyle.Render(" | Ports: ") + portStr + baseStyle.Render(" | Vulns: ") + vulnStr + baseStyle.Render(" | Creds: ") + credStr + baseStyle.Render(" | Tokens: ") + tokenStr
-			
-			cursorSpacing := "  "
-			line1 := cursor + style.Render(fmt.Sprintf("%s %s (Score: %d)", icon, t.Value, t.Score))
-			line2 := cursorSpacing + summary
-			contentBuilder.WriteString(line1 + "\n" + line2 + "\n")
+			card := lipgloss.JoinVertical(lipgloss.Left, header, badges, preview)
+			contentBuilder.WriteString(cardStyle.Width(max(0, m.kgViewport.Width-2)).Render(card) + "\n")
 		}
 	}
 
 	m.kgViewport.SetContent(wordwrap.String(contentBuilder.String(), m.kgViewport.Width))
-	
-	// Handle scroll sync if needed
+
 	if !m.inspectorMode && len(m.kgTargets) > 0 {
-		cursorYTop := (m.dashboardCursor * 2) + 4 // header offset + empty line
-		cursorYBottom := cursorYTop + 1
+		cursorYTop := m.dashboardCursor * 5
+		cursorYBottom := cursorYTop + 4
 		if m.dashboardCursor == 0 {
 			m.kgViewport.SetYOffset(0)
 		} else if cursorYTop < m.kgViewport.YOffset {
@@ -353,39 +402,48 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "tab":
 			m.activePane = (m.activePane + 1) % 2
 			m.updateKGViewport()
+		case "1":
+			m.activeLogFilter = LogCategoryGeneral
+			m.rebuildLogsViewport(false)
+		case "2":
+			m.activeLogFilter = LogCategoryTools
+			m.rebuildLogsViewport(false)
+		case "3":
+			m.activeLogFilter = LogCategoryChat
+			m.rebuildLogsViewport(false)
+		case "4":
+			m.activeLogFilter = LogCategoryErrors
+			m.rebuildLogsViewport(false)
+		case "g":
+			m.collapsedSummaries = !m.collapsedSummaries
+			m.rebuildLogsViewport(false)
 		case "up", "k":
 			if m.activePane == 1 {
 				if m.inspectorMode {
-					m.kgViewport.LineUp(1)
-				} else {
-					if m.dashboardCursor > 0 {
-						m.dashboardCursor--
-						m.updateKGViewport()
-					}
+					m.kgViewport.ScrollUp(1)
+				} else if m.dashboardCursor > 0 {
+					m.dashboardCursor--
+					m.updateKGViewport()
 				}
-			} else if m.activePane == 0 {
-				m.logsViewport.LineUp(1)
+			} else {
+				m.logsViewport.ScrollUp(1)
 			}
 		case "down", "j":
 			if m.activePane == 1 {
 				if m.inspectorMode {
-					m.kgViewport.LineDown(1)
-				} else {
-					if m.dashboardCursor < len(m.kgTargets)-1 {
-						m.dashboardCursor++
-						m.updateKGViewport()
-					}
-				}
-			} else if m.activePane == 0 {
-				m.logsViewport.LineDown(1)
-			}
-		case "enter", " ":
-			if m.activePane == 1 && !m.inspectorMode {
-				if len(m.kgTargets) > 0 {
-					m.inspectorMode = true
-					m.kgViewport.SetYOffset(0) // reset scroll
+					m.kgViewport.ScrollDown(1)
+				} else if m.dashboardCursor < len(m.kgTargets)-1 {
+					m.dashboardCursor++
 					m.updateKGViewport()
 				}
+			} else {
+				m.logsViewport.ScrollDown(1)
+			}
+		case "enter", " ":
+			if m.activePane == 1 && !m.inspectorMode && len(m.kgTargets) > 0 {
+				m.inspectorMode = true
+				m.kgViewport.SetYOffset(0)
+				m.updateKGViewport()
 			}
 		case "esc", "backspace":
 			if m.activePane == 1 && m.inspectorMode {
@@ -399,13 +457,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 
 		headerHeight := lipgloss.Height(m.headerView())
-		verticalMarginHeight := headerHeight + 4
+		footerHeight := lipgloss.Height(m.footerView())
+		statusHeight := lipgloss.Height(m.statusBarView())
+		verticalMarginHeight := headerHeight + footerHeight + statusHeight + 4
 
 		logsWidth := ((msg.Width * 2) / 3) - 4
 		kgWidth := msg.Width - ((msg.Width * 2) / 3) - 4
 
-		if logsWidth < 0 { logsWidth = 0 }
-		if kgWidth < 0 { kgWidth = 0 }
+		if logsWidth < 0 {
+			logsWidth = 0
+		}
+		if kgWidth < 0 {
+			kgWidth = 0
+		}
 
 		kgHeight := max(0, msg.Height-verticalMarginHeight)
 
@@ -420,15 +484,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.kgViewport.Height = max(0, kgHeight)
 		}
 
-		m.logsViewport.SetContent(wordwrap.String(strings.Join(m.logs, "\n"), m.logsViewport.Width))
+		m.rebuildLogsViewport(true)
 		m.updateKGViewport()
 
 	case LogMsg:
-		m.logs = append(m.logs, msg.Text)
-		if m.ready {
-			m.logsViewport.SetContent(wordwrap.String(strings.Join(m.logs, "\n"), m.logsViewport.Width))
-			m.logsViewport.GotoBottom()
-		}
+		m.allLogs = append(m.allLogs, msg.Entry)
+		m.rebuildLogsViewport(true)
 
 	case KGUpdateMsg:
 		m.kgTargets = parseKG(msg.Data, m.kgTargets)
@@ -442,14 +503,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.finalReport = msg.Report
 		if m.finalReport != "" {
 			reportText := "\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Render("--- Final Report ---\n"+m.finalReport)
-			m.logs = append(m.logs, reportText)
-			if m.ready {
-				m.logsViewport.SetContent(wordwrap.String(strings.Join(m.logs, "\n"), m.logsViewport.Width))
-				m.logsViewport.GotoBottom()
-			}
+			m.allLogs = append(m.allLogs, LogEntry{Category: LogCategoryGeneral, Text: reportText})
+			m.rebuildLogsViewport(true)
 		}
-
-
 
 	case spinner.TickMsg:
 		if !m.finished {
@@ -463,8 +519,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg := msg.(type) {
 		case tea.KeyMsg:
 			switch msg.String() {
-			case "up", "down", "k", "j":
-				// Skip passing navigation keys to viewports, we handle them manually
+			case "up", "down", "k", "j", "1", "2", "3", "4", "g":
 			default:
 				if m.activePane == 0 {
 					m.logsViewport, cmd = m.logsViewport.Update(msg)
@@ -488,7 +543,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) headerView() string {
 	title := titleStyle.Render("Fire Starter")
-	
+
 	var headerStatus string
 	if m.finished {
 		headerStatus = statusStyle.Render("Agent finished.")
@@ -496,16 +551,65 @@ func (m Model) headerView() string {
 		spin := m.spinner.View()
 		headerStatus = spin + statusStyle.Render(" Agent is working...")
 	}
-	
-	headerStatus = "  " + headerStatus + "  "
 
+	headerStatus = "  " + headerStatus + "  "
 	availableWidth := m.width - lipgloss.Width(title) - lipgloss.Width(headerStatus) - 2
 	line := strings.Repeat("─", max(0, availableWidth))
-	
+
 	return lipgloss.JoinHorizontal(lipgloss.Center, title, headerStatus, lipgloss.NewStyle().Foreground(lipgloss.Color("62")).Render(line))
 }
 
+func (m Model) statusBarView() string {
+	pane := "Logs"
+	if m.activePane == 1 {
+		pane = "Knowledge Graph"
+	}
+	mode := "Dashboard"
+	if m.inspectorMode {
+		mode = "Inspector"
+	}
+	filterLabel := "All"
+	switch m.activeLogFilter {
+	case LogCategoryTools:
+		filterLabel = "Tools"
+	case LogCategoryChat:
+		filterLabel = "Chat"
+	case LogCategoryErrors:
+		filterLabel = "Errors"
+	}
+	content := fmt.Sprintf("Pane: %s   Mode: %s   Filter: %s   Targets: %d", pane, mode, filterLabel, len(m.kgTargets))
+	return statusBarStyle.Width(max(lipgloss.Width(content), m.width)).Render(content)
+}
 
+func (m Model) footerView() string {
+	filters := []struct {
+		label    string
+		category LogCategory
+	}{
+		{label: "1 All", category: LogCategoryGeneral},
+		{label: "2 Tools", category: LogCategoryTools},
+		{label: "3 Chat", category: LogCategoryChat},
+		{label: "4 Errors", category: LogCategoryErrors},
+	}
+
+	filterViews := make([]string, 0, len(filters))
+	for _, filter := range filters {
+		style := inactiveFilterStyle
+		if m.activeLogFilter == filter.category {
+			style = activeFilterStyle
+		}
+		filterViews = append(filterViews, style.Render(filter.label))
+	}
+
+	groupingLabel := inactiveFilterStyle.Render("g Expanded")
+	if m.collapsedSummaries {
+		groupingLabel = activeFilterStyle.Render("g Grouped")
+	}
+
+	keys := footerStyle.Render("Tab switch pane  j/k move  Enter inspect  Esc back  q quit")
+	controls := lipgloss.JoinHorizontal(lipgloss.Left, strings.Join(filterViews, " "), " ", groupingLabel)
+	return lipgloss.JoinVertical(lipgloss.Left, controls, keys)
+}
 
 func (m Model) View() string {
 	if !m.ready {
@@ -513,7 +617,6 @@ func (m Model) View() string {
 	}
 
 	logsContent := m.logsViewport.View()
-
 	activeColor := lipgloss.Color("205")
 	inactiveColor := lipgloss.Color("62")
 
@@ -525,7 +628,6 @@ func (m Model) View() string {
 		kgBorderColor = activeColor
 	}
 
-	// Logs Viewport
 	logsTitle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).Render(" Execution Log")
 	logsScrollStr := fmt.Sprintf(" %3.0f%% ", m.logsViewport.ScrollPercent()*100)
 	if m.logsViewport.TotalLineCount() <= m.logsViewport.Height {
@@ -535,13 +637,12 @@ func (m Model) View() string {
 	paddedLogs := lipgloss.NewStyle().Height(m.logsViewport.Height).Render(logsContent)
 	logsContentWithStatus := lipgloss.JoinVertical(lipgloss.Left, logsTitle, paddedLogs, logsStatus)
 
-	// KG Viewport
 	titleStr := " Knowledge Graph Dashboard"
 	if m.inspectorMode {
 		titleStr = " Target Inspector"
 	}
 	kgTitle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).Render(titleStr)
-	
+
 	var kgScrollStr string
 	if m.inspectorMode {
 		kgScrollStr = fmt.Sprintf(" %3.0f%% ", m.kgViewport.ScrollPercent()*100)
@@ -557,23 +658,14 @@ func (m Model) View() string {
 		}
 	}
 	kgStatus := lipgloss.NewStyle().Width(m.kgViewport.Width).Align(lipgloss.Right).Foreground(lipgloss.Color("240")).Render(kgScrollStr)
-	
 	paddedKg := lipgloss.NewStyle().Height(m.kgViewport.Height).Render(m.kgViewport.View())
-	
 	kgCombined := lipgloss.JoinVertical(lipgloss.Left, kgTitle, paddedKg, kgStatus)
 
-	logsStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(logsBorderColor).
-		Padding(0, 1)
-
-	kgStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(kgBorderColor).
-		Padding(0, 1)
+	logsStyle := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(logsBorderColor).Padding(0, 1)
+	kgStyle := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(kgBorderColor).Padding(0, 1)
 
 	split := lipgloss.JoinHorizontal(lipgloss.Top, logsStyle.Render(logsContentWithStatus), kgStyle.Render(kgCombined))
-	return lipgloss.JoinVertical(lipgloss.Left, m.headerView(), split)
+	return lipgloss.JoinVertical(lipgloss.Left, m.headerView(), m.statusBarView(), split, m.footerView())
 }
 
 func max(a, b int) int {
