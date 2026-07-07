@@ -9,6 +9,10 @@ import (
 	"time"
 )
 
+var (
+	securityHeadersSeen sync.Map
+)
+
 type SecurityHeadersResult struct {
 	Target string `json:"target"`
 	Status string `json:"status"`
@@ -76,7 +80,13 @@ func (m *SecurityHeaders) testHeaders(ctx context.Context, endpoint string) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotFound {
+		return
+	}
+
 	missing := []string{}
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	isHTML := strings.Contains(contentType, "text/html")
 
 	if resp.Header.Get("Content-Security-Policy") == "" {
 		missing = append(missing, "Content-Security-Policy")
@@ -84,17 +94,24 @@ func (m *SecurityHeaders) testHeaders(ctx context.Context, endpoint string) {
 	if resp.Header.Get("Strict-Transport-Security") == "" {
 		missing = append(missing, "Strict-Transport-Security")
 	}
-	if resp.Header.Get("X-Frame-Options") == "" {
+	if isHTML && resp.Header.Get("X-Frame-Options") == "" {
 		missing = append(missing, "X-Frame-Options (Clickjacking)")
 	}
 
 	if len(missing) > 0 {
+		detailStr := fmt.Sprintf("Missing headers: %s", strings.Join(missing, ", "))
+		
+		dedupKey := testURL + "|" + detailStr
+		if _, loaded := securityHeadersSeen.LoadOrStore(dedupKey, true); loaded {
+			return
+		}
+
 		m.Mu.Lock()
 		m.RecordPoC(req, nil, fmt.Sprintf("Missing Security Headers at: %s", testURL))
 		m.results = append(m.results, SecurityHeadersResult{
 			Target: m.Target,
 			Status: "vulnerable",
-			Detail: fmt.Sprintf("Missing headers: %s", strings.Join(missing, ", ")),
+			Detail: detailStr,
 		})
 		m.Mu.Unlock()
 	}

@@ -75,8 +75,15 @@ func scoreTool(def matrix.ToolDefinition, target *matrix.Target, snapshot matrix
 
 	for _, exec := range target.ExecutedTools {
 		if exec == def.Name {
-			return scoredTool{Definition: def, Score: -100, Reasons: []string{"already executed on this target"}}
+			if def.Name != "decision_http_request" {
+				return scoredTool{Definition: def, Score: -100, Reasons: []string{"already executed on this target"}}
+			}
 		}
+	}
+
+	if def.Name == "decision_http_request" {
+		score += 50
+		reasons = append(reasons, "http_request is globally available")
 	}
 
 	switch {
@@ -659,50 +666,74 @@ func runVulnerabilityHelperSubAgent(
 				targetUsed = strings.TrimSpace(ipStr)
 			}
 
-			tokens := kg.GetTokensForTarget(targetUsed)
-			if len(tokens) > 0 {
-				payload["cookies"] = strings.Join(tokens, "; ")
-			}
-			if _, hasUsername := payload["username"]; !hasUsername {
-				credentials := kg.GetCredentials()
-				if len(credentials) > 0 {
-					payload["username"] = credentials[0].Username
-					payload["password"] = credentials[0].Password
-				}
-			}
-
-			resultData, execErr := executor.ExecuteByToolName(tc.ToolName, payload, func(s string) {
-				log.Debug(s)
-			})
-
-			var res string
-			if execErr != nil {
-				res = fmt.Sprintf("TOOL_ERROR: %v", execErr)
-				log.Debugf("Helper tool execution failed: tool=%s error=%s", tc.ToolName, res)
+			sessionID, hasSession := args["session_id"].(string)
+			var sessionsToTest []string
+			if hasSession && sessionID != "" {
+				sessionsToTest = []string{sessionID}
 			} else {
-				if t, ok := payload["target"].(string); ok && strings.TrimSpace(t) != "" {
-					kg.MarkToolExecuted(strings.TrimSpace(t), tc.ToolName)
-				}
-				if u, ok := payload["url"].(string); ok && strings.TrimSpace(u) != "" {
-					kg.MarkToolExecuted(strings.TrimSpace(u), tc.ToolName)
-				}
-				if ip, ok := payload["ip"].(string); ok && strings.TrimSpace(ip) != "" {
-					kg.MarkToolExecuted(strings.TrimSpace(ip), tc.ToolName)
-				}
-
-				summary, _, extractErr := kg.ExtractIntelligence(ctx, model, tc.ToolName, targetUsed, payload, resultData)
-				if extractErr != nil {
-					log.Warnf("Helper intelligence extraction failed: %v", extractErr)
-					summary = fmt.Sprintf("Tool executed successfully but intelligence extraction failed: %v", extractErr)
-				}
-
-				if err := matrix.LogExecution(initialTarget, resultData); err != nil {
-					log.Warnf("Failed to log execution to SQLite: %v", err)
-				}
-
-				log.Infof("Helper tool execution success: tool=%s summary=%q", tc.ToolName, summary)
-				res = fmt.Sprintf("=== TOOL EXECUTION SUMMARY ===\n%s", summary)
+				sessionsToTest = []string{"unauthenticated", "default"}
 			}
+
+			var allSummaries []string
+			var res string
+
+			for _, sess := range sessionsToTest {
+				iterPayload := make(map[string]any)
+				for k, v := range payload {
+					iterPayload[k] = v
+				}
+
+				if sess != "unauthenticated" {
+					cookiesStr := kg.GetCookiesForRequest(sess, targetUsed)
+					if cookiesStr != "" {
+						iterPayload["cookies"] = cookiesStr
+					}
+					if _, hasUsername := iterPayload["username"]; !hasUsername {
+						credentials := kg.GetCredentials()
+						if len(credentials) > 0 {
+							iterPayload["username"] = credentials[0].Username
+							iterPayload["password"] = credentials[0].Password
+						}
+					}
+				} else {
+					iterPayload["cookies"] = ""
+				}
+
+				resultData, execErr := executor.ExecuteByToolName(tc.ToolName, iterPayload, func(s string) {
+					log.Debug(s)
+				})
+
+				if execErr != nil {
+					errStr := fmt.Sprintf("TOOL_ERROR (Session: %s): %v", sess, execErr)
+					allSummaries = append(allSummaries, errStr)
+					log.Debugf("Helper tool execution failed: tool=%s session=%s error=%s", tc.ToolName, sess, errStr)
+				} else {
+					if t, ok := iterPayload["target"].(string); ok && strings.TrimSpace(t) != "" {
+						kg.MarkToolExecuted(strings.TrimSpace(t), tc.ToolName)
+					}
+					if u, ok := iterPayload["url"].(string); ok && strings.TrimSpace(u) != "" {
+						kg.MarkToolExecuted(strings.TrimSpace(u), tc.ToolName)
+					}
+					if ip, ok := iterPayload["ip"].(string); ok && strings.TrimSpace(ip) != "" {
+						kg.MarkToolExecuted(strings.TrimSpace(ip), tc.ToolName)
+					}
+
+					summary, _, extractErr := kg.ExtractIntelligence(ctx, model, tc.ToolName, targetUsed, iterPayload, resultData)
+					if extractErr != nil {
+						log.Warnf("Helper intelligence extraction failed: %v", extractErr)
+						summary = fmt.Sprintf("Tool executed successfully but intelligence extraction failed: %v", extractErr)
+					}
+
+					if err := matrix.LogExecution(initialTarget, resultData); err != nil {
+						log.Warnf("Failed to log execution to SQLite: %v", err)
+					}
+
+					log.Infof("Helper tool execution success: tool=%s session=%s summary=%q", tc.ToolName, sess, summary)
+					allSummaries = append(allSummaries, fmt.Sprintf("[Session: %s] %s", sess, summary))
+				}
+			}
+
+			res = fmt.Sprintf("=== TOOL EXECUTION SUMMARY ===\n%s", strings.Join(allSummaries, "\n\n"))
 
 			toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
 				ToolCallID: tc.ToolCallID,
@@ -1031,7 +1062,7 @@ IP whitelist policy:
 		if targetObj != nil {
 			for _, t := range executor.Tools() {
 				toolStage := matrix.Phase(matrix.MapTechniqueToStage(t.Technique))
-				if toolStage == targetObj.CurrentPhase || toolStage == matrix.PhaseReconnaissance {
+				if toolStage == targetObj.CurrentPhase || toolStage == matrix.PhaseReconnaissance || t.Name == "decision_http_request" {
 					st := scoreTool(t, targetObj, snapshot)
 					if st.Score >= 0 {
 						scored = append(scored, st)
@@ -1482,69 +1513,82 @@ IP whitelist policy:
 				targetUsed = strings.TrimSpace(ipStr)
 			}
 
-			tokens := kg.GetTokensForTarget(targetUsed)
-			if len(tokens) > 0 {
-				payload["cookies"] = strings.Join(tokens, "; ")
-			}
-			if _, hasUsername := payload["username"]; !hasUsername {
-				credentials := kg.GetCredentials()
-				if len(credentials) > 0 {
-					payload["username"] = credentials[0].Username
-					payload["password"] = credentials[0].Password
-				}
-			}
-
-			resultData, execErr := executor.ExecuteByToolName(tc.ToolName, payload, func(s string) {
-				log.Debug(s)
-			})
-
-			var res string
-			if execErr != nil {
-				res = fmt.Sprintf("TOOL_ERROR: %v", execErr)
-				// log.Warnf("Tool error in %s: %v", tc.ToolName, execErr)
-				log.Debugf("TOOL_RESULT tool=%s status=error result=%s", tc.ToolName, res)
+			sessionID, hasSession := args["session_id"].(string)
+			
+			var sessionsToTest []string
+			if hasSession && sessionID != "" {
+				sessionsToTest = []string{sessionID}
 			} else {
-				executedPayloads[payloadHash] = true
-
-				targetUsed := initialTarget
-				if tStr, ok := payload["target"].(string); ok && strings.TrimSpace(tStr) != "" {
-					targetUsed = strings.TrimSpace(tStr)
-				} else if uStr, ok := payload["url"].(string); ok && strings.TrimSpace(uStr) != "" {
-					targetUsed = strings.TrimSpace(uStr)
-				} else if ipStr, ok := payload["ip"].(string); ok && strings.TrimSpace(ipStr) != "" {
-					targetUsed = strings.TrimSpace(ipStr)
-				}
-
-
-				if t, ok := payload["target"].(string); ok && strings.TrimSpace(t) != "" {
-					kg.MarkToolExecuted(strings.TrimSpace(t), tc.ToolName)
-				}
-				if u, ok := payload["url"].(string); ok && strings.TrimSpace(u) != "" {
-					kg.MarkToolExecuted(strings.TrimSpace(u), tc.ToolName)
-				}
-				if ip, ok := payload["ip"].(string); ok && strings.TrimSpace(ip) != "" {
-					kg.MarkToolExecuted(strings.TrimSpace(ip), tc.ToolName)
-				}
-
-				beforeGraph := kg.Snapshot()
-				summary, _, extractErr := kg.ExtractIntelligence(ctx, model, tc.ToolName, targetUsed, payload, resultData)
-				if extractErr != nil {
-					log.Warnf("Intelligence extraction failed: %v", extractErr)
-					summary = fmt.Sprintf("Tool executed successfully but intelligence extraction failed: %v", extractErr)
-				}
-
-				if err := matrix.LogExecution(initialTarget, resultData); err != nil {
-					log.Warnf("Failed to log execution to SQLite: %v", err)
-				}
-
-				afterGraph := kg.Snapshot()
-				log.Infof("KNOWLEDGE_GRAPH_UPDATE tool=%s delta=%s snapshot=%s", tc.ToolName, snapshotDelta(beforeGraph, afterGraph), summarizeSnapshot(afterGraph))
-				_, _ = canCompleteTarget(afterGraph, currentTarget, cfg.EfficiencyMode)
-				// log.Infof("NEXT_DECISION tool=%s recommendation=%s", tc.ToolName, recommendedNextAction(canCompleteAfter, submitReasonAfter))
-				log.Infof("TOOL_EXECUTION_SUMMARY tool=%s target=%s summary=%q", tc.ToolName, targetUsed, summary)
-				res = fmt.Sprintf("=== TOOL EXECUTION SUMMARY ===\n%s", summary)
-				log.Debugf("TOOL_RESULT tool=%s status=success result=%s", tc.ToolName, resultData)
+				sessionsToTest = []string{"unauthenticated", "default"}
 			}
+
+			var allSummaries []string
+			var res string
+
+			for _, sess := range sessionsToTest {
+				// Clone payload so we don't bleed state between loop iterations
+				iterPayload := make(map[string]any)
+				for k, v := range payload {
+					iterPayload[k] = v
+				}
+				
+				if sess != "unauthenticated" {
+					cookiesStr := kg.GetCookiesForRequest(sess, targetUsed)
+					if cookiesStr != "" {
+						iterPayload["cookies"] = cookiesStr
+					}
+					if _, hasUsername := iterPayload["username"]; !hasUsername {
+						credentials := kg.GetCredentials() // Still using global credentials array for backward compatibility
+						if len(credentials) > 0 {
+							iterPayload["username"] = credentials[0].Username
+							iterPayload["password"] = credentials[0].Password
+						}
+					}
+				} else {
+					iterPayload["cookies"] = ""
+				}
+
+				resultData, execErr := executor.ExecuteByToolName(tc.ToolName, iterPayload, func(s string) {
+					log.Debug(s)
+				})
+
+				if execErr != nil {
+					errStr := fmt.Sprintf("TOOL_ERROR (Session: %s): %v", sess, execErr)
+					allSummaries = append(allSummaries, errStr)
+					log.Debugf("TOOL_RESULT tool=%s session=%s status=error result=%s", tc.ToolName, sess, errStr)
+				} else {
+					executedPayloads[payloadHash] = true
+					
+					if t, ok := iterPayload["target"].(string); ok && strings.TrimSpace(t) != "" {
+						kg.MarkToolExecuted(strings.TrimSpace(t), tc.ToolName)
+					}
+					if u, ok := iterPayload["url"].(string); ok && strings.TrimSpace(u) != "" {
+						kg.MarkToolExecuted(strings.TrimSpace(u), tc.ToolName)
+					}
+					if ip, ok := iterPayload["ip"].(string); ok && strings.TrimSpace(ip) != "" {
+						kg.MarkToolExecuted(strings.TrimSpace(ip), tc.ToolName)
+					}
+
+					beforeGraph := kg.Snapshot()
+					summary, _, extractErr := kg.ExtractIntelligence(ctx, model, tc.ToolName, targetUsed, iterPayload, resultData)
+					if extractErr != nil {
+						log.Warnf("Intelligence extraction failed: %v", extractErr)
+						summary = fmt.Sprintf("Tool executed successfully but intelligence extraction failed: %v", extractErr)
+					}
+
+					if err := matrix.LogExecution(initialTarget, resultData); err != nil {
+						log.Warnf("Failed to log execution to SQLite: %v", err)
+					}
+
+					afterGraph := kg.Snapshot()
+					log.Infof("KNOWLEDGE_GRAPH_UPDATE tool=%s session=%s delta=%s snapshot=%s", tc.ToolName, sess, snapshotDelta(beforeGraph, afterGraph), summarizeSnapshot(afterGraph))
+					_, _ = canCompleteTarget(afterGraph, currentTarget, cfg.EfficiencyMode)
+					log.Infof("TOOL_EXECUTION_SUMMARY tool=%s target=%s session=%s summary=%q", tc.ToolName, targetUsed, sess, summary)
+					allSummaries = append(allSummaries, fmt.Sprintf("[Session: %s] %s", sess, summary))
+				}
+			}
+			
+			res = fmt.Sprintf("=== TOOL EXECUTION SUMMARY ===\n%s", strings.Join(allSummaries, "\n\n"))
 
 			toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
 				ToolCallID: tc.ToolCallID,

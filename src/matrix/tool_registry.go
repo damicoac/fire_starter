@@ -18,7 +18,7 @@ func NewToolRegistry(decisions []Decision) *ToolRegistry {
 	for _, decision := range decisions {
 		name := toolNameFromDecision(decision)
 		description := fmt.Sprintf(
-			"Use Case: %s\nFunction: %s\nProblem Solved: %s\nContext: Select this tool when applicable for lateral movement and the recon, probe, test, repeat loop. Feel free to use this dynamically as needed. Note that state/cookies are persisted automatically.",
+			"Use Case: %s\nFunction: %s\nProblem Solved: %s\nContext: Select this tool when applicable for lateral movement and the recon, probe, test, repeat loop. Feel free to use this dynamically as needed. State/cookies are injected based on the 'session_id' provided.",
 			decision.UseCase, decision.Function, decision.ProblemTheToolSolves,
 		)
 
@@ -37,6 +37,10 @@ func NewToolRegistry(decisions []Decision) *ToolRegistry {
 					"url": map[string]any{
 						"type":        "string",
 						"description": "The target URL (optional).",
+					},
+					"session_id": map[string]any{
+						"type":        "string",
+						"description": "Optional session ID to test with a specific stored credential/role (e.g., 'admin', 'default'). If omitted, the request will be run unauthenticated first, then run a second time with the 'default' session.",
 					},
 					"payload": map[string]any{
 						"type":        "object",

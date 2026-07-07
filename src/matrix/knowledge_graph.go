@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"path/filepath"
 	"regexp"
@@ -155,15 +156,16 @@ type Target struct {
 }
 
 type KnowledgeGraph struct {
-	mu            sync.RWMutex
-	BaseDomain    string             `json:"base_domain"`
-	TargetDomains []string           `json:"target_domains"`
-	allowedIPs    map[string]bool
-	ConfigTarget  string             `json:"config_target"`
-	Targets       map[string]*Target `json:"targets"`
-	Context       map[string]any        `json:"context"`
-	OnUpdate      func(*KnowledgeGraph) `json:"-"`
-	updateChan    chan struct{}         `json:"-"`
+	mu             sync.RWMutex
+	BaseDomain     string                      `json:"base_domain"`
+	TargetDomains  []string                    `json:"target_domains"`
+	allowedIPs     map[string]bool
+	ConfigTarget   string                      `json:"config_target"`
+	Targets        map[string]*Target          `json:"targets"`
+	SessionCookies map[string][]*http.Cookie   `json:"session_cookies"`
+	Context        map[string]any              `json:"context"`
+	OnUpdate       func(*KnowledgeGraph)       `json:"-"`
+	updateChan     chan struct{}               `json:"-"`
 }
 
 type KnowledgeSnapshot struct {
@@ -178,11 +180,12 @@ type KnowledgeSnapshot struct {
 
 func NewKnowledgeGraph() *KnowledgeGraph {
 	kg := &KnowledgeGraph{
-		Targets:       make(map[string]*Target),
-		Context:       make(map[string]any),
-		TargetDomains: make([]string, 0),
-		allowedIPs:    make(map[string]bool),
-		updateChan:    make(chan struct{}, 1),
+		Targets:        make(map[string]*Target),
+		SessionCookies: make(map[string][]*http.Cookie),
+		Context:        make(map[string]any),
+		TargetDomains:  make([]string, 0),
+		allowedIPs:     make(map[string]bool),
+		updateChan:     make(chan struct{}, 1),
 	}
 	go func() {
 		for range kg.updateChan {
@@ -252,6 +255,11 @@ func (kg *KnowledgeGraph) getOrCreateTarget(value string, targetType string) *Ta
 	return kg.Targets[value]
 }
 
+type ExtractedToken struct {
+	SessionID string `json:"session_id"`
+	Token     string `json:"token"`
+}
+
 type ExtractedIntelligence struct {
 	DiscoveredIPs   []string `json:"discovered_ips"`
 	DiscoveredURLs  []string `json:"discovered_urls"`
@@ -259,7 +267,7 @@ type ExtractedIntelligence struct {
 		IP   string `json:"ip"`
 		Port int    `json:"port"`
 	} `json:"open_ports"`
-	HarvestedTokens []string         `json:"harvested_tokens"`
+	HarvestedTokens []ExtractedToken `json:"harvested_tokens"`
 	Vulnerabilities []string         `json:"vulnerabilities"`
 	Credentials     []CredentialInfo `json:"credentials"`
 	Summary         string           `json:"summary"`
@@ -405,7 +413,7 @@ Respond STRICTLY in the following JSON format:
   "discovered_ips": ["list of IPs"],
   "discovered_urls": ["list of URLs"],
   "open_ports": [{"ip": "1.2.3.4", "port": 80}],
-  "harvested_tokens": ["list of tokens/cookies"],
+  "harvested_tokens": [{"session_id": "name_of_role_or_user", "token": "the_cookie_or_token"}],
   "vulnerabilities": ["list of vulnerabilities (Provide descriptions only. DO NOT include reproduction steps or curl commands here. They are automatically extracted.)"],
   "credentials": [{"username": "user", "password": "pw"}],
   "summary": "A concise 1-3 sentence summary of what the tool achieved and found."
@@ -465,7 +473,7 @@ Output:
 		kg.AddPort(p.IP, p.Port)
 	}
 	for _, t := range extracted.HarvestedTokens {
-		kg.AddToken(target, t)
+		kg.AddToken(target, t.SessionID, t.Token)
 	}
 	for _, v := range extracted.Vulnerabilities {
 		kg.AddVulnerability(target, v)
@@ -542,16 +550,16 @@ func (kg *KnowledgeGraph) regexExtract(toolName, target string, payload map[stri
 					if key == "cookies" {
 						switch cvals := child.(type) {
 						case string:
-							kg.AddToken(target, cvals)
+							kg.AddToken(target, "default", cvals)
 						case []any:
 							for _, c := range cvals {
 								if cStr, ok := c.(string); ok {
-									kg.AddToken(target, cStr)
+									kg.AddToken(target, "default", cStr)
 								}
 							}
 						case []string:
 							for _, c := range cvals {
-								kg.AddToken(target, c)
+								kg.AddToken(target, "default", c)
 							}
 						}
 					}
@@ -647,19 +655,21 @@ func (kg *KnowledgeGraph) ToJSON(target string) ([]byte, error) {
 	}
 
 	type KGWrapper struct {
-		BaseDomain    string             `json:"base_domain"`
-		TargetDomains []string           `json:"target_domains"`
-		ConfigTarget  string             `json:"config_target"`
-		Targets       map[string]*Target `json:"targets"`
-		Context       map[string]any     `json:"context"`
+		BaseDomain     string             `json:"base_domain"`
+		TargetDomains  []string           `json:"target_domains"`
+		ConfigTarget   string             `json:"config_target"`
+		Targets        map[string]*Target `json:"targets"`
+		SessionCookies map[string][]*http.Cookie `json:"session_cookies"`
+		Context        map[string]any     `json:"context"`
 	}
 
 	wrapper := KGWrapper{
-		BaseDomain:    kg.BaseDomain,
-		TargetDomains: kg.TargetDomains,
-		ConfigTarget:  kg.ConfigTarget,
-		Targets:       targetsCopy,
-		Context:       kg.Context,
+		BaseDomain:     kg.BaseDomain,
+		TargetDomains:  kg.TargetDomains,
+		ConfigTarget:   kg.ConfigTarget,
+		Targets:        targetsCopy,
+		SessionCookies: kg.SessionCookies,
+		Context:        kg.Context,
 	}
 
 	return json.Marshal(wrapper)
@@ -887,22 +897,87 @@ func (kg *KnowledgeGraph) AddTestCase(tc TestCase) {
 	}
 }
 
-func (kg *KnowledgeGraph) AddToken(targetValue string, token string) {
+func parseCookieStr(s string, defaultDomain string) *http.Cookie {
+	c := &http.Cookie{Path: "/"}
+	s = strings.TrimPrefix(s, "Cookie:")
+	s = strings.TrimSpace(s)
+	parts := strings.Split(s, ";")
+	for i, part := range parts {
+		part = strings.TrimSpace(part)
+		if i == 0 {
+			kv := strings.SplitN(part, "=", 2)
+			c.Name = strings.TrimSpace(kv[0])
+			if len(kv) > 1 {
+				c.Value = strings.TrimSpace(kv[1])
+			}
+		} else {
+			kv := strings.SplitN(part, "=", 2)
+			key := strings.ToLower(strings.TrimSpace(kv[0]))
+			val := ""
+			if len(kv) > 1 {
+				val = strings.TrimSpace(kv[1])
+			}
+			switch key {
+			case "domain":
+				c.Domain = val
+			case "path":
+				c.Path = val
+			case "httponly":
+				c.HttpOnly = true
+			case "secure":
+				c.Secure = true
+			}
+		}
+	}
+	if c.Domain == "" && defaultDomain != "" {
+		if u, err := url.Parse(defaultDomain); err == nil && u.Hostname() != "" {
+			c.Domain = u.Hostname()
+		} else if !strings.HasPrefix(defaultDomain, "http") {
+			if u, err := url.Parse("https://" + defaultDomain); err == nil && u.Hostname() != "" {
+				c.Domain = u.Hostname()
+			} else {
+				c.Domain = defaultDomain
+			}
+		}
+	}
+	return c
+}
+
+func (kg *KnowledgeGraph) AddToken(targetValue string, sessionID string, token string) {
 	defer kg.triggerUpdate()
 	kg.mu.Lock()
 	defer kg.mu.Unlock()
+	
+	if sessionID == "" {
+		sessionID = "default"
+	}
 	
 	t := kg.getOrCreateTarget(targetValue, "url")
 	if t == nil {
 		return
 	}
+
+	c := parseCookieStr(token, targetValue)
+	
+	if kg.SessionCookies == nil {
+		kg.SessionCookies = make(map[string][]*http.Cookie)
+	}
+	
+	for _, existing := range kg.SessionCookies[sessionID] {
+		if existing.Name == c.Name && existing.Value == c.Value {
+			return // already exists
+		}
+	}
+	
+	kg.SessionCookies[sessionID] = append(kg.SessionCookies[sessionID], c)
+	
 	for _, existing := range t.Tokens {
 		if existing == token {
 			return
 		}
 	}
 	t.Tokens = append(t.Tokens, token)
-	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=harvested_tokens target=%s token_len=%d", targetValue, len(token))
+	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=harvested_tokens target=%s session=%s token_len=%d", targetValue, sessionID, len(token))
 }
 
 func (kg *KnowledgeGraph) AddCredential(targetValue string, username string, password string) {
@@ -1083,34 +1158,59 @@ func isDomainOrSubdomain(host, parentDomain string) bool {
 	return strings.HasSuffix(host, "."+parentDomain)
 }
 
-func (kg *KnowledgeGraph) GetTokensForTarget(targetValue string) []string {
+func (kg *KnowledgeGraph) GetCookiesForRequest(sessionID string, targetURL string) string {
 	kg.mu.RLock()
 	defer kg.mu.RUnlock()
 
-	targetValue = NormalizeURL(targetValue)
-	targetHost := getHostnameOfNormalizedTarget(targetValue)
-	if targetHost == "" {
+	if kg.SessionCookies == nil || len(kg.SessionCookies[sessionID]) == 0 {
+		return ""
+	}
+	
+	if !strings.HasPrefix(targetURL, "http://") && !strings.HasPrefix(targetURL, "https://") {
+		targetURL = "https://" + targetURL
+	}
+	parsedURL, err := url.Parse(targetURL)
+	if err != nil {
+		return ""
+	}
+	
+	reqHost := parsedURL.Hostname()
+	reqPath := parsedURL.Path
+	if reqPath == "" {
+		reqPath = "/"
+	}
+
+	var validCookies []string
+	for _, cookie := range kg.SessionCookies[sessionID] {
+		// Domain match
+		domainMatch := false
+		if cookie.Domain == "" {
+			domainMatch = true // Assume valid if no domain set
+		} else {
+			domainMatch = isDomainOrSubdomain(reqHost, cookie.Domain) || isDomainOrSubdomain(cookie.Domain, reqHost)
+		}
+		
+		// Path match
+		pathMatch := false
+		if cookie.Path == "" || cookie.Path == "/" {
+			pathMatch = true
+		} else {
+			pathMatch = strings.HasPrefix(reqPath, cookie.Path)
+		}
+		
+		if domainMatch && pathMatch {
+			validCookies = append(validCookies, fmt.Sprintf("%s=%s", cookie.Name, cookie.Value))
+		}
+	}
+	
+	return strings.Join(validCookies, "; ")
+}
+
+func (kg *KnowledgeGraph) GetTokensForTarget(targetValue string) []string {
+	cookiesStr := kg.GetCookiesForRequest("default", targetValue)
+	if cookiesStr == "" {
 		return nil
 	}
-
-	var tokens []string
-	seen := make(map[string]bool)
-
-	for _, t := range kg.Targets {
-		storedHost := getHostnameOfNormalizedTarget(t.Value)
-		if storedHost == "" {
-			continue
-		}
-
-		if isDomainOrSubdomain(targetHost, storedHost) || isDomainOrSubdomain(storedHost, targetHost) {
-			for _, tok := range t.Tokens {
-				if !seen[tok] {
-					seen[tok] = true
-					tokens = append(tokens, tok)
-				}
-			}
-		}
-	}
-	return tokens
+	return strings.Split(cookiesStr, "; ")
 }
 

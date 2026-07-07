@@ -64,12 +64,11 @@ func TestKnowledgeGraph_Scoring(t *testing.T) {
 func TestKnowledgeGraph_GetTokensForTarget(t *testing.T) {
 	kg := NewKnowledgeGraph()
 
-	// Add targets and tokens
-	kg.AddToken("example.com", "cookie_example")
-	kg.AddToken("sub.example.com", "cookie_sub")
-	kg.AddToken("other.com", "cookie_other")
-	kg.AddToken("192.168.1.1", "cookie_ip1")
-	kg.AddToken("192.168.1.2", "cookie_ip2")
+	kg.AddToken("example.com", "default", "cookie_example=1")
+	kg.AddToken("sub.example.com", "default", "cookie_sub=1")
+	kg.AddToken("other.com", "default", "cookie_other=1")
+	kg.AddToken("192.168.1.1", "default", "cookie_ip1=1")
+	kg.AddToken("192.168.1.2", "default", "cookie_ip2=1")
 
 	// Helper to check if slice contains element
 	contains := func(slice []string, val string) bool {
@@ -83,43 +82,43 @@ func TestKnowledgeGraph_GetTokensForTarget(t *testing.T) {
 
 	// Test 1: exact match
 	tokens := kg.GetTokensForTarget("example.com/api/v1")
-	if !contains(tokens, "cookie_example") {
+	if !contains(tokens, "cookie_example=1") {
 		t.Errorf("Expected tokens to contain cookie_example, got %v", tokens)
 	}
-	if contains(tokens, "cookie_other") {
+	if contains(tokens, "cookie_other=1") {
 		t.Errorf("Expected tokens NOT to contain cookie_other, got %v", tokens)
 	}
 
 	// Test 2: subdomain retrieval (should get both example.com and sub.example.com tokens)
 	tokensSub := kg.GetTokensForTarget("sub.example.com/test")
-	if !contains(tokensSub, "cookie_sub") || !contains(tokensSub, "cookie_example") {
+	if !contains(tokensSub, "cookie_sub=1") || !contains(tokensSub, "cookie_example=1") {
 		t.Errorf("Expected sub.example.com tokens to contain both cookie_sub and cookie_example, got %v", tokensSub)
 	}
-	if contains(tokensSub, "cookie_other") {
+	if contains(tokensSub, "cookie_other=1") {
 		t.Errorf("Expected sub.example.com tokens NOT to contain cookie_other, got %v", tokensSub)
 	}
 
 	// Test 3: parent domain retrieval (should get sub.example.com tokens as well because they share domain scope)
 	tokensParent := kg.GetTokensForTarget("example.com")
-	if !contains(tokensParent, "cookie_example") || !contains(tokensParent, "cookie_sub") {
+	if !contains(tokensParent, "cookie_example=1") || !contains(tokensParent, "cookie_sub=1") {
 		t.Errorf("Expected example.com tokens to contain both cookie_example and cookie_sub, got %v", tokensParent)
 	}
 
 	// Test 4: unrelated domain isolation
 	tokensOther := kg.GetTokensForTarget("other.com")
-	if !contains(tokensOther, "cookie_other") {
+	if !contains(tokensOther, "cookie_other=1") {
 		t.Errorf("Expected other.com tokens to contain cookie_other, got %v", tokensOther)
 	}
-	if contains(tokensOther, "cookie_example") || contains(tokensOther, "cookie_sub") {
+	if contains(tokensOther, "cookie_example=1") || contains(tokensOther, "cookie_sub=1") {
 		t.Errorf("Expected other.com tokens NOT to contain example cookies, got %v", tokensOther)
 	}
 
 	// Test 5: IP isolation
 	tokensIP1 := kg.GetTokensForTarget("192.168.1.1")
-	if !contains(tokensIP1, "cookie_ip1") {
+	if !contains(tokensIP1, "cookie_ip1=1") {
 		t.Errorf("Expected 192.168.1.1 tokens to contain cookie_ip1, got %v", tokensIP1)
 	}
-	if contains(tokensIP1, "cookie_ip2") {
+	if contains(tokensIP1, "cookie_ip2=1") {
 		t.Errorf("Expected 192.168.1.1 tokens NOT to contain cookie_ip2, got %v", tokensIP1)
 	}
 }
