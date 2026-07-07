@@ -13,6 +13,10 @@ import (
 	"time"
 )
 
+var (
+	componentVersionSeen sync.Map
+)
+
 type ComponentVersionResult struct {
 	Target string `json:"target"`
 	Status string `json:"status"`
@@ -159,6 +163,16 @@ func (m *ComponentVersionAnalyzer) activeScan(ctx context.Context, base *url.URL
 }
 
 func (m *ComponentVersionAnalyzer) addResult(detail string) {
+	parsed, _ := url.Parse(m.Target)
+	host := ""
+	if parsed != nil {
+		host = parsed.Host
+	}
+	dedupKey := host + "|" + detail
+	if _, loaded := componentVersionSeen.LoadOrStore(dedupKey, true); loaded {
+		return
+	}
+
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
 	m.RecordPoC(nil, nil, detail)
