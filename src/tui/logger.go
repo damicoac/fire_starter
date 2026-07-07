@@ -9,8 +9,20 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// ProgramWriter acts as an io.Writer that forwards written bytes
-// as LogMsg to a running Bubble Tea program.
+type LogCategory string
+
+const (
+	LogCategoryGeneral LogCategory = "general"
+	LogCategoryTools   LogCategory = "tools"
+	LogCategoryChat    LogCategory = "chat"
+	LogCategoryErrors  LogCategory = "errors"
+)
+
+type LogEntry struct {
+	Category LogCategory
+	Text     string
+}
+
 type ProgramWriter struct {
 	Program *tea.Program
 }
@@ -24,98 +36,92 @@ func NewProgramWriter(p *tea.Program) *ProgramWriter {
 func (w *ProgramWriter) Write(p []byte) (n int, err error) {
 	if w.Program != nil {
 		text := strings.TrimRight(string(p), "\r\n")
+		if text == "" {
+			return len(p), nil
+		}
 		if strings.Contains(text, "KNOWLEDGE_GRAPH_UPDATE") {
-			return len(p), nil // Suppress this log, we'll use the sidebar instead
+			return len(p), nil
 		}
 		if strings.Contains(text, "Cookie.Value; dropping invalid bytes") || strings.Contains(text, "net/http: invalid byte") {
 			return len(p), nil
 		}
 
-		// Strip charmbracelet/log default prefix (date time level)
 		parts := strings.SplitN(text, " ", 4)
 		if len(parts) >= 4 && len(parts[0]) == 10 && strings.Contains(parts[0], "/") && len(parts[1]) == 8 && strings.Contains(parts[1], ":") {
 			text = parts[3]
 		}
 
-		formatted := formatLogLine(text)
-		w.Program.Send(LogMsg{Text: formatted})
+		w.Program.Send(LogMsg{Entry: formatLogLine(text)})
 	}
 	return len(p), nil
 }
 
 var (
-	timeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-
-	loopBadge   = lipgloss.NewStyle().Background(lipgloss.Color("205")).Foreground(lipgloss.Color("0")).Bold(true).Padding(0, 1)
-	toolBadge   = lipgloss.NewStyle().Background(lipgloss.Color("86")).Foreground(lipgloss.Color("0")).Bold(true).Padding(0, 1)
-	chatBadge   = lipgloss.NewStyle().Background(lipgloss.Color("111")).Foreground(lipgloss.Color("0")).Bold(true).Padding(0, 1)
-	errorBadge  = lipgloss.NewStyle().Background(lipgloss.Color("196")).Foreground(lipgloss.Color("255")).Bold(true).Padding(0, 1)
-	updateBadge = lipgloss.NewStyle().Background(lipgloss.Color("42")).Foreground(lipgloss.Color("0")).Bold(true).Padding(0, 1)
+	timeStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	loopBadge       = lipgloss.NewStyle().Background(lipgloss.Color("205")).Foreground(lipgloss.Color("0")).Bold(true).Padding(0, 1)
+	toolBadge       = lipgloss.NewStyle().Background(lipgloss.Color("86")).Foreground(lipgloss.Color("0")).Bold(true).Padding(0, 1)
+	chatBadge       = lipgloss.NewStyle().Background(lipgloss.Color("111")).Foreground(lipgloss.Color("0")).Bold(true).Padding(0, 1)
+	errorBadge      = lipgloss.NewStyle().Background(lipgloss.Color("196")).Foreground(lipgloss.Color("255")).Bold(true).Padding(0, 1)
+	updateBadge     = lipgloss.NewStyle().Background(lipgloss.Color("42")).Foreground(lipgloss.Color("0")).Bold(true).Padding(0, 1)
 	helperToolBadge = lipgloss.NewStyle().Background(lipgloss.Color("28")).Foreground(lipgloss.Color("255")).Bold(true).Padding(0, 1)
-
-	quoteStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("111")).
-			Border(lipgloss.NormalBorder(), false, false, false, true).
-			BorderForeground(lipgloss.Color("111")).
-			PaddingLeft(1)
-
-	summaryStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("250")).
-			Border(lipgloss.NormalBorder(), false, false, false, true).
-			BorderForeground(lipgloss.Color("42")).
-			PaddingLeft(1)
+	quoteStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("111")).Border(lipgloss.NormalBorder(), false, false, false, true).BorderForeground(lipgloss.Color("111")).PaddingLeft(1)
+	summaryStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Border(lipgloss.NormalBorder(), false, false, false, true).BorderForeground(lipgloss.Color("42")).PaddingLeft(1)
 )
 
-func formatLogLine(line string) string {
+func formatLogLine(line string) LogEntry {
 	ts := timeStyle.Render(time.Now().Format("15:04:05"))
+	lowerLine := strings.ToLower(line)
 
 	if strings.Contains(line, "RED_TEAM_LOOP") {
 		badge := loopBadge.Render("RED_TEAM_LOOP")
 		rest := strings.Replace(line, "RED_TEAM_LOOP", badge, 1)
-		return ts + " " + rest
+		return LogEntry{Category: LogCategoryGeneral, Text: ts + " " + rest}
 	}
 	if strings.Contains(line, "TOOL_SELECTED") {
 		badge := toolBadge.Render("TOOL_SELECTED")
 		rest := strings.Replace(line, "TOOL_SELECTED", badge, 1)
-		return ts + " " + rest
+		return LogEntry{Category: LogCategoryTools, Text: ts + " " + rest}
 	}
 	if strings.Contains(line, "Helper tool call:") {
 		badge := helperToolBadge.Render("HELPER_TOOL_CALL")
 		rest := strings.Replace(line, "Helper tool call:", badge, 1)
-		return ts + " " + rest
+		return LogEntry{Category: LogCategoryTools, Text: ts + " " + rest}
 	}
 	if strings.Contains(line, "Helper tool execution success:") {
 		badge := helperToolBadge.Render("HELPER_TOOL_SUCCESS")
 		rest := strings.Replace(line, "Helper tool execution success:", badge, 1)
-		return ts + " " + rest
+		return LogEntry{Category: LogCategoryTools, Text: ts + " " + rest}
 	}
 	if strings.Contains(line, "KNOWLEDGE_GRAPH_UPDATE") {
 		badge := updateBadge.Render("KNOWLEDGE_GRAPH_UPDATE")
 		rest := strings.Replace(line, "KNOWLEDGE_GRAPH_UPDATE", badge, 1)
-		return ts + " " + rest
+		return LogEntry{Category: LogCategoryTools, Text: ts + " " + rest}
 	}
 	if strings.Contains(line, "LLM_CHAT_MESSAGE") {
 		badge := chatBadge.Render("LLM_CHAT_MESSAGE")
 		rest := strings.Replace(line, "LLM_CHAT_MESSAGE", badge, 1)
-		
+
 		idx := strings.Index(line, `text="`)
 		if idx != -1 {
 			quoted := line[idx+5:]
 			unquoted, err := strconv.Unquote(quoted)
 			if err == nil {
-				return ts + " " + badge + "\n" + quoteStyle.Render(strings.TrimSpace(unquoted))
+				return LogEntry{Category: LogCategoryChat, Text: ts + " " + badge + "\n" + quoteStyle.Render(strings.TrimSpace(unquoted))}
 			}
 		}
-		return ts + " " + rest
+		return LogEntry{Category: LogCategoryChat, Text: ts + " " + rest}
 	}
-	if strings.Contains(line, "TOOL_ERROR") {
-		badge := errorBadge.Render("TOOL_ERROR")
-		rest := strings.Replace(line, "TOOL_ERROR", badge, 1)
-		return ts + " " + rest
+	if strings.Contains(line, "TOOL_ERROR") || strings.Contains(lowerLine, "analysis failed") || strings.Contains(lowerLine, "fatal") || strings.Contains(lowerLine, " error ") {
+		badge := errorBadge.Render("ERROR")
+		if strings.Contains(line, "TOOL_ERROR") {
+			rest := strings.Replace(line, "TOOL_ERROR", badge, 1)
+			return LogEntry{Category: LogCategoryErrors, Text: ts + " " + rest}
+		}
+		return LogEntry{Category: LogCategoryErrors, Text: ts + " " + badge + " " + line}
 	}
 	if strings.Contains(line, "TOOL_EXECUTION_SUMMARY") {
 		badge := toolBadge.Render("TOOL_EXECUTION_SUMMARY")
-		
+
 		toolPrefix := "tool="
 		targetPrefix := "target="
 		summaryPrefix := `summary="`
@@ -123,36 +129,35 @@ func formatLogLine(line string) string {
 		tIdx := strings.Index(line, toolPrefix)
 		tgtIdx := strings.Index(line, targetPrefix)
 		sIdx := strings.Index(line, summaryPrefix)
-		
+
 		if tIdx != -1 && sIdx != -1 {
 			var toolName string
 			var targetName string
-			
+
 			if tgtIdx != -1 && tgtIdx < sIdx {
 				toolName = strings.TrimSpace(line[tIdx+len(toolPrefix) : tgtIdx])
 				targetName = strings.TrimSpace(line[tgtIdx+len(targetPrefix) : sIdx])
 			} else {
 				toolName = strings.TrimSpace(line[tIdx+len(toolPrefix) : sIdx])
 			}
-			
+
 			quotedSummary := line[sIdx+len(`summary=`):]
-			
 			unquoted, err := strconv.Unquote(quotedSummary)
 			if err == nil {
-				// Replace literal "\n" sequences with actual newlines
 				unquoted = strings.ReplaceAll(unquoted, `\n`, "\n")
-				
+
 				headerText := " (" + toolName + ")"
 				if targetName != "" {
 					headerText = " (" + toolName + " on " + targetName + ")"
 				}
 				header := ts + " " + badge + lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true).Render(headerText)
 				body := summaryStyle.Render(strings.TrimSpace(unquoted))
-				return header + "\n" + body
+				return LogEntry{Category: LogCategoryTools, Text: header + "\n" + body}
 			}
 		}
 		rest := strings.Replace(line, "TOOL_EXECUTION_SUMMARY", badge, 1)
-		return ts + " " + rest
+		return LogEntry{Category: LogCategoryTools, Text: ts + " " + rest}
 	}
-	return ts + " " + line
+
+	return LogEntry{Category: LogCategoryGeneral, Text: ts + " " + line}
 }

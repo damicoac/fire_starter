@@ -1,71 +1,98 @@
 # Test and Verification Guide
 
-## 1) Run full automated tests
+This guide documents the project verification workflow and the checks worth running after code or documentation changes.
+
+## 1. Full automated test suite
 
 ```bash
 go test ./...
 ```
 
-## 2) Run focused package tests
+## 2. Focused package suites
 
 ```bash
-go test ./src/agent ./src/matrix ./src/modules
+go test ./src/agent ./src/matrix ./src/modules/...
 ```
 
-## 3) High-value behavioral checks covered by tests
+## 3. CI expectations
 
-### Agent workflow (`src/agent/workflow_test.go`)
+GitHub Actions runs:
 
-- Recon tools remain available outside recon phase (always-recon exception).
-- Phase advancement gating requires evidence (e.g., discovered targets, findings).
-- Final submit gating requires required phase coverage and vulnerability evidence.
-- Already-executed tools receive scoring penalties.
+- Go `1.26.2`
+- `go test ./...`
+- `golangci-lint`
 
-### Matrix execution (`src/matrix/real_executor_test.go`)
+If local results differ from CI, confirm your Go version first.
 
-- Technique-to-phase mapping coverage (`MapTechniqueToStage`).
-- Tool lookup behavior for missing identifiers/tool names.
-- Payload normalization helpers (`payloadString`, `payloadInt`) across edge inputs.
-- Target validation and cross-population behavior for `ip`/`url`.
-- Representative module execution paths (including OOB-enabled SSTI path).
+## 4. High-value behavioral coverage
 
-### Knowledge graph (`src/matrix/knowledge_graph_test.go`)
+### Agent workflow (`src/agent/workflow.go`)
 
-- Signal extraction from JSON and malformed text outputs.
-- Deduplication logic for cookies/tokens and entities.
-- Scoring updates for repeated discoveries and open-port enrichment.
-- Concurrent update safety under goroutines.
+Tests cover behavior such as:
 
-## 4) Manual smoke test (CLI)
+- Provider initialization and control-loop execution paths
+- Recon-tool availability outside pure recon scoring
+- Phase advancement gating based on discovered evidence
+- Submission and target-completion guardrails
+- Efficiency-mode early-exit behavior
 
-Run a short verbose engagement:
+### Matrix execution (`src/matrix/real_executor.go`)
+
+Tests cover behavior such as:
+
+- Technique-to-phase mapping
+- Tool lookup by identifier and tool name
+- Payload normalization helpers for strings and integers
+- Automatic `ip`/`url` cross-population
+- Module execution and result shaping
+- Proof-of-concept propagation into `reproduction_steps`
+
+### Knowledge graph and database (`src/matrix/knowledge_graph.go`, `src/matrix/db.go`)
+
+Tests cover behavior such as:
+
+- Extraction from structured JSON and malformed text
+- Deduplication of tokens, entities, and findings
+- Vulnerability persistence and processed-state handling
+- Concurrent update safety
+- Scope filtering for newly discovered assets
+
+### Modules (`src/modules/core`)
+
+Module tests validate representative detection and execution paths across the built-in technique set.
+
+## 5. Manual smoke test
+
+Run a short engagement:
 
 ```bash
 go run ./cmd/fire_starter -target http://127.0.0.1 -max-iters 3 -verbose
 ```
 
-Expected behavior:
+Expected outcomes:
 
-- Startup log includes provider/model/target.
-- Iteration logs show tool selection and execution attempts.
-- If completion criteria are not met within `max-iters`, command exits with `max iterations reached without calling 'submit'`.
+- The TUI starts successfully.
+- Logs show provider/model/target startup details.
+- The agent attempts tool selection and execution.
+- The run writes report/database artifacts when it finishes.
 
-## 5) Environment checks
+## 6. Environment checks
 
-- Go version must satisfy `go.mod` (`go 1.26.2`).
-- Provider setup must match the selected `-provider`.
-
-Check Go version:
+Verify the Go version:
 
 ```bash
 go version
 ```
 
-## 6) Regression checklist for documentation-related changes
+The project requires `go 1.26.2` or newer.
 
-When docs are updated, verify:
+## 7. Documentation regression checklist
 
-- Commands reference `./cmd/fire_starter` (not deprecated/removed paths).
-- Flag names in docs match `cmd/fire_starter/main.go`.
-- Testing command remains `go test ./...`.
-- Cross-file references (`README.md`, `docs/quick_start.md`, `docs/notes.md`) are consistent.
+When docs or website content changes, verify that:
+
+- Commands reference `./cmd/fire_starter`.
+- Flag names match `cmd/fire_starter/main.go`.
+- Config examples include current fields such as `efficiency_mode` and `target_domains` when relevant.
+- Output artifact names match the code: `fire_starter_report.md` and `fire_starter.db`.
+- Module-development docs reference `src/modules/core`, not unsupported runtime paths.
+- Website copy matches the current CLI-first architecture.

@@ -137,6 +137,9 @@ func TestMatchDomainOrIP(t *testing.T) {
 		{"other.com", "*.example.com", false},
 		{"example.com.attacker.com", "*.example.com", false},
 		{"notexample.com", "*.example.com", false},
+		{"example.co.uk", "*.example.co.uk", true},
+		{"foo.example.co.uk", "*.example.co.uk", true},
+		{"foo.example.co.uk", "co.uk", false},
 		{"192.168.1.5", "192.168.1.*", true},
 		{"192.168.2.5", "192.168.1.*", false},
 		{"10.0.0.1", "*", true},
@@ -192,6 +195,43 @@ func TestKnowledgeGraph_TargetDomainsWhitelist(t *testing.T) {
 	}
 }
 
+func TestKnowledgeGraph_AddURLAllowsSeededSubdomainWithoutManualWildcard(t *testing.T) {
+	kg := NewKnowledgeGraph()
+	kg.TargetDomains = []string{"app.example.com", "*.app.example.com"}
+
+	kg.AddURL("https://app.example.com/login", "https://app.example.com")
+
+	if kg.Targets["app.example.com/login"] == nil {
+		t.Fatalf("expected seeded subdomain target to be ingested")
+	}
+}
+
+func TestKnowledgeGraph_AddURLRejectsStaticAssets(t *testing.T) {
+	kg := NewKnowledgeGraph()
+	kg.TargetDomains = []string{"example.com", "*.example.com"}
+
+	kg.AddURL("https://example.com/assets/site.css", "https://example.com")
+	kg.AddURL("https://example.com/static/app.js", "https://example.com")
+
+	if kg.Targets["example.com/assets/site.css"] != nil {
+		t.Fatalf("expected css asset to be ignored")
+	}
+	if kg.Targets["example.com/static/app.js"] != nil {
+		t.Fatalf("expected js asset to be ignored")
+	}
+}
+
+func TestKnowledgeGraph_AddURLResolvesRelativePaths(t *testing.T) {
+	kg := NewKnowledgeGraph()
+	kg.TargetDomains = []string{"example.com", "*.example.com"}
+
+	kg.AddURL("/admin/login", "https://example.com/base")
+
+	if kg.Targets["example.com/admin/login"] == nil {
+		t.Fatalf("expected relative path to resolve against base target")
+	}
+}
+
 type mockModel struct {
 	fantasy.LanguageModel
 	responseStr string
@@ -211,7 +251,7 @@ func (m *mockModel) Generate(ctx context.Context, call fantasy.Call) (*fantasy.R
 
 func TestKnowledgeGraph_EvaluateScopeWithLLM(t *testing.T) {
 	kg := NewKnowledgeGraph()
-	kg.TargetDomains = []string{"*.example.com"}
+	kg.TargetDomains = []string{"*.example.com", "192.168.1.*"}
 
 	mockJSON := `{
 		"results": [
@@ -239,10 +279,31 @@ func TestKnowledgeGraph_EvaluateScopeWithLLM(t *testing.T) {
 	}
 }
 
+func TestKnowledgeGraph_EvaluateScopeWithLLMFallbackUsesScopeFilter(t *testing.T) {
+	kg := NewKnowledgeGraph()
+	kg.TargetDomains = []string{"*.example.com", "192.168.1.*"}
+
+	ips := []string{"192.168.1.10", "10.0.0.5"}
+	urls := []string{"sub.example.com", "attacker.com"}
+
+	allowedIPs, allowedURLs := kg.evaluateScopeWithLLM(context.Background(), &mockModel{err: context.DeadlineExceeded}, ips, urls)
+
+	if len(allowedIPs) != 1 || allowedIPs[0] != "192.168.1.10" {
+		t.Fatalf("expected only in-scope IPs after fallback, got %v", allowedIPs)
+	}
+
+	if len(allowedURLs) != 1 || allowedURLs[0] != "sub.example.com" {
+		t.Fatalf("expected only in-scope URLs after fallback, got %v", allowedURLs)
+	}
+}
+
 func TestAddTestCase_PhaseFiltering(t *testing.T) {
 	// Reset the singleton database instance for testing
+	if dbInstance != nil {
+		_ = dbInstance.Close()
+	}
 	dbInstance = nil
-	dbOnce = sync.Once{}
+	dbMu = sync.Mutex{}
 
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "test_add_testcase.db")

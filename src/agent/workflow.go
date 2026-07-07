@@ -234,15 +234,31 @@ func extractIPsFromTarget(target string) []string {
 	return result
 }
 
-func getBaseDomain(hostname string) string {
-	if net.ParseIP(hostname) != nil {
-		return hostname
+func deriveDefaultTargetDomains(target string) []string {
+	trimmed := strings.TrimSpace(target)
+	if trimmed == "" {
+		return nil
 	}
-	parts := strings.Split(hostname, ".")
-	if len(parts) >= 2 {
-		return parts[len(parts)-2] + "." + parts[len(parts)-1]
+
+	candidate := trimmed
+	if !strings.Contains(candidate, "://") {
+		candidate = "https://" + candidate
 	}
-	return hostname
+
+	parsed, err := url.Parse(candidate)
+	if err != nil || parsed.Hostname() == "" {
+		return nil
+	}
+
+	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+	if host == "" {
+		return nil
+	}
+	if net.ParseIP(host) != nil || !strings.Contains(host, ".") {
+		return []string{host}
+	}
+
+	return []string{host, "*." + host}
 }
 
 func allowlistedIPsSummary(allowlist map[string]bool) string {
@@ -795,19 +811,7 @@ func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*m
 	if len(cfg.TargetDomains) > 0 {
 		kg.TargetDomains = cfg.TargetDomains
 	} else {
-		// Fallback to the single-domain restriction using the initial target's base domain
-		var baseDomain string
-		if u, err := url.Parse(target); err == nil && u.Hostname() != "" {
-			baseDomain = getBaseDomain(u.Hostname())
-		} else if !strings.HasPrefix(target, "http") {
-			u, err := url.Parse("https://" + target)
-			if err == nil && u.Hostname() != "" {
-				baseDomain = getBaseDomain(u.Hostname())
-			}
-		}
-		if baseDomain != "" {
-			kg.TargetDomains = []string{baseDomain}
-		}
+		kg.TargetDomains = deriveDefaultTargetDomains(target)
 	}
 
 	// For backwards compatibility, set BaseDomain to the first target domain
