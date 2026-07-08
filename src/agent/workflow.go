@@ -53,10 +53,145 @@ type scoredTool struct {
 	Reasons    []string
 }
 
-
+type httpRequestGateState struct {
+	hasExecuted           bool
+	lastTargetFingerprint string
+	lastAuthFingerprint   string
+}
 
 func normalizeTarget(t string) string {
 	return matrix.NormalizeURL(t)
+}
+
+func joinSortedStrings(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+
+	copyValues := append([]string(nil), values...)
+	sort.Strings(copyValues)
+	return strings.Join(copyValues, ",")
+}
+
+func joinSortedInts(values []int) string {
+	if len(values) == 0 {
+		return ""
+	}
+
+	copyValues := append([]int(nil), values...)
+	sort.Ints(copyValues)
+	parts := make([]string, 0, len(copyValues))
+	for _, value := range copyValues {
+		parts = append(parts, fmt.Sprintf("%d", value))
+	}
+	return strings.Join(parts, ",")
+}
+
+func credentialSignalFingerprint(credentials []matrix.CredentialInfo) string {
+	if len(credentials) == 0 {
+		return ""
+	}
+
+	signals := make(map[string]bool)
+	for _, credential := range credentials {
+		username := strings.ToLower(strings.TrimSpace(credential.Username))
+		if username == "" {
+			username = "<blank>"
+		}
+		signals[username] = true
+	}
+
+	parts := make([]string, 0, len(signals))
+	for signal := range signals {
+		parts = append(parts, signal)
+	}
+	return joinSortedStrings(parts)
+}
+
+func tokenSignalFingerprint(tokens []string) string {
+	if len(tokens) == 0 {
+		return ""
+	}
+
+	signals := make(map[string]bool)
+	for _, token := range tokens {
+		trimmed := strings.TrimSpace(token)
+		if trimmed == "" {
+			continue
+		}
+		if name, _, ok := strings.Cut(trimmed, "="); ok {
+			name = strings.ToLower(strings.TrimSpace(name))
+			if name != "" {
+				signals["cookie:"+name] = true
+				continue
+			}
+		}
+
+		lower := strings.ToLower(trimmed)
+		switch {
+		case strings.HasPrefix(lower, "bearer "):
+			signals["bearer"] = true
+		case strings.Count(trimmed, ".") == 2:
+			signals["jwt"] = true
+		default:
+			signals["opaque"] = true
+		}
+	}
+
+	parts := make([]string, 0, len(signals))
+	for signal := range signals {
+		parts = append(parts, signal)
+	}
+	return joinSortedStrings(parts)
+}
+
+func httpRequestTargetFingerprint(target *matrix.Target) string {
+	if target == nil {
+		return ""
+	}
+
+	return fmt.Sprintf(
+		"target=%s|phase=%s|ports=%s|vulns=%s",
+		normalizeTarget(target.Value),
+		target.CurrentPhase,
+		joinSortedInts(target.OpenPorts),
+		joinSortedStrings(target.Vulnerabilities),
+	)
+}
+
+func httpRequestAuthFingerprint(target *matrix.Target) string {
+	if target == nil {
+		return ""
+	}
+
+	return fmt.Sprintf(
+		"token_signals=%s|credential_signals=%s",
+		tokenSignalFingerprint(target.Tokens),
+		credentialSignalFingerprint(target.Credentials),
+	)
+}
+
+func authReopenGateKey(targetFingerprint string, authFingerprint string) string {
+	return targetFingerprint + "|" + authFingerprint
+}
+
+func updateHTTPRequestGateState(state *httpRequestGateState, target *matrix.Target) {
+	if state == nil || target == nil {
+		return
+	}
+
+	state.hasExecuted = true
+	state.lastTargetFingerprint = httpRequestTargetFingerprint(target)
+	state.lastAuthFingerprint = httpRequestAuthFingerprint(target)
+}
+
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func hasPort(ports []int, target int) bool {
@@ -68,7 +203,7 @@ func hasPort(ports []int, target int) bool {
 	return false
 }
 
-func scoreTool(def matrix.ToolDefinition, target *matrix.Target, snapshot matrix.KnowledgeSnapshot) scoredTool {
+func scoreTool(def matrix.ToolDefinition, target *matrix.Target, snapshot matrix.KnowledgeSnapshot, httpRequestState *httpRequestGateState) scoredTool {
 	stage := matrix.Phase(matrix.MapTechniqueToStage(def.Technique))
 	score := 0
 	reasons := make([]string, 0, 4)
@@ -82,8 +217,25 @@ func scoreTool(def matrix.ToolDefinition, target *matrix.Target, snapshot matrix
 	}
 
 	if def.Name == "decision_http_request" {
-		score += 50
-		reasons = append(reasons, "http_request is globally available")
+		targetFingerprint := httpRequestTargetFingerprint(target)
+		authFingerprint := httpRequestAuthFingerprint(target)
+		switch {
+		case httpRequestState == nil || !httpRequestState.hasExecuted:
+			score += 50
+			reasons = append(reasons, "http_request allowed for initial target probe")
+		case targetFingerprint != httpRequestState.lastTargetFingerprint:
+			score += 35
+			reasons = append(reasons, "target intelligence unlocked another http_request")
+		case authFingerprint != httpRequestState.lastAuthFingerprint:
+			gateKey := authReopenGateKey(targetFingerprint, authFingerprint)
+			if target.HTTPRequestGate != nil && target.HTTPRequestGate[gateKey] {
+				return scoredTool{Definition: def, Score: -100, Reasons: []string{"authenticated follow-up already used for this target state"}}
+			}
+			score += 20
+			reasons = append(reasons, "one authenticated follow-up allowed for the current target state")
+		default:
+			return scoredTool{Definition: def, Score: -100, Reasons: []string{"no new target intelligence since last http_request"}}
+		}
 	}
 
 	switch {
@@ -149,6 +301,10 @@ func summarizeSnapshot(snapshot matrix.KnowledgeSnapshot) string {
 		snapshot.HarvestedTokenCount,
 		len(snapshot.TargetPhases),
 	)
+}
+
+func reachedIterationLimit(globalIters int, maxIters int) bool {
+	return maxIters > 0 && globalIters >= maxIters
 }
 
 func snapshotDelta(before, after matrix.KnowledgeSnapshot) string {
@@ -456,6 +612,7 @@ func runVulnerabilityHelperSubAgent(
 
 	var out strings.Builder
 	vulnLogged := false
+	executedPayloads := make(map[string]bool)
 
 	for turn := 0; turn < 5; turn++ {
 		resp, err := model.Generate(ctx, fantasy.Call{
@@ -673,6 +830,16 @@ func runVulnerabilityHelperSubAgent(
 				continue
 			}
 
+			payloadBytes, _ := json.Marshal(payload)
+			payloadHash := fmt.Sprintf("%s|%s", tc.ToolName, string(payloadBytes))
+			if executedPayloads[payloadHash] {
+				toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+					ToolCallID: tc.ToolCallID,
+					Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: You have already successfully executed this tool with this exact payload in this helper run. Choose different parameters or another tool."},
+				})
+				continue
+			}
+
 			targetUsed := initialTarget
 			if tStr, ok := payload["target"].(string); ok && strings.TrimSpace(tStr) != "" {
 				targetUsed = strings.TrimSpace(tStr)
@@ -724,6 +891,7 @@ func runVulnerabilityHelperSubAgent(
 					allSummaries = append(allSummaries, errStr)
 					log.Debugf("Helper tool execution failed: tool=%s session=%s error=%s", tc.ToolName, sess, errStr)
 				} else {
+					executedPayloads[payloadHash] = true
 					if t, ok := iterPayload["target"].(string); ok && strings.TrimSpace(t) != "" {
 						kg.MarkToolExecuted(strings.TrimSpace(t), tc.ToolName)
 					}
@@ -872,6 +1040,11 @@ func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*m
 	globalIters := 0
 
 	for {
+		if reachedIterationLimit(globalIters, cfg.MaxIters) {
+			log.Warnf("Global run loop reached MaxIters (%d). Stopping target scheduling.", cfg.MaxIters)
+			break
+		}
+
 		var pendingTargets []string
 		kg.RLock()
 		for val := range kg.Targets {
@@ -886,6 +1059,10 @@ func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*m
 		}
 
 		for _, tVal := range pendingTargets {
+			if reachedIterationLimit(globalIters, cfg.MaxIters) {
+				log.Warnf("Global run loop reached MaxIters (%d). Skipping remaining pending targets.", cfg.MaxIters)
+				break
+			}
 			processedTargets[tVal] = true
 			log.Infof("Starting agent loop for target: %s", tVal)
 			if err := runTargetAgent(ctx, tVal, target, cfg, kg, executor, model, allowlist, &globalIters); err != nil {
@@ -894,50 +1071,55 @@ func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*m
 		}
 	}
 
-	if preVulns, preErr := matrix.GetVulnerabilities(); preErr == nil {
-		toolStageByName := make(map[string]matrix.Phase)
-		var activeTools []fantasy.Tool
-		for _, t := range executor.Tools() {
-			toolStageByName[t.Name] = matrix.Phase(matrix.MapTechniqueToStage(t.Technique))
+	if !reachedIterationLimit(globalIters, cfg.MaxIters) {
+		if preVulns, preErr := matrix.GetVulnerabilities(); preErr == nil {
+			toolStageByName := make(map[string]matrix.Phase)
+			var activeTools []fantasy.Tool
+			for _, t := range executor.Tools() {
+				toolStageByName[t.Name] = matrix.Phase(matrix.MapTechniqueToStage(t.Technique))
+				activeTools = append(activeTools, fantasy.FunctionTool{
+					Name:        t.Name,
+					Description: t.Description,
+					InputSchema: t.InputSchema,
+				})
+			}
+
 			activeTools = append(activeTools, fantasy.FunctionTool{
-				Name:        t.Name,
-				Description: t.Description,
-				InputSchema: t.InputSchema,
+				Name:        "query_knowledge_graph",
+				Description: "Query the knowledge graph for specific gathered intelligence.",
+				InputSchema: map[string]any{"type": "object", "properties": map[string]any{"query_type": map[string]any{"type": "string", "enum": []string{"ips", "urls", "ports", "credentials", "vulnerabilities", "tokens", "all"}}}, "required": []string{"query_type"}},
 			})
-		}
-
-		activeTools = append(activeTools, fantasy.FunctionTool{
-			Name:        "query_knowledge_graph",
-			Description: "Query the knowledge graph for specific gathered intelligence.",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{"query_type": map[string]any{"type": "string", "enum": []string{"ips", "urls", "ports", "credentials", "vulnerabilities", "tokens", "all"}}}, "required": []string{"query_type"}},
-		})
-		activeTools = append(activeTools, fantasy.FunctionTool{
-			Name:        "log_vulnerability",
-			Description: "Log or update a confirmed vulnerability finding for a target, including exploitability status. This marks the finding as processed.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"vuln_id": map[string]any{"type": "string"},
-					"target":  map[string]any{"type": "string"},
-					"finding": map[string]any{
-						"type":        "string",
-						"description": "A detailed description of the finding, including how it works, a descriptive summary, and step-by-step instructions to recreate the finding for further testing.",
+			activeTools = append(activeTools, fantasy.FunctionTool{
+				Name:        "log_vulnerability",
+				Description: "Log or update a confirmed vulnerability finding for a target, including exploitability status. This marks the finding as processed.",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"vuln_id": map[string]any{"type": "string"},
+						"target":  map[string]any{"type": "string"},
+						"finding": map[string]any{
+							"type":        "string",
+							"description": "A detailed description of the finding, including how it works, a descriptive summary, and step-by-step instructions to recreate the finding for further testing.",
+						},
+						"test_code":   map[string]any{"type": "string"},
+						"exploitable": map[string]any{"type": "string", "enum": []string{"yes", "no"}},
 					},
-					"test_code":   map[string]any{"type": "string"},
-					"exploitable": map[string]any{"type": "string", "enum": []string{"yes", "no"}},
+					"required": []string{"vuln_id", "target", "finding", "test_code", "exploitable"},
 				},
-				"required": []string{"vuln_id", "target", "finding", "test_code", "exploitable"},
-			},
-		})
+			})
 
-		for _, v := range preVulns {
-			if strings.EqualFold(strings.TrimSpace(v.Processed), "no") {
-				log.Infof("Processing remaining unprocessed vulnerability: target=%s vuln_id=%s finding=%q", v.TargetDomain, v.VulnID, v.Finding)
-				_ = runVulnerabilityHelperSubAgent(ctx, model, v.TargetDomain, v.Finding, v.VulnID, activeTools, kg, executor, target, allowlist, toolStageByName)
-				_ = matrix.MarkVulnerabilityProcessed(v.VulnID)
+			for _, v := range preVulns {
+				if strings.EqualFold(strings.TrimSpace(v.Processed), "no") {
+					log.Infof("Processing remaining unprocessed vulnerability: target=%s vuln_id=%s finding=%q", v.TargetDomain, v.VulnID, v.Finding)
+					_ = runVulnerabilityHelperSubAgent(ctx, model, v.TargetDomain, v.Finding, v.VulnID, activeTools, kg, executor, target, allowlist, toolStageByName)
+					_ = matrix.MarkVulnerabilityProcessed(v.VulnID)
+				}
 			}
 		}
+	} else {
+		log.Warnf("Skipping post-loop vulnerability helper processing because MaxIters (%d) was reached.", cfg.MaxIters)
 	}
+
 
 	var vulnsListStr string
 	vulns, err := matrix.GetVulnerabilities()
@@ -1051,6 +1233,14 @@ IP whitelist policy:
 	}
 	executedPayloads := make(map[string]bool)
 	spawnedHelpers := make(map[string]bool)
+	httpRequestState := &httpRequestGateState{}
+	kg.RLock()
+	if existingTarget := kg.Targets[currentTarget]; existingTarget != nil {
+		httpRequestState.hasExecuted = contains(existingTarget.ExecutedTools, "decision_http_request")
+		httpRequestState.lastTargetFingerprint = httpRequestTargetFingerprint(existingTarget)
+		httpRequestState.lastAuthFingerprint = httpRequestAuthFingerprint(existingTarget)
+	}
+	kg.RUnlock()
 
 	for {
 		if *globalIters >= cfg.MaxIters {
@@ -1067,7 +1257,7 @@ IP whitelist policy:
 			for _, t := range executor.Tools() {
 				toolStage := matrix.Phase(matrix.MapTechniqueToStage(t.Technique))
 				if toolStage == targetObj.CurrentPhase || toolStage == matrix.PhaseReconnaissance || t.Name == "decision_http_request" {
-					st := scoreTool(t, targetObj, snapshot)
+					st := scoreTool(t, targetObj, snapshot, httpRequestState)
 					if st.Score >= 0 {
 						scored = append(scored, st)
 					}
@@ -1585,6 +1775,21 @@ IP whitelist policy:
 					}
 
 					afterGraph := kg.Snapshot()
+					if tc.ToolName == "decision_http_request" {
+						kg.Lock()
+						if targetObj := kg.Targets[currentTarget]; targetObj != nil {
+							if targetObj.HTTPRequestGate == nil {
+								targetObj.HTTPRequestGate = make(map[string]bool)
+							}
+							targetFingerprint := httpRequestTargetFingerprint(targetObj)
+							authFingerprint := httpRequestAuthFingerprint(targetObj)
+							if httpRequestState.hasExecuted && authFingerprint != httpRequestState.lastAuthFingerprint && targetFingerprint == httpRequestState.lastTargetFingerprint {
+								targetObj.HTTPRequestGate[authReopenGateKey(targetFingerprint, authFingerprint)] = true
+							}
+							updateHTTPRequestGateState(httpRequestState, targetObj)
+						}
+						kg.Unlock()
+					}
 					log.Infof("KNOWLEDGE_GRAPH_UPDATE tool=%s session=%s delta=%s snapshot=%s", tc.ToolName, sess, snapshotDelta(beforeGraph, afterGraph), summarizeSnapshot(afterGraph))
 					_, _ = canCompleteTarget(afterGraph, currentTarget, cfg.EfficiencyMode)
 					log.Infof("TOOL_EXECUTION_SUMMARY tool=%s target=%s session=%s summary=%q", tc.ToolName, targetUsed, sess, summary)

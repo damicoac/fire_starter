@@ -206,6 +206,23 @@ func TestKnowledgeGraph_AddURLAllowsSeededSubdomainWithoutManualWildcard(t *test
 	}
 }
 
+func TestKnowledgeGraph_AddURLDoesNotRescoreDuplicateURL(t *testing.T) {
+	kg := NewKnowledgeGraph()
+	kg.TargetDomains = []string{"example.com", "*.example.com"}
+
+	kg.AddURL("https://example.com/login", "https://example.com")
+	target := kg.Targets["example.com/login"]
+	if target == nil {
+		t.Fatalf("expected login target to be ingested")
+	}
+	initialScore := target.Score
+
+	kg.AddURL("https://example.com/login", "https://example.com")
+	if target.Score != initialScore {
+		t.Fatalf("expected duplicate URL discovery to keep score %d, got %d", initialScore, target.Score)
+	}
+}
+
 func TestKnowledgeGraph_AddURLRejectsStaticAssets(t *testing.T) {
 	kg := NewKnowledgeGraph()
 	kg.TargetDomains = []string{"example.com", "*.example.com"}

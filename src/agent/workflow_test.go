@@ -1,6 +1,10 @@
 package agent
 
-import "testing"
+import (
+	"testing"
+
+	"fire_starter/src/matrix"
+)
 
 func TestRequiresCredentialValidation(t *testing.T) {
 	testCases := []struct {
@@ -114,6 +118,135 @@ func TestDeriveDefaultTargetDomains(t *testing.T) {
 				if got[i] != tc.want[i] {
 					t.Fatalf("deriveDefaultTargetDomains(%q)[%d]=%q want %q", tc.target, i, got[i], tc.want[i])
 				}
+			}
+		})
+	}
+}
+
+func TestScoreTool_HTTPRequestAllowedBeforeFirstExecution(t *testing.T) {
+	def := matrix.ToolDefinition{Name: "decision_http_request", Technique: "http-request"}
+	target := &matrix.Target{Value: "example.com", CurrentPhase: matrix.PhaseReconnaissance}
+	snapshot := matrix.KnowledgeSnapshot{TargetPhases: map[string]matrix.Phase{"example.com": matrix.PhaseReconnaissance}}
+	state := &httpRequestGateState{}
+
+	scored := scoreTool(def, target, snapshot, state)
+	if scored.Score < 50 {
+		t.Fatalf("expected initial http_request to remain highly ranked, got %d (%v)", scored.Score, scored.Reasons)
+	}
+}
+
+func TestScoreTool_HTTPRequestBlockedWithoutNewIntelligence(t *testing.T) {
+	def := matrix.ToolDefinition{Name: "decision_http_request", Technique: "http-request"}
+	target := &matrix.Target{Value: "example.com", CurrentPhase: matrix.PhaseReconnaissance}
+	snapshot := matrix.KnowledgeSnapshot{TargetPhases: map[string]matrix.Phase{"example.com": matrix.PhaseReconnaissance}}
+	state := &httpRequestGateState{}
+
+	updateHTTPRequestGateState(state, target)
+	scored := scoreTool(def, target, snapshot, state)
+	if scored.Score >= 0 {
+		t.Fatalf("expected http_request to be blocked without new intelligence, got %d (%v)", scored.Score, scored.Reasons)
+	}
+}
+
+func TestScoreTool_HTTPRequestReenabledAfterNewIntelligence(t *testing.T) {
+	def := matrix.ToolDefinition{Name: "decision_http_request", Technique: "http-request"}
+	target := &matrix.Target{Value: "example.com", CurrentPhase: matrix.PhaseReconnaissance}
+	baseline := matrix.KnowledgeSnapshot{DiscoveredURLCount: 1, TargetPhases: map[string]matrix.Phase{"example.com": matrix.PhaseReconnaissance}}
+	state := &httpRequestGateState{}
+
+	updateHTTPRequestGateState(state, target)
+
+	target.Vulnerabilities = append(target.Vulnerabilities, "interesting response behavior")
+	updated := baseline
+	updated.DiscoveredURLCount = 2
+	scored := scoreTool(def, target, updated, state)
+	if scored.Score < 0 {
+		t.Fatalf("expected http_request to be reenabled after new intelligence, got %d (%v)", scored.Score, scored.Reasons)
+	}
+}
+
+func TestScoreTool_HTTPRequestAllowsOneAuthReopenPerTargetState(t *testing.T) {
+	def := matrix.ToolDefinition{Name: "decision_http_request", Technique: "http-request"}
+	target := &matrix.Target{Value: "example.com", CurrentPhase: matrix.PhaseReconnaissance, HTTPRequestGate: make(map[string]bool)}
+	snapshot := matrix.KnowledgeSnapshot{TargetPhases: map[string]matrix.Phase{"example.com": matrix.PhaseReconnaissance}}
+	state := &httpRequestGateState{}
+
+	updateHTTPRequestGateState(state, target)
+	target.Tokens = append(target.Tokens, "session=abc")
+
+	scored := scoreTool(def, target, snapshot, state)
+	if scored.Score < 0 {
+		t.Fatalf("expected one auth-driven reopen, got %d (%v)", scored.Score, scored.Reasons)
+	}
+
+	target.HTTPRequestGate[authReopenGateKey(httpRequestTargetFingerprint(target), httpRequestAuthFingerprint(target))] = true
+	updateHTTPRequestGateState(state, target)
+	target.Tokens = append(target.Tokens, "session=def")
+	scored = scoreTool(def, target, snapshot, state)
+	if scored.Score >= 0 {
+		t.Fatalf("expected repeated same-signal auth churn to stay blocked, got %d (%v)", scored.Score, scored.Reasons)
+	}
+}
+
+func TestScoreTool_HTTPRequestAllowsMateriallyDifferentAuthState(t *testing.T) {
+	def := matrix.ToolDefinition{Name: "decision_http_request", Technique: "http-request"}
+	target := &matrix.Target{Value: "example.com", CurrentPhase: matrix.PhaseReconnaissance, HTTPRequestGate: make(map[string]bool)}
+	snapshot := matrix.KnowledgeSnapshot{TargetPhases: map[string]matrix.Phase{"example.com": matrix.PhaseReconnaissance}}
+	state := &httpRequestGateState{}
+
+	updateHTTPRequestGateState(state, target)
+	target.Tokens = append(target.Tokens, "session=abc")
+	first := scoreTool(def, target, snapshot, state)
+	if first.Score < 0 {
+		t.Fatalf("expected first auth state to reopen, got %d (%v)", first.Score, first.Reasons)
+	}
+
+	target.HTTPRequestGate[authReopenGateKey(httpRequestTargetFingerprint(target), httpRequestAuthFingerprint(target))] = true
+	updateHTTPRequestGateState(state, target)
+	target.Tokens = append(target.Tokens, "Authorization: Bearer token")
+	second := scoreTool(def, target, snapshot, state)
+	if second.Score < 0 {
+		t.Fatalf("expected materially different auth state to reopen, got %d (%v)", second.Score, second.Reasons)
+	}
+}
+
+func TestScoreTool_HTTPRequestIgnoresGlobalSnapshotNoise(t *testing.T) {
+	def := matrix.ToolDefinition{Name: "decision_http_request", Technique: "http-request"}
+	target := &matrix.Target{Value: "example.com", CurrentPhase: matrix.PhaseReconnaissance}
+	baseline := matrix.KnowledgeSnapshot{DiscoveredURLCount: 1, TargetPhases: map[string]matrix.Phase{"example.com": matrix.PhaseReconnaissance}}
+	state := &httpRequestGateState{}
+
+	updateHTTPRequestGateState(state, target)
+
+	noisy := baseline
+	noisy.DiscoveredURLCount = 99
+	noisy.VulnerabilityCount = 5
+	noisy.TargetPhases["other.example.com"] = matrix.PhaseScanning
+
+	scored := scoreTool(def, target, noisy, state)
+	if scored.Score >= 0 {
+		t.Fatalf("expected unrelated global changes to keep http_request blocked, got %d (%v)", scored.Score, scored.Reasons)
+	}
+}
+
+func TestReachedIterationLimit(t *testing.T) {
+	testCases := []struct {
+		name       string
+		globalIters int
+		maxIters   int
+		want       bool
+	}{
+		{name: "below limit", globalIters: 2, maxIters: 3, want: false},
+		{name: "at limit", globalIters: 3, maxIters: 3, want: true},
+		{name: "above limit", globalIters: 4, maxIters: 3, want: true},
+		{name: "zero max treated as disabled", globalIters: 100, maxIters: 0, want: false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := reachedIterationLimit(tc.globalIters, tc.maxIters)
+			if got != tc.want {
+				t.Fatalf("reachedIterationLimit(%d, %d) = %v, want %v", tc.globalIters, tc.maxIters, got, tc.want)
 			}
 		})
 	}
