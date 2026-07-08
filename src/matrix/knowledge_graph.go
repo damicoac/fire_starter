@@ -152,6 +152,8 @@ type Target struct {
 	Vulnerabilities []string         `json:"vulnerabilities,omitempty"`
 	Credentials     []CredentialInfo `json:"credentials,omitempty"`
 	TestCases       []TestCase       `json:"test_cases,omitempty"`
+	HTTPRequestGate map[string]bool `json:"http_request_gate,omitempty"`
+	urlSignals      map[string]bool
 }
 
 type KnowledgeGraph struct {
@@ -211,6 +213,14 @@ func (kg *KnowledgeGraph) RUnlock() {
 	kg.mu.RUnlock()
 }
 
+func (kg *KnowledgeGraph) Lock() {
+	kg.mu.Lock()
+}
+
+func (kg *KnowledgeGraph) Unlock() {
+	kg.mu.Unlock()
+}
+
 func IsZeroTarget(val string) bool {
 	if val == "0.0.0.0" || val == "::" || val == "[::]" {
 		return true
@@ -249,6 +259,8 @@ func (kg *KnowledgeGraph) getOrCreateTarget(value string, targetType string) *Ta
 			Vulnerabilities: make([]string, 0),
 			Credentials:     make([]CredentialInfo, 0),
 			TestCases:       make([]TestCase, 0),
+			HTTPRequestGate: make(map[string]bool),
+			urlSignals:      make(map[string]bool),
 		}
 	}
 	return kg.Targets[value]
@@ -867,8 +879,9 @@ func (kg *KnowledgeGraph) AddURL(u string, baseCtx string) {
 	kg.mu.Lock()
 	defer kg.mu.Unlock()
 
+	hasQuerySignal := strings.Contains(u, "?") || strings.Contains(u, "=")
 	score := 1
-	if strings.Contains(u, "?") || strings.Contains(u, "=") {
+	if hasQuerySignal {
 		score += 5
 	}
 
@@ -925,6 +938,14 @@ func (kg *KnowledgeGraph) AddURL(u string, baseCtx string) {
 	if t == nil {
 		return
 	}
+	if t.urlSignals == nil {
+		t.urlSignals = make(map[string]bool)
+	}
+	signalKey := fmt.Sprintf("path=%s|query=%t", parsed.Path, hasQuerySignal)
+	if t.urlSignals[signalKey] {
+		return
+	}
+	t.urlSignals[signalKey] = true
 	t.Score += score
 	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=discovered_urls value=%s score=%d", u, t.Score)
 }
