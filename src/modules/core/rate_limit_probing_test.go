@@ -22,6 +22,7 @@ func TestRateLimitProbing_Execute(t *testing.T) {
 	defer cleanup()
 
 	module := NewRateLimitProbing("http://example.com")
+	module.SetThreads(1)
 
 	ctx := context.Background()
 	result, err := module.Execute(ctx)
@@ -29,15 +30,105 @@ func TestRateLimitProbing_Execute(t *testing.T) {
 		t.Fatalf("Execute failed: %v", err)
 	}
 
-	if result == nil {
-		t.Log("Expected result, got nil")
+	if len(result) == 0 || result[0].Status != "vulnerable" {
+		t.Fatalf("expected vulnerable status when no throttling is observed, got %#v", result)
+	}
+}
+
+func TestRateLimitProbing_Execute_SecureWhenThrottleDetected(t *testing.T) {
+	requestCount := 0
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			requestCount++
+			headers := make(http.Header)
+			status := http.StatusOK
+			if requestCount > 35 {
+				status = http.StatusTooManyRequests
+				headers.Set("Retry-After", "60")
+			}
+			return &http.Response{
+				StatusCode: status,
+				Body:       io.NopCloser(bytes.NewBufferString(`{"status": "ok"}`)),
+				Header:     headers,
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewRateLimitProbing("http://example.com")
+	module.SetThreads(1)
+
+	results, err := module.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if len(results) == 0 || results[0].Status != "secure" {
+		t.Fatalf("expected secure status when throttling is observed, got %#v", results)
+	}
+}
+
+func TestRateLimitProbing_Execute_InconclusiveWhenAuthProtected(t *testing.T) {
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			return &http.Response{
+				StatusCode: http.StatusUnauthorized,
+				Body:       io.NopCloser(bytes.NewBufferString(`{"error": "auth required"}`)),
+				Header:     make(http.Header),
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewRateLimitProbing("http://example.com")
+	module.SetThreads(1)
+
+	results, err := module.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if len(results) == 0 || results[0].Status != "inconclusive" {
+		t.Fatalf("expected inconclusive status for auth-protected endpoint, got %#v", results)
+	}
+}
+
+func TestRateLimitProbing_Execute_InconclusiveWhenOnlyEarly429WithoutDegradation(t *testing.T) {
+	requestCount := 0
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			requestCount++
+			headers := make(http.Header)
+			status := http.StatusOK
+			if requestCount == 2 {
+				status = http.StatusTooManyRequests
+			}
+			return &http.Response{
+				StatusCode: status,
+				Body:       io.NopCloser(bytes.NewBufferString(`{"status": "ok"}`)),
+				Header:     headers,
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewRateLimitProbing("http://example.com")
+	module.SetThreads(1)
+
+	results, err := module.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if len(results) == 0 || results[0].Status != "inconclusive" {
+		t.Fatalf("expected inconclusive status for weak/unconfirmed throttling signals, got %#v", results)
 	}
 }
 
 func TestRateLimitProbing__Execute_CanceledContext(t *testing.T) {
 	module := NewRateLimitProbing("http://example.com")
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately
+	cancel()
 
 	_, _ = module.Execute(ctx)
 }
