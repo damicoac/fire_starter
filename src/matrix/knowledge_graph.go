@@ -1006,7 +1006,7 @@ func (kg *KnowledgeGraph) AddTestCase(tc TestCase) {
 	}
 
 	if t.CurrentPhase == PhaseReconnaissance || t.CurrentPhase == PhaseScanning || t.CurrentPhase == PhaseVulnerabilityAnalysis {
-		if err := LogVulnerability(tc.VulnID, NormalizeURL(tc.Target), tc.Description, testCode, "no", "no"); err != nil {
+		if err := LogVulnerability(tc.VulnID, NormalizeURL(tc.Target), tc.Description, testCode, "no"); err != nil {
 			log.Warnf("Failed to log vulnerability to database: %v", err)
 		}
 	}

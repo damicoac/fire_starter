@@ -513,15 +513,24 @@ func credentialUseEvidenceInTestCode(testCode string) bool {
 	return hasCredentialAttempt && hasSuccessEvidence
 }
 
-func validateVulnerabilityLogInput(vulnID string, target string, finding string, testCode string, exploitable string, status string) error {
+func validateVulnerabilityLogInput(vulnID string, target string, finding string, testCode string, exploitable string, status string, severity string) error {
 	if strings.TrimSpace(vulnID) == "" || strings.TrimSpace(target) == "" || strings.TrimSpace(finding) == "" || strings.TrimSpace(testCode) == "" || (exploitable != "yes" && exploitable != "no") {
 		return fmt.Errorf("vuln_id, target, finding, test_code, and exploitable ('yes'|'no') are required")
 	}
 	if status != matrix.VulnerabilityStatusConfirmed && status != matrix.VulnerabilityStatusInformational {
 		return fmt.Errorf("status must be 'confirmed' or 'informational'")
 	}
+	if !matrix.IsValidVulnerabilitySeverity(severity) {
+		return fmt.Errorf("severity must be one of critical, high, medium, low, informational, or unknown")
+	}
 	if status == matrix.VulnerabilityStatusInformational && exploitable == "yes" {
 		return fmt.Errorf("informational findings cannot be marked exploitable='yes'")
+	}
+	if status == matrix.VulnerabilityStatusInformational && severity != matrix.VulnerabilitySeverityInformational {
+		return fmt.Errorf("informational findings must use severity='informational'")
+	}
+	if status == matrix.VulnerabilityStatusConfirmed && severity == matrix.VulnerabilitySeverityInformational {
+		return fmt.Errorf("confirmed vulnerabilities cannot use severity='informational'")
 	}
 	if exploitable == "yes" && requiresCredentialValidation(finding) && !credentialUseEvidenceInTestCode(testCode) {
 		return fmt.Errorf("credential leaks cannot be marked exploitable='yes' without evidence of a successful credential-based authentication attempt in test_code")
@@ -545,7 +554,7 @@ func buildVulnerabilityReportInput(vulns []matrix.VulnInfo) (string, []matrix.Vu
 	if len(confirmedFindings) > 0 {
 		sb.WriteString("Confirmed vulnerabilities detected during this engagement:\n\n")
 		for _, v := range confirmedFindings {
-			sb.WriteString(fmt.Sprintf("- Target Domain: %s\n  Finding: %s\n  Status: %s\n  Date/Time: %s\n\n", v.TargetDomain, v.Finding, v.Status, v.DateTime.Format(time.RFC3339)))
+			sb.WriteString(fmt.Sprintf("- Target Domain: %s\n  Finding: %s\n  Status: %s\n  Severity: %s\n  Date/Time: %s\n\n", v.TargetDomain, v.Finding, v.Status, v.Severity, v.DateTime.Format(time.RFC3339)))
 		}
 	} else {
 		sb.WriteString("No confirmed vulnerabilities were detected during the assessment.\n\n")
@@ -553,7 +562,7 @@ func buildVulnerabilityReportInput(vulns []matrix.VulnInfo) (string, []matrix.Vu
 	if len(informationalFindings) > 0 {
 		sb.WriteString("Informational findings to append to the final report:\n\n")
 		for _, v := range informationalFindings {
-			sb.WriteString(fmt.Sprintf("- Target Domain: %s\n  Finding: %s\n  Status: %s\n  Date/Time: %s\n\n", v.TargetDomain, v.Finding, v.Status, v.DateTime.Format(time.RFC3339)))
+			sb.WriteString(fmt.Sprintf("- Target Domain: %s\n  Finding: %s\n  Status: %s\n  Severity: %s\n  Date/Time: %s\n\n", v.TargetDomain, v.Finding, v.Status, v.Severity, v.DateTime.Format(time.RFC3339)))
 		}
 	} else {
 		sb.WriteString("No informational findings were recorded during the assessment.\n")
@@ -568,7 +577,7 @@ func appendInformationalFindings(reportStr string, informationalFindings []matri
 		informationalSection.WriteString("No informational findings were recorded.\n")
 	} else {
 		for _, v := range informationalFindings {
-			informationalSection.WriteString(fmt.Sprintf("- **%s**: %s\n", v.TargetDomain, v.Finding))
+			informationalSection.WriteString(fmt.Sprintf("- **%s** [%s]: %s\n", v.TargetDomain, v.Severity, v.Finding))
 		}
 	}
 	return reportStr + informationalSection.String()
@@ -654,7 +663,7 @@ func runVulnerabilityHelperSubAgent(
 			rawGraph = rawBytes
 		}
 	}
-	prompt := fmt.Sprintf("You are a vulnerability helper sub-agent. Focus only on target '%s' and finding '%s' (vuln_id: %s). Use the available tools to validate exploitability and refine proof-of-concept evidence. DO NOT write your own custom tools or scripts; you must use the provided tools for testing. If this is a confirmed security vulnerability, call log_vulnerability with status='confirmed', vuln_id, target, finding, exploitable yes/no and concise test_code. If this is a confirmed informational observation rather than a vulnerability, call log_vulnerability with status='informational'. Make sure the 'finding' parameter contains a detailed description of how the issue works and step-by-step instructions to recreate it. For exposed credentials (e.g. .env leaks), do not set exploitable='yes' unless you successfully authenticate using the leaked credentials and include that evidence in test_code. If not enough evidence, do not log it as confirmed or informational.", currentTarget, finding, origVulnID)
+	prompt := fmt.Sprintf("You are a vulnerability helper sub-agent. Focus only on target '%s' and finding '%s' (vuln_id: %s). Use the available tools to validate exploitability and refine proof-of-concept evidence. DO NOT write your own custom tools or scripts; you must use the provided tools for testing. If this is a confirmed security vulnerability, call log_vulnerability with status='confirmed', severity='critical'|'high'|'medium'|'low'|'unknown', vuln_id, target, finding, exploitable yes/no and concise test_code. If this is a confirmed informational observation rather than a vulnerability, call log_vulnerability with status='informational' and severity='informational'. Make sure the 'finding' parameter contains a detailed description of how the issue works and step-by-step instructions to recreate it. For exposed credentials (e.g. .env leaks), do not set exploitable='yes' unless you successfully authenticate using the leaked credentials and include that evidence in test_code. If not enough evidence, do not log it as confirmed or informational.", currentTarget, finding, origVulnID)
 
 	history := []fantasy.Message{
 		{Role: "system", Content: []fantasy.MessagePart{fantasy.TextPart{Text: "You are a focused vulnerability helper sub-agent. DO NOT write your own custom tools or scripts; you must use the provided tools for testing."}}},
@@ -723,9 +732,10 @@ func runVulnerabilityHelperSubAgent(
 				testCode, _ := args["test_code"].(string)
 				exploitable, _ := args["exploitable"].(string)
 				status, _ := args["status"].(string)
+				severity, _ := args["severity"].(string)
 
 				// Update the existing vulnerability record keeping the ID the same
-				if validationErr := validateVulnerabilityLogInput(origVulnID, targetStr, fnd, testCode, exploitable, status); validationErr != nil {
+				if validationErr := validateVulnerabilityLogInput(origVulnID, targetStr, fnd, testCode, exploitable, status, severity); validationErr != nil {
 					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
 						ToolCallID: tc.ToolCallID,
 						Output:     fantasy.ToolResultOutputContentText{Text: fmt.Sprintf("TOOL_ERROR: %v", validationErr)},
@@ -733,7 +743,7 @@ func runVulnerabilityHelperSubAgent(
 					continue
 				}
 				normalizedTgt := normalizeTarget(targetStr)
-				if err := matrix.LogVulnerabilityWithStatus(origVulnID, normalizedTgt, fnd, testCode, exploitable, "yes", status); err != nil {
+				if err := matrix.LogVulnerabilityWithStatus(origVulnID, normalizedTgt, fnd, testCode, exploitable, status, severity); err != nil {
 					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
 						ToolCallID: tc.ToolCallID,
 						Output:     fantasy.ToolResultOutputContentText{Text: fmt.Sprintf("TOOL_ERROR: failed to log vulnerability: %v", err)},
@@ -1156,8 +1166,9 @@ func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*m
 						"test_code":   map[string]any{"type": "string"},
 						"exploitable": map[string]any{"type": "string", "enum": []string{"yes", "no"}},
 						"status":      map[string]any{"type": "string", "enum": []string{"confirmed", "informational"}},
+						"severity":    map[string]any{"type": "string", "enum": []string{"critical", "high", "medium", "low", "informational", "unknown"}},
 					},
-					"required": []string{"vuln_id", "target", "finding", "test_code", "exploitable", "status"},
+					"required": []string{"vuln_id", "target", "finding", "test_code", "exploitable", "status", "severity"},
 				},
 			})
 
@@ -1234,7 +1245,7 @@ Do not make assumptions. Turn theories into testable hypotheses, then validate t
 
 When you have exhausted all applicable tools for your target's current phase, you MUST call the 'advance_target_phase' tool for your target to unlock the next set of tools. If you find vulnerabilities, you MUST continue your investigation to probe deeper and attempt lateral movement. You may only call the 'target_completed' tool if you have exhausted all actionable tools for your assigned target, OR if you have found no vulnerabilities and your target has completed its reconnaissance phase.
 
-When a vulnerability is confirmed, you MUST call 'log_vulnerability' with vuln_id, target, finding, test_code, and exploitable. Make sure the 'finding' parameter contains a detailed description of how the vulnerability works and step-by-step instructions to recreate it. Every confirmed vulnerability must be marked processed via this tool before moving from exploitation to post-exploitation. Use 'query_knowledge_graph' with query_type='vulnerabilities' to inspect the database-backed status list and get the vuln_id. If a vuln_id is missing, generate an md5 hash of (target + finding) to use as the vuln_id. For credential leaks (for example exposed .env), exploitable='yes' is only valid after you attempt credential-based authentication and verify it succeeds.
+When a vulnerability is confirmed, you MUST call 'log_vulnerability' with vuln_id, target, finding, test_code, exploitable, status, and severity. Make sure the 'finding' parameter contains a detailed description of how the vulnerability works and step-by-step instructions to recreate it. Use 'query_knowledge_graph' with query_type='vulnerabilities' to inspect the database-backed status list and get the vuln_id. If a vuln_id is missing, generate an md5 hash of (target + finding) to use as the vuln_id. For credential leaks (for example exposed .env), exploitable='yes' is only valid after you attempt credential-based authentication and verify it succeeds.
 
 In vulnerability-analysis and exploitation phases, create and run one helper sub-agent per vulnerability per target to iterate and refine proof-of-concept testing against that target before deciding exploitability.
 
@@ -1612,17 +1623,18 @@ IP whitelist policy:
 				testCode, _ := args["test_code"].(string)
 				exploitable, _ := args["exploitable"].(string)
 				status, _ := args["status"].(string)
+				severity, _ := args["severity"].(string)
 
 				// Enforce consistent vuln_id naming convention
 				vulnID = matrix.GenerateVulnID(targetStr, finding)
-				if validationErr := validateVulnerabilityLogInput(vulnID, targetStr, finding, testCode, exploitable, status); validationErr != nil {
+				if validationErr := validateVulnerabilityLogInput(vulnID, targetStr, finding, testCode, exploitable, status, severity); validationErr != nil {
 					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
 						ToolCallID: tc.ToolCallID,
 						Output:     fantasy.ToolResultOutputContentText{Text: fmt.Sprintf("TOOL_ERROR: %v", validationErr)},
 					})
 					continue
 				}
-				if err := matrix.LogVulnerabilityWithStatus(vulnID, normalizeTarget(targetStr), finding, testCode, exploitable, "yes", status); err != nil {
+				if err := matrix.LogVulnerabilityWithStatus(vulnID, normalizeTarget(targetStr), finding, testCode, exploitable, status, severity); err != nil {
 					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
 						ToolCallID: tc.ToolCallID,
 						Output:     fantasy.ToolResultOutputContentText{Text: fmt.Sprintf("TOOL_ERROR: failed to log vulnerability: %v", err)},

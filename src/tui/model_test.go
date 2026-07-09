@@ -51,8 +51,8 @@ func TestParseKGIncludesVulnerabilityStatuses(t *testing.T) {
 			}
 		},
 		"vulnerability_records": [
-			{"TargetDomain": "app.example.com", "Finding": "Confirmed SQL injection", "Status": "confirmed"},
-			{"TargetDomain": "app.example.com", "Finding": "Server header", "Status": "informational"}
+			{"TargetDomain": "app.example.com", "Finding": "Confirmed SQL injection", "Status": "confirmed", "Severity": "high"},
+			{"TargetDomain": "app.example.com", "Finding": "Server header", "Status": "informational", "Severity": "informational"}
 		]
 	}`)
 
@@ -63,7 +63,7 @@ func TestParseKGIncludesVulnerabilityStatuses(t *testing.T) {
 	if len(targets[0].VulnerabilityDetails) != 2 {
 		t.Fatalf("expected vulnerability details with statuses, got %#v", targets[0].VulnerabilityDetails)
 	}
-	if targets[0].VulnerabilityDetails[0].Status != "confirmed" || targets[0].VulnerabilityDetails[0].Finding != "Confirmed SQL injection" {
+	if targets[0].VulnerabilityDetails[0].Status != "confirmed" || targets[0].VulnerabilityDetails[0].Severity != "high" || targets[0].VulnerabilityDetails[0].Finding != "Confirmed SQL injection" {
 		t.Fatalf("unexpected first vulnerability detail: %#v", targets[0].VulnerabilityDetails[0])
 	}
 }

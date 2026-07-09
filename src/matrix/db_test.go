@@ -30,18 +30,18 @@ func TestDatabaseOperations(t *testing.T) {
 	}
 
 	// Insert vulnerabilities using LogVulnerability
-	err = LogVulnerability("vid-1", "target1.com", "SQL Injection", "poc-1", "no", "no")
+	err = LogVulnerability("vid-1", "target1.com", "SQL Injection", "poc-1", "no")
 	if err != nil {
 		t.Fatalf("LogVulnerability failed: %v", err)
 	}
 
-	err = LogVulnerability("vid-2", "target2.com", "Cross-Site Scripting", "poc-2", "yes", "yes")
+	err = LogVulnerability("vid-2", "target2.com", "Cross-Site Scripting", "poc-2", "yes")
 	if err != nil {
 		t.Fatalf("LogVulnerability failed: %v", err)
 	}
 
 	// Upsert existing vulnerability
-	err = LogVulnerability("vid-1", "target1.com-updated", "Refined SQL Injection", "poc-1-updated", "yes", "yes")
+	err = LogVulnerability("vid-1", "target1.com-updated", "Refined SQL Injection", "poc-1-updated", "yes")
 	if err != nil {
 		t.Fatalf("LogVulnerability upsert failed: %v", err)
 	}
@@ -59,11 +59,11 @@ func TestDatabaseOperations(t *testing.T) {
 		finding     string
 		testCode    string
 		exploitable string
-		processed   string
 		status      string
+		severity    string
 	}{
-		"target1.com-updated": {finding: "Refined SQL Injection", testCode: "poc-1-updated", exploitable: "yes", processed: "yes", status: VulnerabilityStatusConfirmed},
-		"target2.com":         {finding: "Cross-Site Scripting", testCode: "poc-2", exploitable: "yes", processed: "yes", status: VulnerabilityStatusConfirmed},
+		"target1.com-updated": {finding: "Refined SQL Injection", testCode: "poc-1-updated", exploitable: "yes", status: VulnerabilityStatusConfirmed, severity: VulnerabilitySeverityUnknown},
+		"target2.com":         {finding: "Cross-Site Scripting", testCode: "poc-2", exploitable: "yes", status: VulnerabilityStatusConfirmed, severity: VulnerabilitySeverityUnknown},
 	}
 
 	for _, v := range vulns {
@@ -81,11 +81,11 @@ func TestDatabaseOperations(t *testing.T) {
 		if v.Exploitable != expected.exploitable {
 			t.Errorf("Expected exploitable %q for target %s, got %q", expected.exploitable, v.TargetDomain, v.Exploitable)
 		}
-		if v.Processed != expected.processed {
-			t.Errorf("Expected processed %q for target %s, got %q", expected.processed, v.TargetDomain, v.Processed)
-		}
 		if v.Status != expected.status {
 			t.Errorf("Expected status %q for target %s, got %q", expected.status, v.TargetDomain, v.Status)
+		}
+		if v.Severity != expected.severity {
+			t.Errorf("Expected severity %q for target %s, got %q", expected.severity, v.TargetDomain, v.Severity)
 		}
 	}
 }
@@ -100,7 +100,7 @@ func TestLogVulnerabilityWithStatusRejectsInvalidStatus(t *testing.T) {
 		t.Fatalf("InitDB failed: %v", err)
 	}
 
-	err = LogVulnerabilityWithStatus("vid-invalid", "target.com", "Invalid status finding", "poc", "no", "yes", "unknown")
+	err = LogVulnerabilityWithStatus("vid-invalid", "target.com", "Invalid status finding", "poc", "no", "unknown", VulnerabilitySeverityUnknown)
 	if err == nil {
 		t.Fatalf("expected invalid status to be rejected")
 	}
@@ -111,6 +111,30 @@ func TestLogVulnerabilityWithStatusRejectsInvalidStatus(t *testing.T) {
 	}
 	if len(vulns) != 0 {
 		t.Fatalf("expected invalid status row not to persist, got %#v", vulns)
+	}
+}
+
+func TestLogVulnerabilityWithStatusRejectsInvalidSeverity(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "test_fire_starter.db")
+
+	resetTestDB()
+	_, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+
+	err = LogVulnerabilityWithStatus("vid-invalid", "target.com", "Invalid severity finding", "poc", "no", VulnerabilityStatusCandidate, "urgent")
+	if err == nil {
+		t.Fatalf("expected invalid severity to be rejected")
+	}
+
+	vulns, err := GetVulnerabilities()
+	if err != nil {
+		t.Fatalf("GetVulnerabilities failed: %v", err)
+	}
+	if len(vulns) != 0 {
+		t.Fatalf("expected invalid severity row not to persist, got %#v", vulns)
 	}
 }
 
@@ -157,13 +181,26 @@ func TestInitDBMigratesLegacyVulnerabilityStatuses(t *testing.T) {
 	}
 
 	statuses := map[string]string{}
+	severities := map[string]string{}
 	for _, v := range vulns {
 		statuses[v.VulnID] = v.Status
+		severities[v.VulnID] = v.Severity
 	}
 	if statuses["confirmed-id"] != VulnerabilityStatusConfirmed {
 		t.Fatalf("expected confirmed legacy row to migrate to %q, got %q", VulnerabilityStatusConfirmed, statuses["confirmed-id"])
 	}
 	if statuses["candidate-id"] != VulnerabilityStatusCandidate {
 		t.Fatalf("expected candidate legacy row to remain %q, got %q", VulnerabilityStatusCandidate, statuses["candidate-id"])
+	}
+	if severities["confirmed-id"] != VulnerabilitySeverityUnknown || severities["candidate-id"] != VulnerabilitySeverityUnknown {
+		t.Fatalf("expected legacy rows to use unknown severity, got %#v", severities)
+	}
+
+	columns, err := vulnColumnNames(dbInstance)
+	if err != nil {
+		t.Fatalf("vulnColumnNames failed: %v", err)
+	}
+	if columns["processed"] {
+		t.Fatalf("expected processed column to be removed during migration")
 	}
 }

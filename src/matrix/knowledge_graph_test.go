@@ -371,9 +371,6 @@ func TestAddTestCase_PhaseFiltering(t *testing.T) {
 	if vulns[0].Exploitable != "no" {
 		t.Errorf("Expected exploitable status 'no' during discovery phase, got %q", vulns[0].Exploitable)
 	}
-	if vulns[0].Processed != "no" {
-		t.Errorf("Expected processed status 'no' during discovery phase, got %q", vulns[0].Processed)
-	}
 	if vulns[0].Status != VulnerabilityStatusCandidate {
 		t.Errorf("Expected status %q during discovery phase, got %q", VulnerabilityStatusCandidate, vulns[0].Status)
 	}
