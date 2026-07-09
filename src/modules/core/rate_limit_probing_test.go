@@ -35,17 +35,24 @@ func TestRateLimitProbing_Execute(t *testing.T) {
 	}
 }
 
-func TestRateLimitProbing_Execute_SecureWhenThrottleDetected(t *testing.T) {
+func TestRateLimitProbing_Execute_SecureWhenCorroboratedThrottleDetected(t *testing.T) {
 	requestCount := 0
 	mockTransport := &MockTransport{
 		RoundTripFunc: func(req *http.Request) *http.Response {
 			requestCount++
 			headers := make(http.Header)
 			status := http.StatusOK
-			if requestCount > 35 {
+
+			switch {
+			case requestCount > 20 && requestCount <= 40:
 				status = http.StatusTooManyRequests
-				headers.Set("Retry-After", "60")
+				headers.Set("Retry-After", "1")
+			case requestCount > 40 && requestCount <= 50:
+				status = http.StatusOK
+			case requestCount > 50:
+				status = http.StatusOK
 			}
+
 			return &http.Response{
 				StatusCode: status,
 				Body:       io.NopCloser(bytes.NewBufferString(`{"status": "ok"}`)),
@@ -64,7 +71,7 @@ func TestRateLimitProbing_Execute_SecureWhenThrottleDetected(t *testing.T) {
 		t.Fatalf("Execute failed: %v", err)
 	}
 	if len(results) == 0 || results[0].Status != "secure" {
-		t.Fatalf("expected secure status when throttling is observed, got %#v", results)
+		t.Fatalf("expected secure status when corroborated throttling is observed, got %#v", results)
 	}
 }
 
@@ -93,7 +100,7 @@ func TestRateLimitProbing_Execute_InconclusiveWhenAuthProtected(t *testing.T) {
 	}
 }
 
-func TestRateLimitProbing_Execute_InconclusiveWhenOnlyEarly429WithoutDegradation(t *testing.T) {
+func TestRateLimitProbing_Execute_InconclusiveWhenWeakSignalOnly(t *testing.T) {
 	requestCount := 0
 	mockTransport := &MockTransport{
 		RoundTripFunc: func(req *http.Request) *http.Response {

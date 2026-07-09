@@ -3,27 +3,24 @@ package core
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 )
 
-// JWTSecurityAuditResult holds the result of the JWTSecurityAudit module execution.
 type JWTSecurityAuditResult struct {
 	Target string `json:"target"`
 	Status string `json:"status"`
 	Detail string `json:"detail,omitempty"`
 }
 
-// JWTSecurityAudit executes the jwt_security_audit security technique.
 type JWTSecurityAudit struct {
 	BaseModule
 	Target  string
 	results []JWTSecurityAuditResult
 }
 
-// NewJWTSecurityAudit creates a new instance.
 func NewJWTSecurityAudit(target string) *JWTSecurityAudit {
 	return &JWTSecurityAudit{
 		BaseModule: BaseModule{
@@ -42,14 +39,14 @@ func (m *JWTSecurityAudit) SetThreads(count int) {
 }
 
 var jwtNonePayloads = []string{
-	"eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJhZG1pbiJ9.",
-	"eyJhbGciOiJOb25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJhZG1pbiJ9.",
-	"eyJhbGciOiJOT05FIiwidHlwIjoiSldUIn0.eyJzdWIiOiJhZG1pbiJ9.",
+	"eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJmaXJlc3RhcnRlcl9hZG1pbiIsInNjb3BlIjoiYWRtaW4iLCJmaXJlc3RhcnRlcl9jbGFpbSI6ImFsbG93In0.",
+	"eyJhbGciOiJOb25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJmaXJlc3RhcnRlcl9hZG1pbiIsInNjb3BlIjoiYWRtaW4iLCJmaXJlc3RhcnRlcl9jbGFpbSI6ImFsbG93In0.",
+	"eyJhbGciOiJOT05FIiwidHlwIjoiSldUIn0.eyJzdWIiOiJmaXJlc3RhcnRlcl9hZG1pbiIsInNjb3BlIjoiYWRtaW4iLCJmaXJlc3RhcnRlcl9jbGFpbSI6ImFsbG93In0.",
 }
 
 const (
-	jwtInvalidSignedPayload = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiJ9.invalidsignature"
-	jwtRandomBearerValue   = "firestarter-random-bearer-token"
+	jwtInvalidSignedPayload = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJmaXJlc3RhcnRlcl9hZG1pbiIsInNjb3BlIjoiYWRtaW4iLCJmaXJlc3RhcnRlcl9jbGFpbSI6ImFsbG93In0.invalidsignature"
+	jwtRandomBearerValue    = "firestarter-random-bearer-token"
 )
 
 type jwtBaselineSnapshot struct {
@@ -59,8 +56,10 @@ type jwtBaselineSnapshot struct {
 }
 
 type jwtProbeOutcome struct {
+	name       string
 	token      string
 	statusCode int
+	body       string
 	err        error
 }
 
@@ -75,12 +74,11 @@ func (m *JWTSecurityAudit) captureBaseline(ctx context.Context) jwtBaselineSnaps
 	}
 	defer resp.Body.Close()
 
-	baseline := jwtBaselineSnapshot{
+	return jwtBaselineSnapshot{
 		statusCode: resp.StatusCode,
 		authHeader: strings.ToLower(resp.Header.Get("WWW-Authenticate")),
 		setCookies: resp.Header.Values("Set-Cookie"),
 	}
-	return baseline
 }
 
 func isJWTLike(value string) bool {
@@ -113,24 +111,49 @@ func baselineUsesJWTSession(b jwtBaselineSnapshot) bool {
 	return false
 }
 
-func (m *JWTSecurityAudit) probeToken(ctx context.Context, token string) jwtProbeOutcome {
+func (m *JWTSecurityAudit) probeNoToken(ctx context.Context) jwtProbeOutcome {
 	req, err := http.NewRequestWithContext(ctx, "GET", m.Target, nil)
 	if err != nil {
-		return jwtProbeOutcome{token: token, err: err}
+		return jwtProbeOutcome{name: "no_token", err: err}
+	}
+	resp, err := m.Client.Do(req)
+	if err != nil {
+		return jwtProbeOutcome{name: "no_token", err: err}
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	return jwtProbeOutcome{name: "no_token", statusCode: resp.StatusCode, body: strings.ToLower(string(respBody))}
+}
+
+func (m *JWTSecurityAudit) probeToken(ctx context.Context, name string, token string) jwtProbeOutcome {
+	req, err := http.NewRequestWithContext(ctx, "GET", m.Target, nil)
+	if err != nil {
+		return jwtProbeOutcome{name: name, token: token, err: err}
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 
 	resp, err := m.Client.Do(req)
 	if err != nil {
-		return jwtProbeOutcome{token: token, err: err}
+		return jwtProbeOutcome{name: name, token: token, err: err}
 	}
 	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
 
-	return jwtProbeOutcome{token: token, statusCode: resp.StatusCode}
+	return jwtProbeOutcome{name: name, token: token, statusCode: resp.StatusCode, body: strings.ToLower(string(respBody))}
 }
 
 func isAuthAcceptedStatus(statusCode int) bool {
 	return statusCode >= http.StatusOK && statusCode < http.StatusBadRequest && statusCode != http.StatusUnauthorized && statusCode != http.StatusForbidden
+}
+
+func tokenOutcomeIndicatesClaimBinding(outcome jwtProbeOutcome) bool {
+	if !isAuthAcceptedStatus(outcome.statusCode) {
+		return false
+	}
+	if outcome.body == "" {
+		return true
+	}
+	return containsAnyToken(outcome.body, []string{"firestarter_admin", "scope", "admin", "role", "firestarter_claim", "allow", "ok", "success"})
 }
 
 func (m *JWTSecurityAudit) Execute(ctx context.Context) ([]JWTSecurityAuditResult, error) {
@@ -140,8 +163,8 @@ func (m *JWTSecurityAudit) Execute(ctx context.Context) ([]JWTSecurityAuditResul
 	if !baselineUsesJWTSession(baseline) {
 		m.results = append(m.results, JWTSecurityAuditResult{
 			Target: m.Target,
-			Status: "inconclusive",
-			Detail: "Endpoint did not present JWT-based authentication artifacts, so alg=none verification is inconclusive.",
+			Status: statusFromEvidence(EvidenceWeak, false),
+			Detail: formatEvidenceDetail(EvidenceWeak, "Endpoint did not present JWT-based authentication artifacts, so alg=none attribution is inconclusive."),
 		})
 		return m.results, nil
 	}
@@ -149,94 +172,73 @@ func (m *JWTSecurityAudit) Execute(ctx context.Context) ([]JWTSecurityAuditResul
 	if baseline.statusCode != http.StatusUnauthorized && baseline.statusCode != http.StatusForbidden {
 		m.results = append(m.results, JWTSecurityAuditResult{
 			Target: m.Target,
-			Status: "inconclusive",
-			Detail: "Baseline endpoint response was not auth-gated (401/403), so alg=none acceptance cannot be attributed safely.",
+			Status: statusFromEvidence(EvidenceWeak, false),
+			Detail: formatEvidenceDetail(EvidenceWeak, "Endpoint baseline was not clearly auth-gated (401/403), so alg=none acceptance cannot be causally attributed."),
 		})
 		return m.results, nil
 	}
 
-	probeTokens := []string{jwtInvalidSignedPayload, jwtRandomBearerValue}
-	probeTokens = append(probeTokens, jwtNonePayloads...)
-
-	jobs := make(chan string, len(probeTokens))
-	for _, token := range probeTokens {
-		jobs <- token
-	}
-	close(jobs)
-
-	outcomes := make([]jwtProbeOutcome, 0, len(probeTokens))
-	var outcomesMu sync.Mutex
-	var wg sync.WaitGroup
-
-	for i := 0; i < m.MaxThreads; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for token := range jobs {
-				select {
-				case <-ctx.Done():
-					return
-				default:
-					outcome := m.probeToken(ctx, token)
-					outcomesMu.Lock()
-					outcomes = append(outcomes, outcome)
-					outcomesMu.Unlock()
-				}
-			}
-		}()
+	outcomes := make([]jwtProbeOutcome, 0, 2+len(jwtNonePayloads))
+	outcomes = append(outcomes, m.probeNoToken(ctx))
+	outcomes = append(outcomes, m.probeToken(ctx, "random_bearer", jwtRandomBearerValue))
+	outcomes = append(outcomes, m.probeToken(ctx, "invalid_signed", jwtInvalidSignedPayload))
+	for i, token := range jwtNonePayloads {
+		outcomes = append(outcomes, m.probeToken(ctx, fmt.Sprintf("alg_none_%d", i+1), token))
 	}
 
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		genericBypass := false
-		noneAccepted := false
-		for _, outcome := range outcomes {
-			if outcome.err != nil {
-				continue
+	nonNoneAccepted := false
+	noneAccepted := false
+	noneClaimBound := false
+	for _, outcome := range outcomes {
+		if outcome.err != nil {
+			continue
+		}
+		if outcome.name == "random_bearer" || outcome.name == "invalid_signed" {
+			if isAuthAcceptedStatus(outcome.statusCode) {
+				nonNoneAccepted = true
 			}
-			if outcome.token == jwtInvalidSignedPayload || outcome.token == jwtRandomBearerValue {
-				if isAuthAcceptedStatus(outcome.statusCode) {
-					genericBypass = true
-				}
-				continue
-			}
+			continue
+		}
+		if strings.HasPrefix(outcome.name, "alg_none_") {
 			if isAuthAcceptedStatus(outcome.statusCode) {
 				noneAccepted = true
+				if tokenOutcomeIndicatesClaimBinding(outcome) {
+					noneClaimBound = true
+				}
 			}
 		}
-
-		switch {
-		case noneAccepted && !genericBypass:
-			m.RecordPoC(nil, nil, "Server accepted forged JWT token using alg=none while rejecting non-none bearer probes")
-			m.results = append(m.results, JWTSecurityAuditResult{
-				Target: m.Target,
-				Status: "vulnerable",
-				Detail: "Server accepted alg=none JWT while rejecting invalid signed/random bearer tokens.",
-			})
-		case noneAccepted && genericBypass:
-			m.results = append(m.results, JWTSecurityAuditResult{
-				Target: m.Target,
-				Status: "inconclusive",
-				Detail: "Bearer token bypass observed, but acceptance is not specific to alg=none.",
-			})
-		default:
-			m.results = append(m.results, JWTSecurityAuditResult{
-				Target: m.Target,
-				Status: "secure",
-				Detail: "No evidence that alg=none JWT tokens were accepted.",
-			})
-		}
-		return m.results, nil
-	case <-ctx.Done():
-		<-done
-		return m.results, ctx.Err()
 	}
+
+	switch {
+	case noneAccepted && !nonNoneAccepted && noneClaimBound:
+		summary := "Differential matrix rejected random/invalid JWT probes while accepting alg=none tokens with claim-linked authorization outcome changes."
+		m.RecordPoC(nil, nil, summary)
+		m.results = append(m.results, JWTSecurityAuditResult{
+			Target: m.Target,
+			Status: statusFromEvidence(EvidenceConfirmed, false),
+			Detail: formatEvidenceDetail(EvidenceConfirmed, summary),
+		})
+	case noneAccepted && !nonNoneAccepted && !noneClaimBound:
+		m.results = append(m.results, JWTSecurityAuditResult{
+			Target: m.Target,
+			Status: statusFromEvidence(EvidenceStrong, false),
+			Detail: formatEvidenceDetail(EvidenceStrong, "alg=none tokens were accepted while non-none probes were rejected, but claim-linked authorization change was not reproduced."),
+		})
+	case noneAccepted && nonNoneAccepted:
+		m.results = append(m.results, JWTSecurityAuditResult{
+			Target: m.Target,
+			Status: statusFromEvidence(EvidenceStrong, false),
+			Detail: formatEvidenceDetail(EvidenceStrong, "Bearer bypass was observed for multiple token classes, so acceptance is not uniquely attributable to alg=none."),
+		})
+	default:
+		m.results = append(m.results, JWTSecurityAuditResult{
+			Target: m.Target,
+			Status: statusFromEvidence(EvidenceWeak, true),
+			Detail: formatEvidenceDetail(EvidenceConfirmed, "Differential matrix showed no acceptance path specific to alg=none JWT tokens."),
+		})
+	}
+
+	return m.results, nil
 }
 
 func init() {
