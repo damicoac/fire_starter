@@ -35,23 +35,23 @@ var (
 	}
 
 	cardBaseStyle = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("238")).
-		Padding(0, 1)
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("238")).
+			Padding(0, 1)
 
 	cardSelectedStyle = cardBaseStyle.
-		BorderForeground(lipgloss.Color("205")).
-		Background(lipgloss.Color("236"))
+				BorderForeground(lipgloss.Color("205")).
+				Background(lipgloss.Color("236"))
 
-	cardTitleStyle = lipgloss.NewStyle().Bold(true)
+	cardTitleStyle    = lipgloss.NewStyle().Bold(true)
 	sectionTitleStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Bold(true)
-	mutedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	footerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("248")).Padding(0, 1)
-	statusBarStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("255")).
-		Background(lipgloss.Color("62")).
-		Padding(0, 1)
-	activeFilterStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("205")).Bold(true).Padding(0, 1)
+	mutedStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	footerStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("248")).Padding(0, 1)
+	statusBarStyle    = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("255")).
+				Background(lipgloss.Color("62")).
+				Padding(0, 1)
+	activeFilterStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("205")).Bold(true).Padding(0, 1)
 	inactiveFilterStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("248")).Background(lipgloss.Color("237")).Padding(0, 1)
 )
 
@@ -67,36 +67,42 @@ type KGUpdateMsg struct {
 	Data []byte
 }
 
+type KGVulnerability struct {
+	Finding string
+	Status  string
+}
+
 type KGTarget struct {
-	Value           string
-	Type            string
-	Score           int
-	CurrentPhase    string
-	OpenPorts       []int
-	Tokens          []string
-	Vulnerabilities []string
-	Credentials     []struct {
+	Value                string
+	Type                 string
+	Score                int
+	CurrentPhase         string
+	OpenPorts            []int
+	Tokens               []string
+	Vulnerabilities      []string
+	VulnerabilityDetails []KGVulnerability
+	Credentials          []struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
 }
 
 type Model struct {
-	logsViewport      viewport.Model
-	kgViewport        viewport.Model
-	spinner           spinner.Model
-	allLogs           []LogEntry
-	visibleLogs       []string
-	kgTargets         []KGTarget
-	dashboardCursor   int
-	inspectorMode     bool
-	ready             bool
-	finished          bool
-	finalReport       string
-	width             int
-	height            int
-	activePane        int
-	activeLogFilter   LogCategory
+	logsViewport       viewport.Model
+	kgViewport         viewport.Model
+	spinner            spinner.Model
+	allLogs            []LogEntry
+	visibleLogs        []string
+	kgTargets          []KGTarget
+	dashboardCursor    int
+	inspectorMode      bool
+	ready              bool
+	finished           bool
+	finalReport        string
+	width              int
+	height             int
+	activePane         int
+	activeLogFilter    LogCategory
 	collapsedSummaries bool
 }
 
@@ -133,23 +139,37 @@ func parseKG(data []byte, existingTargets []KGTarget) []KGTarget {
 				Password string `json:"password"`
 			} `json:"credentials"`
 		} `json:"targets"`
+		VulnerabilityRecords []struct {
+			TargetDomain string `json:"TargetDomain"`
+			Finding      string `json:"Finding"`
+			Status       string `json:"Status"`
+		} `json:"vulnerability_records"`
 	}
 
 	if err := json.Unmarshal(data, &kg); err != nil {
 		return existingTargets
 	}
 
+	vulnerabilityDetailsByTarget := make(map[string][]KGVulnerability)
+	for _, v := range kg.VulnerabilityRecords {
+		if strings.TrimSpace(v.Finding) == "" || strings.TrimSpace(v.Status) == "" {
+			continue
+		}
+		vulnerabilityDetailsByTarget[v.TargetDomain] = append(vulnerabilityDetailsByTarget[v.TargetDomain], KGVulnerability{Finding: v.Finding, Status: v.Status})
+	}
+
 	var newTargets []KGTarget
 	for _, t := range kg.Targets {
 		newTargets = append(newTargets, KGTarget{
-			Value:           t.Value,
-			Type:            t.Type,
-			Score:           t.Score,
-			CurrentPhase:    t.CurrentPhase,
-			OpenPorts:       t.OpenPorts,
-			Tokens:          t.Tokens,
-			Vulnerabilities: t.Vulnerabilities,
-			Credentials:     t.Credentials,
+			Value:                t.Value,
+			Type:                 t.Type,
+			Score:                t.Score,
+			CurrentPhase:         t.CurrentPhase,
+			OpenPorts:            t.OpenPorts,
+			Tokens:               t.Tokens,
+			Vulnerabilities:      t.Vulnerabilities,
+			VulnerabilityDetails: vulnerabilityDetailsByTarget[t.Value],
+			Credentials:          t.Credentials,
 		})
 	}
 
@@ -281,10 +301,16 @@ func (m *Model) updateKGViewport() {
 			contentBuilder.WriteString("\n")
 		}
 
-		if len(t.Vulnerabilities) > 0 {
+		if len(t.VulnerabilityDetails) > 0 {
+			contentBuilder.WriteString(sectionTitleStyle.Foreground(lipgloss.Color("196")).Render("Vulnerabilities") + "\n")
+			for _, v := range t.VulnerabilityDetails {
+				contentBuilder.WriteString(fmt.Sprintf("  • [%s] %s\n", v.Status, v.Finding))
+			}
+			contentBuilder.WriteString("\n")
+		} else if len(t.Vulnerabilities) > 0 {
 			contentBuilder.WriteString(sectionTitleStyle.Foreground(lipgloss.Color("196")).Render("Vulnerabilities") + "\n")
 			for _, v := range t.Vulnerabilities {
-				contentBuilder.WriteString(fmt.Sprintf("  • %s\n", v))
+				contentBuilder.WriteString(fmt.Sprintf("  • [candidate] %s\n", v))
 			}
 			contentBuilder.WriteString("\n")
 		}
@@ -354,8 +380,10 @@ func (m *Model) updateKGViewport() {
 			}, " ")
 
 			previewItems := []string{}
-			if len(t.Vulnerabilities) > 0 {
-				previewItems = append(previewItems, t.Vulnerabilities[0])
+			if len(t.VulnerabilityDetails) > 0 {
+				previewItems = append(previewItems, fmt.Sprintf("[%s] %s", t.VulnerabilityDetails[0].Status, t.VulnerabilityDetails[0].Finding))
+			} else if len(t.Vulnerabilities) > 0 {
+				previewItems = append(previewItems, "[candidate] "+t.Vulnerabilities[0])
 			}
 			if len(t.Credentials) > 0 {
 				previewItems = append(previewItems, fmt.Sprintf("%s:%s", t.Credentials[0].Username, t.Credentials[0].Password))

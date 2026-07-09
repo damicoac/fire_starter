@@ -152,21 +152,21 @@ type Target struct {
 	Vulnerabilities []string         `json:"vulnerabilities,omitempty"`
 	Credentials     []CredentialInfo `json:"credentials,omitempty"`
 	TestCases       []TestCase       `json:"test_cases,omitempty"`
-	HTTPRequestGate map[string]bool `json:"http_request_gate,omitempty"`
+	HTTPRequestGate map[string]bool  `json:"http_request_gate,omitempty"`
 	urlSignals      map[string]bool
 }
 
 type KnowledgeGraph struct {
 	mu             sync.RWMutex
-	BaseDomain     string                      `json:"base_domain"`
-	TargetDomains  []string                    `json:"target_domains"`
+	BaseDomain     string   `json:"base_domain"`
+	TargetDomains  []string `json:"target_domains"`
 	allowedIPs     map[string]bool
-	ConfigTarget   string                      `json:"config_target"`
-	Targets        map[string]*Target          `json:"targets"`
-	SessionCookies map[string][]*http.Cookie   `json:"session_cookies"`
-	Context        map[string]any              `json:"context"`
-	OnUpdate       func(*KnowledgeGraph)       `json:"-"`
-	updateChan     chan struct{}               `json:"-"`
+	ConfigTarget   string                    `json:"config_target"`
+	Targets        map[string]*Target        `json:"targets"`
+	SessionCookies map[string][]*http.Cookie `json:"session_cookies"`
+	Context        map[string]any            `json:"context"`
+	OnUpdate       func(*KnowledgeGraph)     `json:"-"`
+	updateChan     chan struct{}             `json:"-"`
 }
 
 type KnowledgeSnapshot struct {
@@ -272,9 +272,9 @@ type ExtractedToken struct {
 }
 
 type ExtractedIntelligence struct {
-	DiscoveredIPs   []string `json:"discovered_ips"`
-	DiscoveredURLs  []string `json:"discovered_urls"`
-	OpenPorts       []struct {
+	DiscoveredIPs  []string `json:"discovered_ips"`
+	DiscoveredURLs []string `json:"discovered_urls"`
+	OpenPorts      []struct {
 		IP   string `json:"ip"`
 		Port int    `json:"port"`
 	} `json:"open_ports"`
@@ -490,7 +490,7 @@ Output:
 	}
 	for _, v := range extracted.Vulnerabilities {
 		kg.AddVulnerability(target, v)
-		
+
 		payloadBytes, _ := json.Marshal(payload)
 		kg.AddTestCase(TestCase{
 			ToolName:    toolName,
@@ -544,7 +544,7 @@ func (kg *KnowledgeGraph) regexExtract(toolName, target string, payload map[stri
 						if strings.Contains(childText, "vulnerab") || strings.Contains(childText, "exploit") || strings.Contains(childText, "confirmed") {
 							vulnDesc := "Vulnerability signal found: " + fmt.Sprint(child)
 							kg.AddVulnerability(target, vulnDesc)
-							
+
 							payloadBytes, _ := json.Marshal(payload)
 							truncatedResult := resultData
 							if len(truncatedResult) > 30000 {
@@ -603,7 +603,7 @@ func (kg *KnowledgeGraph) regexExtract(toolName, target string, payload map[stri
 	if strings.Contains(strings.ToLower(resultData), "vulnerability") || strings.Contains(strings.ToLower(resultData), "exploited") {
 		vulnDesc := "Generic Vulnerability Detected"
 		kg.AddVulnerability(target, vulnDesc)
-		
+
 		payloadBytes, _ := json.Marshal(payload)
 		truncatedResult := resultData
 		if len(truncatedResult) > 30000 {
@@ -748,22 +748,26 @@ func (kg *KnowledgeGraph) ToJSON(target string) ([]byte, error) {
 		targetsCopy[k] = &tCopy
 	}
 
+	vulnerabilityRecords, _ := GetVulnerabilities()
+
 	type KGWrapper struct {
-		BaseDomain     string             `json:"base_domain"`
-		TargetDomains  []string           `json:"target_domains"`
-		ConfigTarget   string             `json:"config_target"`
-		Targets        map[string]*Target `json:"targets"`
-		SessionCookies map[string][]*http.Cookie `json:"session_cookies"`
-		Context        map[string]any     `json:"context"`
+		BaseDomain           string                    `json:"base_domain"`
+		TargetDomains        []string                  `json:"target_domains"`
+		ConfigTarget         string                    `json:"config_target"`
+		Targets              map[string]*Target        `json:"targets"`
+		VulnerabilityRecords []VulnInfo                `json:"vulnerability_records"`
+		SessionCookies       map[string][]*http.Cookie `json:"session_cookies"`
+		Context              map[string]any            `json:"context"`
 	}
 
 	wrapper := KGWrapper{
-		BaseDomain:     kg.BaseDomain,
-		TargetDomains:  kg.TargetDomains,
-		ConfigTarget:   kg.ConfigTarget,
-		Targets:        targetsCopy,
-		SessionCookies: kg.SessionCookies,
-		Context:        kg.Context,
+		BaseDomain:           kg.BaseDomain,
+		TargetDomains:        kg.TargetDomains,
+		ConfigTarget:         kg.ConfigTarget,
+		Targets:              targetsCopy,
+		VulnerabilityRecords: vulnerabilityRecords,
+		SessionCookies:       kg.SessionCookies,
+		Context:              kg.Context,
 	}
 
 	return json.Marshal(wrapper)
@@ -845,12 +849,12 @@ func (kg *KnowledgeGraph) AddPort(targetValue string, port int) {
 	defer kg.triggerUpdate()
 	kg.mu.Lock()
 	defer kg.mu.Unlock()
-	
+
 	t := kg.getOrCreateTarget(targetValue, "ip") // ports imply an IP mostly, or URL
 	if t == nil {
 		return
 	}
-	
+
 	for _, p := range t.OpenPorts {
 		if p == port {
 			return
@@ -954,7 +958,7 @@ func (kg *KnowledgeGraph) AddVulnerability(targetValue string, vuln string) {
 	defer kg.triggerUpdate()
 	kg.mu.Lock()
 	defer kg.mu.Unlock()
-	
+
 	t := kg.getOrCreateTarget(targetValue, "url") // default to url, though could be IP
 	if t == nil {
 		return
@@ -972,7 +976,7 @@ func (kg *KnowledgeGraph) AddTestCase(tc TestCase) {
 	defer kg.triggerUpdate()
 	kg.mu.Lock()
 	defer kg.mu.Unlock()
-	
+
 	t := kg.getOrCreateTarget(tc.Target, "url")
 	if t == nil {
 		return
@@ -1058,30 +1062,30 @@ func (kg *KnowledgeGraph) AddToken(targetValue string, sessionID string, token s
 	defer kg.triggerUpdate()
 	kg.mu.Lock()
 	defer kg.mu.Unlock()
-	
+
 	if sessionID == "" {
 		sessionID = "default"
 	}
-	
+
 	t := kg.getOrCreateTarget(targetValue, "url")
 	if t == nil {
 		return
 	}
 
 	c := parseCookieStr(token, targetValue)
-	
+
 	if kg.SessionCookies == nil {
 		kg.SessionCookies = make(map[string][]*http.Cookie)
 	}
-	
+
 	for _, existing := range kg.SessionCookies[sessionID] {
 		if existing.Name == c.Name && existing.Value == c.Value {
 			return // already exists
 		}
 	}
-	
+
 	kg.SessionCookies[sessionID] = append(kg.SessionCookies[sessionID], c)
-	
+
 	for _, existing := range t.Tokens {
 		if existing == token {
 			return
@@ -1095,8 +1099,8 @@ func (kg *KnowledgeGraph) AddCredential(targetValue string, username string, pas
 	defer kg.triggerUpdate()
 	kg.mu.Lock()
 	defer kg.mu.Unlock()
-	
-	// Create or get the target for credential storage. 
+
+	// Create or get the target for credential storage.
 	// If it's a completely generic credential (e.g. baseline), we could use a dummy target.
 	// But usually they belong to something.
 	t := kg.getOrCreateTarget(targetValue, "url")
@@ -1276,7 +1280,7 @@ func (kg *KnowledgeGraph) GetCookiesForRequest(sessionID string, targetURL strin
 	if kg.SessionCookies == nil || len(kg.SessionCookies[sessionID]) == 0 {
 		return ""
 	}
-	
+
 	if !strings.HasPrefix(targetURL, "http://") && !strings.HasPrefix(targetURL, "https://") {
 		targetURL = "https://" + targetURL
 	}
@@ -1284,7 +1288,7 @@ func (kg *KnowledgeGraph) GetCookiesForRequest(sessionID string, targetURL strin
 	if err != nil {
 		return ""
 	}
-	
+
 	reqHost := parsedURL.Hostname()
 	reqPath := parsedURL.Path
 	if reqPath == "" {
@@ -1300,7 +1304,7 @@ func (kg *KnowledgeGraph) GetCookiesForRequest(sessionID string, targetURL strin
 		} else {
 			domainMatch = isDomainOrSubdomain(reqHost, cookie.Domain) || isDomainOrSubdomain(cookie.Domain, reqHost)
 		}
-		
+
 		// Path match
 		pathMatch := false
 		if cookie.Path == "" || cookie.Path == "/" {
@@ -1308,12 +1312,12 @@ func (kg *KnowledgeGraph) GetCookiesForRequest(sessionID string, targetURL strin
 		} else {
 			pathMatch = strings.HasPrefix(reqPath, cookie.Path)
 		}
-		
+
 		if domainMatch && pathMatch {
 			validCookies = append(validCookies, fmt.Sprintf("%s=%s", cookie.Name, cookie.Value))
 		}
 	}
-	
+
 	return strings.Join(validCookies, "; ")
 }
 
@@ -1324,4 +1328,3 @@ func (kg *KnowledgeGraph) GetTokensForTarget(targetValue string) []string {
 	}
 	return strings.Split(cookiesStr, "; ")
 }
-

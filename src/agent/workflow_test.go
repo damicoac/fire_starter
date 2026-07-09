@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"fire_starter/src/matrix"
 )
@@ -50,6 +53,79 @@ func TestCredentialUseEvidenceInTestCode(t *testing.T) {
 	}
 }
 
+func TestCollectHelperVulnQueueOnlyReturnsCandidates(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "fire_starter.db")
+	if _, err := matrix.InitDB(dbPath); err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+
+	kg := matrix.NewKnowledgeGraph()
+	kg.AddURL("https://app.example.com", "")
+	kg.AddVulnerability("app.example.com", "Candidate from graph")
+	kg.AddVulnerability("app.example.com", "Confirmed finding")
+	kg.AddVulnerability("app.example.com", "Informational finding")
+	kg.AddVulnerability("app.example.com", "Disproven finding")
+
+	if err := matrix.LogVulnerabilityWithStatus(matrix.GenerateVulnID("app.example.com", "Confirmed finding"), "app.example.com", "Confirmed finding", "poc", "yes", "yes", matrix.VulnerabilityStatusConfirmed); err != nil {
+		t.Fatalf("failed to log confirmed finding: %v", err)
+	}
+	if err := matrix.LogVulnerabilityWithStatus(matrix.GenerateVulnID("app.example.com", "Informational finding"), "app.example.com", "Informational finding", "poc", "no", "yes", matrix.VulnerabilityStatusInformational); err != nil {
+		t.Fatalf("failed to log informational finding: %v", err)
+	}
+	if err := matrix.LogVulnerabilityWithStatus(matrix.GenerateVulnID("app.example.com", "Disproven finding"), "app.example.com", "Disproven finding", "poc", "no", "yes", matrix.VulnerabilityStatusDisproven); err != nil {
+		t.Fatalf("failed to log disproven finding: %v", err)
+	}
+
+	queue := collectHelperVulnQueue("app.example.com", kg)
+	if len(queue) != 1 {
+		t.Fatalf("expected exactly one unresolved candidate, got %#v", queue)
+	}
+	if queue[0].Finding != "Candidate from graph" {
+		t.Fatalf("expected only unresolved candidate in queue, got %#v", queue)
+	}
+}
+
+func TestBuildVulnerabilityReportInputFiltersByStatus(t *testing.T) {
+	vulns := []matrix.VulnInfo{
+		{TargetDomain: "app.example.com", Finding: "Confirmed SQL injection", Status: matrix.VulnerabilityStatusConfirmed, DateTime: time.Date(2026, 7, 8, 1, 2, 3, 0, time.UTC)},
+		{TargetDomain: "app.example.com", Finding: "Candidate path traversal", Status: matrix.VulnerabilityStatusCandidate, DateTime: time.Date(2026, 7, 8, 1, 2, 4, 0, time.UTC)},
+		{TargetDomain: "app.example.com", Finding: "Disproven XSS", Status: matrix.VulnerabilityStatusDisproven, DateTime: time.Date(2026, 7, 8, 1, 2, 5, 0, time.UTC)},
+		{TargetDomain: "app.example.com", Finding: "Server header disclosed", Status: matrix.VulnerabilityStatusInformational, DateTime: time.Date(2026, 7, 8, 1, 2, 6, 0, time.UTC)},
+	}
+
+	reportInput, informationalFindings := buildVulnerabilityReportInput(vulns)
+	if !strings.Contains(reportInput, "Confirmed SQL injection") {
+		t.Fatalf("expected confirmed finding in report input: %s", reportInput)
+	}
+	if strings.Contains(reportInput, "Candidate path traversal") {
+		t.Fatalf("candidate finding leaked into report input: %s", reportInput)
+	}
+	if strings.Contains(reportInput, "Disproven XSS") {
+		t.Fatalf("disproven finding leaked into report input: %s", reportInput)
+	}
+	if !strings.Contains(reportInput, "Server header disclosed") {
+		t.Fatalf("expected informational finding in report input: %s", reportInput)
+	}
+	if len(informationalFindings) != 1 || informationalFindings[0].Finding != "Server header disclosed" {
+		t.Fatalf("unexpected informational findings: %#v", informationalFindings)
+	}
+}
+
+func TestAppendInformationalFindingsAlwaysAddsSection(t *testing.T) {
+	report := appendInformationalFindings("# Report", nil)
+	if !strings.Contains(report, "## Informational Findings") {
+		t.Fatalf("expected informational section: %s", report)
+	}
+	if !strings.Contains(report, "No informational findings were recorded.") {
+		t.Fatalf("expected empty informational message: %s", report)
+	}
+
+	report = appendInformationalFindings("# Report", []matrix.VulnInfo{{TargetDomain: "app.example.com", Finding: "Server header disclosed"}})
+	if !strings.Contains(report, "- **app.example.com**: Server header disclosed") {
+		t.Fatalf("expected informational finding: %s", report)
+	}
+}
+
 func TestValidateVulnerabilityLogInput(t *testing.T) {
 	err := validateVulnerabilityLogInput(
 		"vid-1",
@@ -57,6 +133,7 @@ func TestValidateVulnerabilityLogInput(t *testing.T) {
 		"Exposed .env file containing sensitive credentials",
 		"Leaked .env discovered and credentials parsed",
 		"yes",
+		matrix.VulnerabilityStatusConfirmed,
 	)
 	if err == nil {
 		t.Fatalf("expected credential-validation error for exploitable=yes without auth success evidence")
@@ -68,6 +145,7 @@ func TestValidateVulnerabilityLogInput(t *testing.T) {
 		"Exposed .env file containing sensitive credentials",
 		"Used leaked username/password to login; authenticated successfully and received HTTP 200",
 		"yes",
+		matrix.VulnerabilityStatusConfirmed,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error for valid credential exploit evidence: %v", err)
@@ -79,9 +157,22 @@ func TestValidateVulnerabilityLogInput(t *testing.T) {
 		"SQL Injection",
 		"UNION-based injection returned database rows",
 		"yes",
+		matrix.VulnerabilityStatusConfirmed,
 	)
 	if err != nil {
 		t.Fatalf("unexpected error for non-credential finding: %v", err)
+	}
+
+	err = validateVulnerabilityLogInput(
+		"vid-3",
+		"https://moneybird.com",
+		"Potential issue",
+		"Test evidence",
+		"no",
+		matrix.VulnerabilityStatusCandidate,
+	)
+	if err == nil {
+		t.Fatalf("expected error for candidate status")
 	}
 }
 
@@ -231,10 +322,10 @@ func TestScoreTool_HTTPRequestIgnoresGlobalSnapshotNoise(t *testing.T) {
 
 func TestReachedIterationLimit(t *testing.T) {
 	testCases := []struct {
-		name       string
+		name        string
 		globalIters int
-		maxIters   int
-		want       bool
+		maxIters    int
+		want        bool
 	}{
 		{name: "below limit", globalIters: 2, maxIters: 3, want: false},
 		{name: "at limit", globalIters: 3, maxIters: 3, want: true},

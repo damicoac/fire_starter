@@ -39,6 +39,35 @@ func TestFilterLogsCollapsesToolSummaries(t *testing.T) {
 	}
 }
 
+func TestParseKGIncludesVulnerabilityStatuses(t *testing.T) {
+	data := []byte(`{
+		"targets": {
+			"app.example.com": {
+				"value": "app.example.com",
+				"type": "url",
+				"score": 3,
+				"current_phase": "vulnerability-analysis",
+				"vulnerabilities": ["Candidate fallback"]
+			}
+		},
+		"vulnerability_records": [
+			{"TargetDomain": "app.example.com", "Finding": "Confirmed SQL injection", "Status": "confirmed"},
+			{"TargetDomain": "app.example.com", "Finding": "Server header", "Status": "informational"}
+		]
+	}`)
+
+	targets := parseKG(data, nil)
+	if len(targets) != 1 {
+		t.Fatalf("expected one target, got %#v", targets)
+	}
+	if len(targets[0].VulnerabilityDetails) != 2 {
+		t.Fatalf("expected vulnerability details with statuses, got %#v", targets[0].VulnerabilityDetails)
+	}
+	if targets[0].VulnerabilityDetails[0].Status != "confirmed" || targets[0].VulnerabilityDetails[0].Finding != "Confirmed SQL injection" {
+		t.Fatalf("unexpected first vulnerability detail: %#v", targets[0].VulnerabilityDetails[0])
+	}
+}
+
 func TestStatusBarShowsCurrentMode(t *testing.T) {
 	m := InitialModel()
 	m.width = 80

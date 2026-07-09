@@ -57,7 +57,8 @@ func InitDB(dbPath string) (*sql.DB, error) {
 			finding TEXT NOT NULL,
 			test_code TEXT NOT NULL,
 			exploitable TEXT NOT NULL DEFAULT 'no',
-			processed TEXT NOT NULL DEFAULT 'no'
+			processed TEXT NOT NULL DEFAULT 'no',
+			status TEXT NOT NULL DEFAULT 'candidate'
 		);
 	`)
 	if err != nil {
@@ -77,6 +78,14 @@ func InitDB(dbPath string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := ensureVulnColumn(db, "status", "TEXT NOT NULL DEFAULT 'candidate'"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := migrateVulnerabilityStatuses(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	_, err = db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_vuln_id ON vuln(vuln_id);`)
 	if err != nil && err.Error() != "index idx_vuln_id already exists" { // SQLite might ignore IF NOT EXISTS depending on version, so just in case
 		_ = db.Close()
@@ -85,6 +94,14 @@ func InitDB(dbPath string) (*sql.DB, error) {
 
 	dbInstance = db
 	return dbInstance, nil
+}
+
+func migrateVulnerabilityStatuses(db *sql.DB) error {
+	_, err := db.Exec("UPDATE vuln SET status = 'confirmed' WHERE exploitable = 'yes' AND (status = '' OR status = 'candidate')")
+	if err != nil {
+		return fmt.Errorf("failed to migrate confirmed vulnerability statuses: %w", err)
+	}
+	return nil
 }
 
 func ensureVulnColumn(db *sql.DB, columnName string, columnDef string) error {
@@ -142,25 +159,61 @@ type VulnInfo struct {
 	TestCode     string
 	Exploitable  string
 	Processed    string
+	Status       string
+}
+
+const (
+	VulnerabilityStatusCandidate     = "candidate"
+	VulnerabilityStatusConfirmed     = "confirmed"
+	VulnerabilityStatusDisproven     = "disproven"
+	VulnerabilityStatusInformational = "informational"
+)
+
+func IsValidVulnerabilityStatus(status string) bool {
+	switch status {
+	case VulnerabilityStatusCandidate, VulnerabilityStatusConfirmed, VulnerabilityStatusDisproven, VulnerabilityStatusInformational:
+		return true
+	default:
+		return false
+	}
+}
+
+func NormalizeVulnerabilityStatus(status string) string {
+	if IsValidVulnerabilityStatus(status) {
+		return status
+	}
+	return VulnerabilityStatusCandidate
 }
 
 // LogVulnerability writes or updates a vulnerability finding with its test code to the SQLite database
 func LogVulnerability(vulnID string, targetDomain string, finding string, testCode string, exploitable string, processed string) error {
+	status := VulnerabilityStatusCandidate
+	if exploitable == "yes" {
+		status = VulnerabilityStatusConfirmed
+	}
+	return LogVulnerabilityWithStatus(vulnID, targetDomain, finding, testCode, exploitable, processed, status)
+}
+
+func LogVulnerabilityWithStatus(vulnID string, targetDomain string, finding string, testCode string, exploitable string, processed string, status string) error {
 	if dbInstance == nil {
 		return fmt.Errorf("database not initialized")
 	}
+	if !IsValidVulnerabilityStatus(status) {
+		return fmt.Errorf("invalid vulnerability status: %s", status)
+	}
 
 	_, err := dbInstance.Exec(
-		`INSERT INTO vuln (vuln_id, date_time, target_domain, finding, test_code, exploitable, processed) 
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO vuln (vuln_id, date_time, target_domain, finding, test_code, exploitable, processed, status) 
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(vuln_id) DO UPDATE SET 
 			date_time = excluded.date_time,
 			target_domain = excluded.target_domain,
 			finding = excluded.finding,
 			test_code = excluded.test_code,
 			exploitable = excluded.exploitable,
-			processed = excluded.processed`,
-		vulnID, time.Now().UTC(), targetDomain, finding, testCode, exploitable, processed,
+			processed = excluded.processed,
+			status = excluded.status`,
+		vulnID, time.Now().UTC(), targetDomain, finding, testCode, exploitable, processed, status,
 	)
 	return err
 }
@@ -172,6 +225,15 @@ func MarkVulnerabilityProcessed(vulnID string) error {
 	}
 
 	_, err := dbInstance.Exec("UPDATE vuln SET processed = 'yes' WHERE vuln_id = ?", vulnID)
+	return err
+}
+
+func MarkVulnerabilityDisproven(vulnID string) error {
+	if dbInstance == nil {
+		return fmt.Errorf("database not initialized")
+	}
+
+	_, err := dbInstance.Exec("UPDATE vuln SET processed = 'yes', status = 'disproven' WHERE vuln_id = ?", vulnID)
 	return err
 }
 
@@ -191,7 +253,7 @@ func GetVulnerabilities() ([]VulnInfo, error) {
 		return nil, fmt.Errorf("database not initialized")
 	}
 
-	rows, err := dbInstance.Query("SELECT id, vuln_id, date_time, target_domain, finding, test_code, exploitable, processed FROM vuln")
+	rows, err := dbInstance.Query("SELECT id, vuln_id, date_time, target_domain, finding, test_code, exploitable, processed, status FROM vuln")
 	if err != nil {
 		return nil, err
 	}
@@ -202,9 +264,10 @@ func GetVulnerabilities() ([]VulnInfo, error) {
 		var v VulnInfo
 		var dtStr string
 		var vulnID sql.NullString
-		if err := rows.Scan(&v.ID, &vulnID, &dtStr, &v.TargetDomain, &v.Finding, &v.TestCode, &v.Exploitable, &v.Processed); err != nil {
+		if err := rows.Scan(&v.ID, &vulnID, &dtStr, &v.TargetDomain, &v.Finding, &v.TestCode, &v.Exploitable, &v.Processed, &v.Status); err != nil {
 			return nil, err
 		}
+		v.Status = NormalizeVulnerabilityStatus(v.Status)
 		if vulnID.Valid {
 			v.VulnID = vulnID.String
 		}
