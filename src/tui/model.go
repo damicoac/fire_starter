@@ -68,8 +68,9 @@ type KGUpdateMsg struct {
 }
 
 type KGVulnerability struct {
-	Finding string
-	Status  string
+	Finding  string
+	Status   string
+	Severity string
 }
 
 type KGTarget struct {
@@ -143,6 +144,7 @@ func parseKG(data []byte, existingTargets []KGTarget) []KGTarget {
 			TargetDomain string `json:"TargetDomain"`
 			Finding      string `json:"Finding"`
 			Status       string `json:"Status"`
+			Severity     string `json:"Severity"`
 		} `json:"vulnerability_records"`
 	}
 
@@ -155,7 +157,7 @@ func parseKG(data []byte, existingTargets []KGTarget) []KGTarget {
 		if strings.TrimSpace(v.Finding) == "" || strings.TrimSpace(v.Status) == "" {
 			continue
 		}
-		vulnerabilityDetailsByTarget[v.TargetDomain] = append(vulnerabilityDetailsByTarget[v.TargetDomain], KGVulnerability{Finding: v.Finding, Status: v.Status})
+		vulnerabilityDetailsByTarget[v.TargetDomain] = append(vulnerabilityDetailsByTarget[v.TargetDomain], KGVulnerability{Finding: v.Finding, Status: v.Status, Severity: v.Severity})
 	}
 
 	var newTargets []KGTarget
@@ -304,7 +306,7 @@ func (m *Model) updateKGViewport() {
 		if len(t.VulnerabilityDetails) > 0 {
 			contentBuilder.WriteString(sectionTitleStyle.Foreground(lipgloss.Color("196")).Render("Vulnerabilities") + "\n")
 			for _, v := range t.VulnerabilityDetails {
-				contentBuilder.WriteString(fmt.Sprintf("  • [%s] %s\n", v.Status, v.Finding))
+				contentBuilder.WriteString(fmt.Sprintf("  • [%s/%s] %s\n", v.Status, v.Severity, v.Finding))
 			}
 			contentBuilder.WriteString("\n")
 		} else if len(t.Vulnerabilities) > 0 {
@@ -381,7 +383,7 @@ func (m *Model) updateKGViewport() {
 
 			previewItems := []string{}
 			if len(t.VulnerabilityDetails) > 0 {
-				previewItems = append(previewItems, fmt.Sprintf("[%s] %s", t.VulnerabilityDetails[0].Status, t.VulnerabilityDetails[0].Finding))
+				previewItems = append(previewItems, fmt.Sprintf("[%s/%s] %s", t.VulnerabilityDetails[0].Status, t.VulnerabilityDetails[0].Severity, t.VulnerabilityDetails[0].Finding))
 			} else if len(t.Vulnerabilities) > 0 {
 				previewItems = append(previewItems, "[candidate] "+t.Vulnerabilities[0])
 			}
