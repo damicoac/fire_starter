@@ -43,7 +43,18 @@ func (m *RateLimitProbing) SetThreads(count int) {
 func (m *RateLimitProbing) Execute(ctx context.Context) ([]RateLimitProbingResult, error) {
 	m.results = make([]RateLimitProbingResult, 0)
 
-	// Send 50 requests rapidly to see if we get a 429 Too Many Requests
+	baselineReq, err := http.NewRequestWithContext(ctx, "GET", m.Target, nil)
+	if err != nil {
+		return m.results, nil
+	}
+
+	baselineStatus := 0
+	baselineResp, err := m.Client.Do(baselineReq)
+	if err == nil {
+		baselineStatus = baselineResp.StatusCode
+		baselineResp.Body.Close()
+	}
+
 	numRequests := 50
 	jobs := make(chan int, numRequests)
 	for i := 0; i < numRequests; i++ {
@@ -53,38 +64,58 @@ func (m *RateLimitProbing) Execute(ctx context.Context) ([]RateLimitProbingResul
 
 	var wg sync.WaitGroup
 	var got429 bool
+	var gotRetryAfter bool
+	var gotAuthChallenge bool
+	var successCount int
+	var completedRequests int
+	var firstHalfSuccess int
+	var secondHalfSuccess int
 	var lastReq *http.Request
 
 	for i := 0; i < m.MaxThreads; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for range jobs {
+			for idx := range jobs {
 				select {
 				case <-ctx.Done():
 					return
 				default:
-					req, err := http.NewRequestWithContext(ctx, "GET", m.Target, nil)
-					if err != nil {
+					req, reqErr := http.NewRequestWithContext(ctx, "GET", m.Target, nil)
+					if reqErr != nil {
 						continue
 					}
 
 					m.Mu.Lock()
-					if lastReq == nil {
-						lastReq = req
-					}
+					lastReq = req
 					m.Mu.Unlock()
 
-					resp, err := m.Client.Do(req)
-					if err != nil {
+					resp, doErr := m.Client.Do(req)
+					if doErr != nil {
 						continue
 					}
 
+					m.Mu.Lock()
+					completedRequests++
 					if resp.StatusCode == http.StatusTooManyRequests {
-						m.Mu.Lock()
 						got429 = true
-						m.Mu.Unlock()
 					}
+					if resp.Header.Get("Retry-After") != "" {
+						gotRetryAfter = true
+					}
+					if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+						gotAuthChallenge = true
+					}
+					if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+						successCount++
+						if idx < numRequests/2 {
+							firstHalfSuccess++
+						} else {
+							secondHalfSuccess++
+						}
+					}
+					m.Mu.Unlock()
+
 					resp.Body.Close()
 				}
 			}
@@ -99,19 +130,56 @@ func (m *RateLimitProbing) Execute(ctx context.Context) ([]RateLimitProbingResul
 
 	select {
 	case <-done:
-		if !got429 {
-			m.RecordPoC(lastReq, nil, "No rate limiting (HTTP 429) detected after 50 rapid requests.")
+		m.Mu.Lock()
+		throttle429 := got429
+		retryAfterObserved := gotRetryAfter
+		authObserved := gotAuthChallenge
+		requestsDone := completedRequests
+		totalSuccess := successCount
+		firstSuccess := firstHalfSuccess
+		secondSuccess := secondHalfSuccess
+		m.Mu.Unlock()
+
+		successRate := safeRatio(totalSuccess, requestsDone)
+		firstHalfRate := safeRatio(firstSuccess, numRequests/2)
+		secondHalfRate := safeRatio(secondSuccess, numRequests/2)
+		hasBurstDegradation := firstHalfRate-secondHalfRate > 0.25
+
+		switch {
+		case baselineStatus == http.StatusUnauthorized || baselineStatus == http.StatusForbidden || authObserved:
+			m.RecordPoC(lastReq, nil, "Endpoint remained behind authentication controls during burst probing.")
 			m.results = append(m.results, RateLimitProbingResult{
 				Target: m.Target,
-				Status: "vulnerable",
-				Detail: "No rate limiting (HTTP 429) detected after 50 rapid requests.",
+				Status: "inconclusive",
+				Detail: "No explicit throttling signal detected, but endpoint was access-controlled (401/403).",
 			})
-		} else {
-			m.RecordPoC(lastReq, nil, "Rate limiting is properly enforced (HTTP 429 received).")
+		case requestsDone < numRequests/2 || successRate < 0.4:
+			m.RecordPoC(lastReq, nil, "Burst probing produced unstable responses; throttling result inconclusive.")
+			m.results = append(m.results, RateLimitProbingResult{
+				Target: m.Target,
+				Status: "inconclusive",
+				Detail: "Burst probing produced insufficient stable responses for reliable rate-limit classification.",
+			})
+		case throttle429 && (retryAfterObserved || hasBurstDegradation):
+			m.RecordPoC(lastReq, nil, "Rate limiting detected via HTTP 429 with corroborating throttling behavior.")
 			m.results = append(m.results, RateLimitProbingResult{
 				Target: m.Target,
 				Status: "secure",
-				Detail: "Rate limiting is properly enforced (HTTP 429 received).",
+				Detail: "Rate limiting detected: HTTP 429 observed with corroborating throttling indicators.",
+			})
+		case throttle429 && !retryAfterObserved && !hasBurstDegradation:
+			m.RecordPoC(lastReq, nil, "HTTP 429 responses observed without additional throttling signals; classification inconclusive.")
+			m.results = append(m.results, RateLimitProbingResult{
+				Target: m.Target,
+				Status: "inconclusive",
+				Detail: "HTTP 429 observed, but corroborating throttling indicators were weak or absent.",
+			})
+		default:
+			m.RecordPoC(lastReq, nil, "No throttling indicators detected after burst probing against a reachable endpoint.")
+			m.results = append(m.results, RateLimitProbingResult{
+				Target: m.Target,
+				Status: "vulnerable",
+				Detail: "No throttling indicators detected after 50 rapid requests against an accessible endpoint.",
 			})
 		}
 		return m.results, nil

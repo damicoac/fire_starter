@@ -45,15 +45,26 @@ func (m *MassAssignmentInjection) SetThreads(count int) {
 }
 
 var assignmentPayloads = []map[string]interface{}{
-	{"is_admin": true},
-	{"isAdmin": true},
-	{"role": "admin"},
-	{"permissions": "all"},
-	{"user": map[string]interface{}{"is_admin": true}},
+	{"username": "firestarter_probe", "is_admin": true},
+	{"username": "firestarter_probe", "isAdmin": true},
+	{"username": "firestarter_probe", "role": "admin"},
+	{"username": "firestarter_probe", "permissions": "all"},
+	{"user": map[string]interface{}{"username": "firestarter_probe", "is_admin": true}},
 }
 
 func (m *MassAssignmentInjection) Execute(ctx context.Context) ([]MassAssignmentInjectionResult, error) {
 	m.results = make([]MassAssignmentInjectionResult, 0)
+
+	baselineStatus, baselineBody, baselineErr := m.sendJSON(ctx, map[string]any{"username": "firestarter_probe"})
+	if baselineErr != nil {
+		return m.results, nil
+	}
+	controlStatus, controlBody, controlErr := m.sendJSON(ctx, map[string]any{"username": "firestarter_probe", "firestarter_probe_control": true})
+	if controlErr != nil {
+		return m.results, nil
+	}
+
+	echoesUnknownFields := controlStatus >= http.StatusOK && controlStatus < http.StatusMultipleChoices && strings.Contains(normalizedCompactLower(controlBody), "\"firestarter_probe_control\":true")
 
 	jobs := make(chan map[string]interface{}, len(assignmentPayloads))
 	for _, p := range assignmentPayloads {
@@ -62,7 +73,6 @@ func (m *MassAssignmentInjection) Execute(ctx context.Context) ([]MassAssignment
 	close(jobs)
 
 	var wg sync.WaitGroup
-
 	for i := 0; i < m.MaxThreads; i++ {
 		wg.Add(1)
 		go func() {
@@ -72,7 +82,7 @@ func (m *MassAssignmentInjection) Execute(ctx context.Context) ([]MassAssignment
 				case <-ctx.Done():
 					return
 				default:
-					m.testPayload(ctx, payload)
+					m.testPayload(ctx, payload, baselineStatus, baselineBody, echoesUnknownFields)
 				}
 			}
 		}()
@@ -93,42 +103,96 @@ func (m *MassAssignmentInjection) Execute(ctx context.Context) ([]MassAssignment
 	}
 }
 
-func (m *MassAssignmentInjection) testPayload(ctx context.Context, payload map[string]interface{}) {
-	bodyBytes, _ := json.Marshal(payload)
+func (m *MassAssignmentInjection) sendJSON(ctx context.Context, payload map[string]any) (int, string, error) {
+	bodyBytes, marshalErr := json.Marshal(payload)
+	if marshalErr != nil {
+		return 0, "", marshalErr
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", m.Target, bytes.NewBuffer(bodyBytes))
 	if err != nil {
-		return
+		return 0, "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := m.Client.Do(req)
 	if err != nil {
-		return
+		return 0, "", err
 	}
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
-	respStr := string(respBody)
+	return resp.StatusCode, string(respBody), nil
+}
 
-	// In a real scenario, we might diff against a baseline request.
-	// Here we check if the response echoes back our injected privileged field.
-	payloadStr, _ := json.Marshal(payload)
-	// Strip curlies for simple string search
-	searchStr := strings.Trim(string(payloadStr), "{}")
-
-	if resp.StatusCode == 200 || resp.StatusCode == 201 {
-		if strings.Contains(strings.ToLower(respStr), strings.ToLower(searchStr)) {
-			m.Mu.Lock()
-			m.RecordPoC(req, nil, "Mass assignment potentially successful: API accepted and returned "+string(payloadStr))
-			m.results = append(m.results, MassAssignmentInjectionResult{
-				Target: m.Target,
-				Status: "vulnerable",
-				Detail: "Mass assignment potentially successful: API accepted and returned " + string(payloadStr),
-			})
-			m.Mu.Unlock()
+func hasPrivilegedFieldEcho(responseBody string) bool {
+	normalized := normalizedCompactLower(responseBody)
+	indicators := []string{
+		"\"is_admin\":true",
+		"\"isadmin\":true",
+		"\"role\":\"admin\"",
+		"\"permissions\":\"all\"",
+	}
+	for _, indicator := range indicators {
+		if strings.Contains(normalized, indicator) {
+			return true
 		}
 	}
+	return false
+}
+
+func containsValidationRejection(responseBody string) bool {
+	rejectionTokens := []string{"invalid", "forbidden", "denied", "unauthorized", "not allowed", "validation"}
+	return containsAnyToken(responseBody, rejectionTokens)
+}
+
+func significantlyDiffersFromBaseline(baselineBody string, responseBody string) bool {
+	baselineLen := len(baselineBody)
+	responseLen := len(responseBody)
+	diff := baselineLen - responseLen
+	if diff < 0 {
+		diff = -diff
+	}
+	return safeRatio(diff, baselineLen+1) > 0.1 || diff > 100
+}
+
+func (m *MassAssignmentInjection) testPayload(ctx context.Context, payload map[string]interface{}, baselineStatus int, baselineBody string, echoesUnknownFields bool) {
+	statusCode, responseBody, err := m.sendJSON(ctx, payload)
+	if err != nil {
+		return
+	}
+
+	if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
+		return
+	}
+	if containsValidationRejection(responseBody) {
+		return
+	}
+	if !hasPrivilegedFieldEcho(responseBody) {
+		return
+	}
+	if !significantlyDiffersFromBaseline(baselineBody, responseBody) && statusCode == baselineStatus {
+		return
+	}
+
+	payloadStr, _ := json.Marshal(payload)
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	if echoesUnknownFields {
+		m.RecordPoC(nil, nil, "Privileged-field reflection detected, but endpoint also reflects unknown control fields; classification is inconclusive.")
+		m.results = append(m.results, MassAssignmentInjectionResult{
+			Target: m.Target,
+			Status: "inconclusive",
+			Detail: "Potential privileged-field acceptance observed, but reflective endpoint behavior prevents reliable automatic confirmation.",
+		})
+		return
+	}
+	m.RecordPoC(nil, nil, "Potential mass assignment with differentiated response behavior: "+string(payloadStr))
+	m.results = append(m.results, MassAssignmentInjectionResult{
+		Target: m.Target,
+		Status: "vulnerable",
+		Detail: "Potential mass assignment with differentiated response behavior: " + string(payloadStr),
+	})
 }
 
 func init() {
