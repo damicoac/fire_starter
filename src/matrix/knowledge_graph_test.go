@@ -360,7 +360,7 @@ func TestAddTestCase_PhaseFiltering(t *testing.T) {
 
 	kg.AddTestCase(tc1)
 
-	// Verify it was logged to DB as unprocessed/non-exploitable
+	// Verify it was logged to DB as an unresolved candidate
 	if count := countVulns(); count != 1 {
 		t.Fatalf("Expected 1 logged vulnerability during discovery phase, got %d", count)
 	}
@@ -373,6 +373,9 @@ func TestAddTestCase_PhaseFiltering(t *testing.T) {
 	}
 	if vulns[0].Processed != "no" {
 		t.Errorf("Expected processed status 'no' during discovery phase, got %q", vulns[0].Processed)
+	}
+	if vulns[0].Status != VulnerabilityStatusCandidate {
+		t.Errorf("Expected status %q during discovery phase, got %q", VulnerabilityStatusCandidate, vulns[0].Status)
 	}
 
 	// 2. Target is in PhaseExploitation (Exploit phase)
@@ -409,4 +412,3 @@ func TestAddTestCase_PhaseFiltering(t *testing.T) {
 		t.Errorf("Expected vulnerability count to remain 1 during post-exploit phase, got %d", count)
 	}
 }
-
