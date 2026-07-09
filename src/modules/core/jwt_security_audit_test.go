@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestJWTSecurityAudit_Execute(t *testing.T) {
+func TestJWTSecurityAudit_Execute_DifferentialAlgNoneAttribution(t *testing.T) {
 	callCount := 0
 	mockTransport := &MockTransport{
 		RoundTripFunc: func(req *http.Request) *http.Response {
@@ -23,14 +23,16 @@ func TestJWTSecurityAudit_Execute(t *testing.T) {
 					Header:     headers,
 				}
 			}
+
 			auth := req.Header.Get("Authorization")
-			if strings.Contains(auth, "eyJhbGciOiJub25l") {
+			if strings.Contains(auth, "eyJhbGciOiJub25l") || strings.Contains(auth, "eyJhbGciOiJOb25l") || strings.Contains(auth, "eyJhbGciOiJOT05FI") {
 				return &http.Response{
 					StatusCode: http.StatusOK,
-					Body:       io.NopCloser(bytes.NewBufferString(`{"status": "ok"}`)),
+					Body:       io.NopCloser(bytes.NewBufferString(`{"status":"ok","scope":"admin","firestarter_claim":"allow"}`)),
 					Header:     make(http.Header),
 				}
 			}
+
 			return &http.Response{
 				StatusCode: http.StatusUnauthorized,
 				Body:       io.NopCloser(bytes.NewBufferString(`{"error": "unauthorized"}`)),
@@ -44,14 +46,13 @@ func TestJWTSecurityAudit_Execute(t *testing.T) {
 	module := NewJWTSecurityAudit("http://example.com")
 	module.SetThreads(1)
 
-	ctx := context.Background()
-	result, err := module.Execute(ctx)
+	result, err := module.Execute(context.Background())
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
 
 	if len(result) == 0 || result[0].Status != "vulnerable" {
-		t.Fatalf("expected vulnerable result, got %#v", result)
+		t.Fatalf("expected vulnerable result with alg=none-specific acceptance, got %#v", result)
 	}
 }
 
@@ -156,6 +157,33 @@ func TestJWTSecurityAudit_Execute_SecureWhenJWTNoneRejected(t *testing.T) {
 	}
 	if len(result) == 0 || result[0].Status != "secure" {
 		t.Fatalf("expected secure result when forged JWTs are rejected, got %#v", result)
+	}
+}
+
+func TestJWTSecurityAudit_Execute_InconclusiveWhenBaselineNotAuthGated(t *testing.T) {
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			headers := make(http.Header)
+			headers.Add("WWW-Authenticate", "Bearer")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewBufferString(`{"status":"public"}`)),
+				Header:     headers,
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewJWTSecurityAudit("http://example.com")
+	module.SetThreads(1)
+
+	result, err := module.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if len(result) == 0 || result[0].Status != "inconclusive" {
+		t.Fatalf("expected inconclusive result when baseline is not auth-gated, got %#v", result)
 	}
 }
 
