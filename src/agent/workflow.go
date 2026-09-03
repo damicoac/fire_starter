@@ -538,11 +538,31 @@ func validateVulnerabilityLogInput(vulnID string, target string, finding string,
 	return nil
 }
 
+func buildConfirmedVulnerabilitiesSummary(vulns []matrix.VulnInfo) string {
+	var confirmedFindings []matrix.VulnInfo
+	for _, v := range vulns {
+		if strings.ToLower(strings.TrimSpace(v.Status)) == matrix.VulnerabilityStatusConfirmed {
+			confirmedFindings = append(confirmedFindings, v)
+		}
+	}
+
+	var sb strings.Builder
+	if len(confirmedFindings) > 0 {
+		sb.WriteString("Confirmed vulnerabilities detected during this engagement:\n\n")
+		for _, v := range confirmedFindings {
+			sb.WriteString(fmt.Sprintf("- Target Domain: %s\n  Finding: %s\n  Status: %s\n  Severity: %s\n  Date/Time: %s\n\n", v.TargetDomain, v.Finding, v.Status, v.Severity, v.DateTime.Format(time.RFC3339)))
+		}
+	} else {
+		sb.WriteString("No confirmed vulnerabilities were detected during the assessment.\n\n")
+	}
+	return sb.String()
+}
+
 func buildVulnerabilityReportInput(vulns []matrix.VulnInfo) (string, []matrix.VulnInfo) {
 	var confirmedFindings []matrix.VulnInfo
 	var informationalFindings []matrix.VulnInfo
 	for _, v := range vulns {
-		switch v.Status {
+		switch strings.ToLower(strings.TrimSpace(v.Status)) {
 		case matrix.VulnerabilityStatusConfirmed:
 			confirmedFindings = append(confirmedFindings, v)
 		case matrix.VulnerabilityStatusInformational:
@@ -658,7 +678,11 @@ func runVulnerabilityHelperSubAgent(
 					}
 				}
 			}
-			rawGraph, _ = json.Marshal(data)
+			if b, err := json.Marshal(data); err == nil {
+				rawGraph = b
+			} else {
+				rawGraph = rawBytes
+			}
 		} else {
 			rawGraph = rawBytes
 		}
@@ -726,13 +750,21 @@ func runVulnerabilityHelperSubAgent(
 					})
 					continue
 				}
-				_, _ = args["vuln_id"].(string)
-				targetStr, _ := args["target"].(string)
-				fnd, _ := args["finding"].(string)
-				testCode, _ := args["test_code"].(string)
-				exploitable, _ := args["exploitable"].(string)
-				status, _ := args["status"].(string)
-				severity, _ := args["severity"].(string)
+				// We don't use args["vuln_id"] as we rely on origVulnID, but let's parse safely anyway
+				targetStr, okTarget := args["target"].(string)
+				fnd, okFnd := args["finding"].(string)
+				testCode, okTest := args["test_code"].(string)
+				exploitable, okExploit := args["exploitable"].(string)
+				status, okStatus := args["status"].(string)
+				severity, okSev := args["severity"].(string)
+
+				if !okTarget || !okFnd || !okTest || !okExploit || !okStatus || !okSev {
+					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
+						ToolCallID: tc.ToolCallID,
+						Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: Invalid parameter types provided. All parameters must be strings."},
+					})
+					continue
+				}
 
 				// Update the existing vulnerability record keeping the ID the same
 				if validationErr := validateVulnerabilityLogInput(origVulnID, targetStr, fnd, testCode, exploitable, status, severity); validationErr != nil {
@@ -762,7 +794,10 @@ func runVulnerabilityHelperSubAgent(
 
 			if tc.ToolName == "query_knowledge_graph" {
 				var qArgs map[string]any
-				_ = json.Unmarshal([]byte(tc.Input), &qArgs)
+				if err := json.Unmarshal([]byte(tc.Input), &qArgs); err != nil {
+					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{ToolCallID: tc.ToolCallID, Output: fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: Invalid JSON input."}})
+					continue
+				}
 				qType, _ := qArgs["query_type"].(string)
 
 				var resBytes []byte
@@ -774,7 +809,10 @@ func runVulnerabilityHelperSubAgent(
 							ips = append(ips, t.Value)
 						}
 					}
-					resBytes, _ = json.Marshal(ips)
+					resBytes, err = json.Marshal(ips)
+					if err != nil {
+						resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
+					}
 				case "urls":
 					var urls []string
 					for _, t := range kg.Targets {
@@ -782,7 +820,10 @@ func runVulnerabilityHelperSubAgent(
 							urls = append(urls, t.Value)
 						}
 					}
-					resBytes, _ = json.Marshal(urls)
+					resBytes, err = json.Marshal(urls)
+					if err != nil {
+						resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
+					}
 				case "ports":
 					ports := make(map[string][]int)
 					for _, t := range kg.Targets {
@@ -790,18 +831,33 @@ func runVulnerabilityHelperSubAgent(
 							ports[t.Value] = t.OpenPorts
 						}
 					}
-					resBytes, _ = json.Marshal(ports)
+					resBytes, err = json.Marshal(ports)
+					if err != nil {
+						resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
+					}
 				case "credentials":
-					resBytes, _ = json.Marshal(kg.GetCredentials())
+					resBytes, err = json.Marshal(kg.GetCredentials())
+					if err != nil {
+						resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
+					}
 				case "vulnerabilities":
 					vulns, err := matrix.GetVulnerabilities()
 					if err != nil {
-						resBytes, _ = json.Marshal(map[string]string{"error": fmt.Sprintf("failed to query vulnerabilities: %v", err)})
+						resBytes, err = json.Marshal(map[string]string{"error": fmt.Sprintf("failed to query vulnerabilities: %v", err)})
+						if err != nil {
+							resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
+						}
 					} else {
-						resBytes, _ = json.Marshal(vulns)
+						resBytes, err = json.Marshal(vulns)
+						if err != nil {
+							resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
+						}
 					}
 				case "tokens":
-					resBytes, _ = json.Marshal(kg.GetTokens())
+					resBytes, err = json.Marshal(kg.GetTokens())
+					if err != nil {
+						resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
+					}
 				default:
 					rawBytes, _ := kg.ToJSON(currentTarget)
 					var data map[string]any
@@ -814,7 +870,10 @@ func runVulnerabilityHelperSubAgent(
 								}
 							}
 						}
-						resBytes, _ = json.Marshal(data)
+						resBytes, err = json.Marshal(data)
+						if err != nil {
+							resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
+						}
 					} else {
 						resBytes = rawBytes
 					}
@@ -892,7 +951,10 @@ func runVulnerabilityHelperSubAgent(
 				continue
 			}
 
-			payloadBytes, _ := json.Marshal(payload)
+			payloadBytes, err := json.Marshal(payload)
+			if err != nil {
+				log.Errorf("Failed to marshal payload: %v", err)
+			}
 			payloadHash := fmt.Sprintf("%s|%s", tc.ToolName, string(payloadBytes))
 			if executedPayloads[payloadHash] {
 				toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
@@ -1030,6 +1092,7 @@ func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*m
 		return "", fmt.Errorf("failed to init executor: %w", err)
 	}
 	kg := matrix.NewKnowledgeGraph()
+	defer kg.Close()
 	kg.ConfigTarget = target
 	kg.OnUpdate = onKGUpdate
 
@@ -1215,7 +1278,8 @@ func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*m
 	}
 
 	if reportStr == "" {
-		reportStr = "# Final Report\n\n**Engagement Completed (Failed to generate narrative report).**\n\n" + vulnsListStr
+		confirmedSummary := buildConfirmedVulnerabilitiesSummary(vulns)
+		reportStr = "# Final Report\n\n**Engagement Completed (Failed to generate narrative report).**\n\n" + confirmedSummary
 	}
 
 	reportStr = appendInformationalFindings(reportStr, informationalFindings)
@@ -1650,7 +1714,10 @@ IP whitelist policy:
 
 			if tc.ToolName == "query_knowledge_graph" {
 				var qArgs map[string]any
-				_ = json.Unmarshal([]byte(tc.Input), &qArgs)
+				if err := json.Unmarshal([]byte(tc.Input), &qArgs); err != nil {
+					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{ToolCallID: tc.ToolCallID, Output: fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: Invalid JSON input."}})
+					continue
+				}
 				qType, _ := qArgs["query_type"].(string)
 
 				var resBytes []byte
@@ -1662,7 +1729,10 @@ IP whitelist policy:
 							ips = append(ips, t.Value)
 						}
 					}
-					resBytes, _ = json.Marshal(ips)
+					resBytes, err = json.Marshal(ips)
+					if err != nil {
+						resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
+					}
 				case "urls":
 					var urls []string
 					for _, t := range kg.Targets {
@@ -1670,7 +1740,10 @@ IP whitelist policy:
 							urls = append(urls, t.Value)
 						}
 					}
-					resBytes, _ = json.Marshal(urls)
+					resBytes, err = json.Marshal(urls)
+					if err != nil {
+						resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
+					}
 				case "ports":
 					ports := make(map[string][]int)
 					for _, t := range kg.Targets {
@@ -1678,18 +1751,33 @@ IP whitelist policy:
 							ports[t.Value] = t.OpenPorts
 						}
 					}
-					resBytes, _ = json.Marshal(ports)
+					resBytes, err = json.Marshal(ports)
+					if err != nil {
+						resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
+					}
 				case "credentials":
-					resBytes, _ = json.Marshal(kg.GetCredentials())
+					resBytes, err = json.Marshal(kg.GetCredentials())
+					if err != nil {
+						resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
+					}
 				case "vulnerabilities":
 					vulns, err := matrix.GetVulnerabilities()
 					if err != nil {
-						resBytes, _ = json.Marshal(map[string]string{"error": fmt.Sprintf("failed to query vulnerabilities: %v", err)})
+						resBytes, err = json.Marshal(map[string]string{"error": fmt.Sprintf("failed to query vulnerabilities: %v", err)})
+						if err != nil {
+							resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
+						}
 					} else {
-						resBytes, _ = json.Marshal(vulns)
+						resBytes, err = json.Marshal(vulns)
+						if err != nil {
+							resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
+						}
 					}
 				case "tokens":
-					resBytes, _ = json.Marshal(kg.GetTokens())
+					resBytes, err = json.Marshal(kg.GetTokens())
+					if err != nil {
+						resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
+					}
 				default:
 					rawBytes, _ := kg.ToJSON(currentTarget)
 					var data map[string]any
@@ -1702,7 +1790,10 @@ IP whitelist policy:
 								}
 							}
 						}
-						resBytes, _ = json.Marshal(data)
+						resBytes, err = json.Marshal(data)
+						if err != nil {
+							resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
+						}
 					} else {
 						resBytes = rawBytes
 					}
@@ -1747,7 +1838,10 @@ IP whitelist policy:
 				continue
 			}
 
-			payloadBytes, _ := json.Marshal(payload)
+			payloadBytes, err := json.Marshal(payload)
+			if err != nil {
+				log.Errorf("Failed to marshal payload: %v", err)
+			}
 			payloadHash := fmt.Sprintf("%s|%s", tc.ToolName, string(payloadBytes))
 			if executedPayloads[payloadHash] {
 				toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
@@ -1903,4 +1997,7 @@ IP whitelist policy:
 
 func saveTargetReport(ctx context.Context, target string, cfg Config, kg *matrix.KnowledgeGraph, model fantasy.LanguageModel) {
 	log.Infof("Assessment completed for target: %s. Transitioned to reporting phase.", target)
+	if kg != nil {
+		kg.SetContextValue(fmt.Sprintf("target_reporting_%s", target), true)
+	}
 }

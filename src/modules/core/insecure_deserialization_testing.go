@@ -102,7 +102,7 @@ func (m *InsecureDeserializationTesting) testPayload(ctx context.Context, p dese
 	}
 
 	// Inject serialized object into a common session cookie
-	req.AddCookie(&http.Cookie{Name: p.cookie, Value: p.payload})
+	req.Header.Set("Cookie", fmt.Sprintf("%s=%s", p.cookie, p.payload))
 
 	resp, err := m.Client.Do(req)
 	if err != nil {

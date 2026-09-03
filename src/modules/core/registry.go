@@ -83,3 +83,21 @@ func PayloadInt(payload map[string]any, key string, fallback int) int {
 	}
 	return fallback
 }
+
+func PayloadBool(payload map[string]any, key string, fallback bool) bool {
+	v, ok := payload[key]
+	if !ok || v == nil {
+		return fallback
+	}
+	switch val := v.(type) {
+	case bool:
+		return val
+	case string:
+		if b, err := strconv.ParseBool(val); err == nil {
+			return b
+		}
+	case int:
+		return val != 0
+	}
+	return fallback
+}

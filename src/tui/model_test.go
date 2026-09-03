@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestFilterLogsByCategory(t *testing.T) {
@@ -73,13 +75,96 @@ func TestStatusBarShowsCurrentMode(t *testing.T) {
 	m.width = 80
 	m.activePane = 1
 	m.activeLogFilter = LogCategoryErrors
-	m.inspectorMode = true
 	m.kgTargets = []KGTarget{{Value: "example.com"}}
 
 	view := m.statusBarView()
-	for _, expected := range []string{"Pane: Knowledge Graph", "Mode: Inspector", "Filter: Errors", "Targets: 1"} {
+	for _, expected := range []string{"View: 1 Execution Logs", "Focus: Right Pane", "Filter: Errors", "Targets: 1"} {
 		if !strings.Contains(view, expected) {
 			t.Fatalf("statusBarView missing %q in %q", expected, view)
 		}
 	}
 }
+
+func TestTabTogglesFocus(t *testing.T) {
+	m := InitialModel()
+	if m.activePane != 0 || m.activeTab != 0 {
+		t.Fatalf("initial state: activePane=%d, activeTab=%d, expected 0, 0", m.activePane, m.activeTab)
+	}
+
+	// Press Tab -> activePane=1 (Right Pane), activeTab stays 0
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+	if m.activePane != 1 || m.activeTab != 0 {
+		t.Fatalf("after 1st tab: activePane=%d, activeTab=%d, expected 1, 0", m.activePane, m.activeTab)
+	}
+
+	// Press Tab again -> activePane=0 (Left Pane), activeTab stays 0
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+	if m.activePane != 0 || m.activeTab != 0 {
+		t.Fatalf("after 2nd tab: activePane=%d, activeTab=%d, expected 0, 0", m.activePane, m.activeTab)
+	}
+}
+
+func TestNumberKeysSwitchViews(t *testing.T) {
+	m := InitialModel()
+
+	// Press '2' -> View 2 (Site Map)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	m = updated.(Model)
+	if m.activeTab != 1 {
+		t.Fatalf("press '2': activeTab=%d, expected 1", m.activeTab)
+	}
+
+	// Press '3' -> View 3 (Knowledge Base & Findings)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'3'}})
+	m = updated.(Model)
+	if m.activeTab != 2 {
+		t.Fatalf("press '3': activeTab=%d, expected 2", m.activeTab)
+	}
+
+	// Press '1' -> View 1 (Execution Logs)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+	m = updated.(Model)
+	if m.activeTab != 0 {
+		t.Fatalf("press '1': activeTab=%d, expected 0", m.activeTab)
+	}
+}
+
+func TestBuildSiteMapView_HierarchicalTree(t *testing.T) {
+	targets := []KGTarget{
+		{
+			Value: "example.com",
+			Score: 10,
+			CurrentPhase: "reconnaissance",
+			DiscoveredURLs: []string{
+				"http://example.com/api/v1/users",
+				"http://example.com/api/v1/posts",
+				"http://example.com/auth/login?redirect=dash",
+			},
+		},
+	}
+
+	view := buildSiteMapView(targets, 80)
+
+	expectedSubstrings := []string{
+		"Target Site Map & Topology",
+		"▼ 🌐 example.com",
+		"📁 / (root surface)",
+		"📁 api",
+		"📁 v1",
+		"📄 users",
+		"📄 posts",
+		"📁 auth",
+		"📄 login",
+		"?redirect",
+	}
+
+	for _, exp := range expectedSubstrings {
+		if !strings.Contains(view, exp) {
+			t.Errorf("expected site map view to contain %q, but got:\n%s", exp, view)
+		}
+	}
+}
+
+

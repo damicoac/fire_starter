@@ -61,3 +61,24 @@ func TestBusinessLogicBypass_Execute_NoVulnerability(t *testing.T) {
 		t.Fatalf("Expected no results, got %d", len(res))
 	}
 }
+
+func TestBusinessLogicBypass_NegativePhrasingIgnored(t *testing.T) {
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewBufferString(`{"status": "Operation not successful", "error": "Order was not confirmed"}`)),
+				Header:     make(http.Header),
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewBusinessLogicBypass("http://example.com")
+	ctx := context.Background()
+	res, _ := module.Execute(ctx)
+	if len(res) > 0 {
+		t.Fatalf("Expected negative phrasing to not trigger finding, got %d", len(res))
+	}
+}

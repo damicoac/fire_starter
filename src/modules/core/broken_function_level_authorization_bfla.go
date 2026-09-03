@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -125,6 +126,13 @@ func (m *BrokenFunctionLevelAuthorizationBfla) testPath(ctx context.Context, pat
 
 	// If we get a 200 OK on an admin endpoint, ensure it's not a false positive
 	if resp.StatusCode == http.StatusOK {
+		bodyStr := strings.ToLower(string(bodyBytes))
+		if strings.Contains(bodyStr, "login") || strings.Contains(bodyStr, "sign in") ||
+			strings.Contains(bodyStr, "authenticate") || strings.Contains(bodyStr, "password") ||
+			strings.Contains(bodyStr, "page not found") {
+			return
+		}
+
 		diff := respLen - baselineLen
 		if diff < 0 {
 			diff = -diff

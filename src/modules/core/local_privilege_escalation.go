@@ -17,9 +17,19 @@ func NewLocalPrivilegeEscalation(target string) *LocalPrivilegeEscalation {
 	}
 }
 
-func (m *LocalPrivilegeEscalation) Execute(ctx context.Context) ([]string, error) {
-	return []string{
-		"to be implemented",
+type LocalPrivilegeEscalationResult struct {
+	Target string `json:"target"`
+	Status string `json:"status"`
+	Detail string `json:"detail,omitempty"`
+}
+
+func (m *LocalPrivilegeEscalation) Execute(ctx context.Context) ([]LocalPrivilegeEscalationResult, error) {
+	return []LocalPrivilegeEscalationResult{
+		{
+			Target: m.Target,
+			Status: "not_implemented",
+			Detail: "Local privilege escalation post-exploitation is not configured for this target environment.",
+		},
 	}, nil
 }
 

@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 
+	"fire_starter/src/matrix"
+
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -82,6 +84,7 @@ type KGTarget struct {
 	Tokens               []string
 	Vulnerabilities      []string
 	VulnerabilityDetails []KGVulnerability
+	DiscoveredURLs       []string
 	Credentials          []struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -103,6 +106,7 @@ type Model struct {
 	width              int
 	height             int
 	activePane         int
+	activeTab          int
 	activeLogFilter    LogCategory
 	collapsedSummaries bool
 }
@@ -135,6 +139,7 @@ func parseKG(data []byte, existingTargets []KGTarget) []KGTarget {
 			OpenPorts       []int    `json:"open_ports"`
 			Tokens          []string `json:"tokens"`
 			Vulnerabilities []string `json:"vulnerabilities"`
+			DiscoveredURLs  []string `json:"discovered_urls"`
 			Credentials     []struct {
 				Username string `json:"username"`
 				Password string `json:"password"`
@@ -171,6 +176,7 @@ func parseKG(data []byte, existingTargets []KGTarget) []KGTarget {
 			Tokens:               t.Tokens,
 			Vulnerabilities:      t.Vulnerabilities,
 			VulnerabilityDetails: vulnerabilityDetailsByTarget[t.Value],
+			DiscoveredURLs:       t.DiscoveredURLs,
 			Credentials:          t.Credentials,
 		})
 	}
@@ -189,10 +195,17 @@ func (m *Model) rebuildLogsViewport(stickBottom bool) {
 	if !m.ready {
 		return
 	}
-	m.visibleLogs = filterLogs(m.allLogs, m.activeLogFilter, m.collapsedSummaries)
-	m.logsViewport.SetContent(wordwrap.String(strings.Join(m.visibleLogs, "\n"), m.logsViewport.Width))
-	if stickBottom {
-		m.logsViewport.GotoBottom()
+	switch m.activeTab {
+	case 1:
+		m.logsViewport.SetContent(buildSiteMapView(m.kgTargets, m.logsViewport.Width))
+	case 2:
+		m.logsViewport.SetContent(buildTargetCardsView(m.kgTargets, m.dashboardCursor, m.activePane == 0, m.logsViewport.Width))
+	default:
+		m.visibleLogs = filterLogs(m.allLogs, m.activeLogFilter, m.collapsedSummaries)
+		m.logsViewport.SetContent(wordwrap.String(strings.Join(m.visibleLogs, "\n"), m.logsViewport.Width))
+		if stickBottom {
+			m.logsViewport.GotoBottom()
+		}
 	}
 }
 
@@ -279,143 +292,257 @@ func phaseBreakdown(targets []KGTarget) string {
 	return strings.Join(parts, " ")
 }
 
+func buildSiteMapView(targets []KGTarget, width int) string {
+	if len(targets) == 0 {
+		return mutedStyle.Render("No site map data discovered yet.")
+	}
+
+	var sb strings.Builder
+	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Bold(true)
+	header := titleStyle.Render("🌐 Target Site Map & Topology")
+	sb.WriteString(header + "\n\n")
+
+	totalURLs := 0
+	totalNodes := 0
+	siteMaps := make([]*matrix.SiteMap, len(targets))
+
+	for i, t := range targets {
+		totalURLs += len(t.DiscoveredURLs)
+		sm := matrix.NewSiteMap(t.Value)
+		for _, u := range t.DiscoveredURLs {
+			sm.AddURL(u, "", 0, "", nil)
+		}
+		siteMaps[i] = sm
+		totalNodes += sm.NodeCount()
+	}
+
+	summary := mutedStyle.Render(fmt.Sprintf("Targets: %d   Discovered Endpoints: %d   Tree Nodes: %d", len(targets), totalURLs, totalNodes))
+	sb.WriteString(summary + "\n\n")
+
+	for i, t := range targets {
+		sm := siteMaps[i]
+		targetHeader := lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Bold(true).Render("▼ 🌐 " + t.Value)
+		scoreBadge := mutedStyle.Render(fmt.Sprintf(" (score %d)", t.Score))
+		sb.WriteString(targetHeader + scoreBadge + " " + phaseBadge(t.CurrentPhase) + "\n")
+
+		children := sm.Root.SortedChildren()
+		if len(children) == 0 {
+			sb.WriteString(mutedStyle.Render("  └── 📁 / (root surface only)\n\n"))
+			continue
+		}
+
+		sb.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Render("  ├── 📁 / (root surface)\n"))
+		for idx, child := range children {
+			isLast := (idx == len(children)-1)
+			renderSiteNode(&sb, child, "  ", isLast, width)
+		}
+		sb.WriteString("\n")
+	}
+
+	return clipViewLines(sb.String(), width)
+}
+
+func renderSiteNode(sb *strings.Builder, node *matrix.SiteNode, prefix string, isLast bool, width int) {
+	connector := "├── "
+	if isLast {
+		connector = "└── "
+	}
+
+	children := node.SortedChildren()
+	hasChildren := len(children) > 0
+
+	icon := "📄 "
+	nodeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	if hasChildren {
+		icon = "📁 "
+		nodeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Bold(true)
+	}
+
+	lineText := prefix + connector + icon + nodeStyle.Render(node.Path)
+
+	if node.Method != "" {
+		methodStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true)
+		lineText += " " + methodStyle.Render("["+node.Method+"]")
+	}
+	if node.StatusCode > 0 {
+		statusColor := lipgloss.Color("46")
+		if node.StatusCode >= 400 {
+			statusColor = lipgloss.Color("196")
+		} else if node.StatusCode >= 300 {
+			statusColor = lipgloss.Color("220")
+		}
+		statusStyle := lipgloss.NewStyle().Foreground(statusColor)
+		lineText += " " + statusStyle.Render(fmt.Sprintf("[%d]", node.StatusCode))
+	}
+	if len(node.Parameters) > 0 {
+		paramStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("220"))
+		lineText += " " + paramStyle.Render("?"+strings.Join(node.Parameters, ","))
+	}
+
+	sb.WriteString(lineText + "\n")
+
+	childPrefix := prefix + "│   "
+	if isLast {
+		childPrefix = prefix + "    "
+	}
+
+	for i, child := range children {
+		childIsLast := (i == len(children)-1)
+		renderSiteNode(sb, child, childPrefix, childIsLast, width)
+	}
+}
+
+func clipViewLines(s string, maxWidth int) string {
+	if maxWidth <= 0 {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		if lipgloss.Width(line) > maxWidth {
+			lines[i] = lipgloss.NewStyle().MaxWidth(maxWidth).Render(line)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func buildTargetCardsView(targets []KGTarget, cursor int, isPaneActive bool, width int) string {
+	if len(targets) == 0 {
+		return mutedStyle.Render("No targets discovered yet.")
+	}
+
+	var contentBuilder strings.Builder
+	totalPorts, totalVulns, totalTokens, totalCreds := 0, 0, 0, 0
+	for _, t := range targets {
+		totalPorts += len(t.OpenPorts)
+		totalVulns += len(t.Vulnerabilities)
+		totalTokens += len(t.Tokens)
+		totalCreds += len(t.Credentials)
+	}
+
+	summaryTop := joinNonEmpty([]string{
+		countBadge("Targets", len(targets), lipgloss.Color("62")),
+		countBadge("Vulns", totalVulns, lipgloss.Color("196")),
+		countBadge("Creds", totalCreds, lipgloss.Color("220")),
+		countBadge("Tokens", totalTokens, lipgloss.Color("99")),
+		countBadge("Ports", totalPorts, lipgloss.Color("33")),
+	}, " ")
+	contentBuilder.WriteString(summaryTop + "\n")
+	contentBuilder.WriteString(phaseBreakdown(targets) + "\n\n")
+
+	for i, t := range targets {
+		cardStyle := cardBaseStyle
+		if i == cursor && isPaneActive {
+			cardStyle = cardSelectedStyle
+		}
+
+		icon := "Host"
+		nameColor := lipgloss.Color("33")
+		if t.Type == "ip" {
+			icon = "IP"
+			nameColor = lipgloss.Color("46")
+		}
+
+		headerLeft := lipgloss.NewStyle().Foreground(nameColor).Bold(true).Render(icon + "  " + t.Value)
+		headerRight := mutedStyle.Render(fmt.Sprintf("score %d", t.Score))
+		headerWidth := max(0, width-8-lipgloss.Width(headerRight))
+		header := lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(headerWidth).Render(headerLeft), headerRight)
+
+		badges := joinNonEmpty([]string{
+			phaseBadge(t.CurrentPhase),
+			countBadge("Ports", len(t.OpenPorts), lipgloss.Color("33")),
+			countBadge("Vulns", len(t.Vulnerabilities), lipgloss.Color("196")),
+			countBadge("Creds", len(t.Credentials), lipgloss.Color("220")),
+			countBadge("Tokens", len(t.Tokens), lipgloss.Color("99")),
+		}, " ")
+
+		previewItems := []string{}
+		if len(t.VulnerabilityDetails) > 0 {
+			previewItems = append(previewItems, fmt.Sprintf("[%s/%s] %s", t.VulnerabilityDetails[0].Status, t.VulnerabilityDetails[0].Severity, t.VulnerabilityDetails[0].Finding))
+		} else if len(t.Vulnerabilities) > 0 {
+			previewItems = append(previewItems, "[candidate] "+t.Vulnerabilities[0])
+		}
+		if len(t.Credentials) > 0 {
+			previewItems = append(previewItems, fmt.Sprintf("%s:%s", t.Credentials[0].Username, t.Credentials[0].Password))
+		}
+		if len(t.Tokens) > 0 {
+			previewItems = append(previewItems, t.Tokens[0])
+		}
+		preview := mutedStyle.Render("Select to inspect details")
+		if len(previewItems) > 0 {
+			preview = mutedStyle.Render(strings.Join(previewItems, "  •  "))
+		}
+
+		card := lipgloss.JoinVertical(lipgloss.Left, header, badges, preview)
+		contentBuilder.WriteString(cardStyle.Width(max(0, width-2)).Render(card) + "\n")
+	}
+
+	return wordwrap.String(contentBuilder.String(), width)
+}
+
+func buildInspectorView(t KGTarget, width int) string {
+	var contentBuilder strings.Builder
+
+	titleRow := lipgloss.JoinHorizontal(lipgloss.Left, cardTitleStyle.Foreground(lipgloss.Color("205")).Render(t.Value), " ", phaseBadge(t.CurrentPhase))
+	metaRow := mutedStyle.Render(fmt.Sprintf("Type: %s   Score: %d", t.Type, t.Score))
+	contentBuilder.WriteString(titleRow + "\n" + metaRow + "\n\n")
+
+	if len(t.OpenPorts) > 0 {
+		contentBuilder.WriteString(sectionTitleStyle.Foreground(lipgloss.Color("99")).Render("Open Ports") + "\n")
+		for _, p := range t.OpenPorts {
+			contentBuilder.WriteString(fmt.Sprintf("  • %d\n", p))
+		}
+		contentBuilder.WriteString("\n")
+	}
+
+	if len(t.VulnerabilityDetails) > 0 {
+		contentBuilder.WriteString(sectionTitleStyle.Foreground(lipgloss.Color("196")).Render("Vulnerabilities") + "\n")
+		for _, v := range t.VulnerabilityDetails {
+			contentBuilder.WriteString(fmt.Sprintf("  • [%s/%s] %s\n", v.Status, v.Severity, v.Finding))
+		}
+		contentBuilder.WriteString("\n")
+	} else if len(t.Vulnerabilities) > 0 {
+		contentBuilder.WriteString(sectionTitleStyle.Foreground(lipgloss.Color("196")).Render("Vulnerabilities") + "\n")
+		for _, v := range t.Vulnerabilities {
+			contentBuilder.WriteString(fmt.Sprintf("  • [candidate] %s\n", v))
+		}
+		contentBuilder.WriteString("\n")
+	}
+
+	if len(t.Tokens) > 0 {
+		contentBuilder.WriteString(sectionTitleStyle.Foreground(lipgloss.Color("220")).Render("Tokens / Cookies") + "\n")
+		for _, token := range t.Tokens {
+			contentBuilder.WriteString(fmt.Sprintf("  • %s\n", token))
+		}
+		contentBuilder.WriteString("\n")
+	}
+
+	if len(t.Credentials) > 0 {
+		contentBuilder.WriteString(sectionTitleStyle.Foreground(lipgloss.Color("250")).Render("Credentials") + "\n")
+		for _, cred := range t.Credentials {
+			contentBuilder.WriteString(fmt.Sprintf("  • %s:%s\n", cred.Username, cred.Password))
+		}
+		contentBuilder.WriteString("\n")
+	}
+
+	return wordwrap.String(contentBuilder.String(), width)
+}
+
 func (m *Model) updateKGViewport() {
 	if !m.ready {
 		return
 	}
 
-	var contentBuilder strings.Builder
-
-	if m.inspectorMode && m.dashboardCursor < len(m.kgTargets) {
-		t := m.kgTargets[m.dashboardCursor]
-		header := sectionTitleStyle.Render("Press Esc to return")
-		contentBuilder.WriteString(header + "\n\n")
-
-		titleRow := lipgloss.JoinHorizontal(lipgloss.Left, cardTitleStyle.Foreground(lipgloss.Color("205")).Render(t.Value), " ", phaseBadge(t.CurrentPhase))
-		metaRow := mutedStyle.Render(fmt.Sprintf("Type: %s   Score: %d", t.Type, t.Score))
-		contentBuilder.WriteString(titleRow + "\n" + metaRow + "\n\n")
-
-		if len(t.OpenPorts) > 0 {
-			contentBuilder.WriteString(sectionTitleStyle.Foreground(lipgloss.Color("99")).Render("Open Ports") + "\n")
-			for _, p := range t.OpenPorts {
-				contentBuilder.WriteString(fmt.Sprintf("  • %d\n", p))
-			}
-			contentBuilder.WriteString("\n")
+	if m.activeTab == 2 {
+		if len(m.kgTargets) > 0 && m.dashboardCursor < len(m.kgTargets) {
+			t := m.kgTargets[m.dashboardCursor]
+			m.kgViewport.SetContent(buildInspectorView(t, m.kgViewport.Width))
+		} else {
+			m.kgViewport.SetContent(mutedStyle.Render("No target selected."))
 		}
-
-		if len(t.VulnerabilityDetails) > 0 {
-			contentBuilder.WriteString(sectionTitleStyle.Foreground(lipgloss.Color("196")).Render("Vulnerabilities") + "\n")
-			for _, v := range t.VulnerabilityDetails {
-				contentBuilder.WriteString(fmt.Sprintf("  • [%s/%s] %s\n", v.Status, v.Severity, v.Finding))
-			}
-			contentBuilder.WriteString("\n")
-		} else if len(t.Vulnerabilities) > 0 {
-			contentBuilder.WriteString(sectionTitleStyle.Foreground(lipgloss.Color("196")).Render("Vulnerabilities") + "\n")
-			for _, v := range t.Vulnerabilities {
-				contentBuilder.WriteString(fmt.Sprintf("  • [candidate] %s\n", v))
-			}
-			contentBuilder.WriteString("\n")
-		}
-
-		if len(t.Tokens) > 0 {
-			contentBuilder.WriteString(sectionTitleStyle.Foreground(lipgloss.Color("220")).Render("Tokens / Cookies") + "\n")
-			for _, token := range t.Tokens {
-				contentBuilder.WriteString(fmt.Sprintf("  • %s\n", token))
-			}
-			contentBuilder.WriteString("\n")
-		}
-
-		if len(t.Credentials) > 0 {
-			contentBuilder.WriteString(sectionTitleStyle.Foreground(lipgloss.Color("250")).Render("Credentials") + "\n")
-			for _, cred := range t.Credentials {
-				contentBuilder.WriteString(fmt.Sprintf("  • %s:%s\n", cred.Username, cred.Password))
-			}
-			contentBuilder.WriteString("\n")
-		}
-	} else {
-		totalPorts, totalVulns, totalTokens, totalCreds := 0, 0, 0, 0
-		for _, t := range m.kgTargets {
-			totalPorts += len(t.OpenPorts)
-			totalVulns += len(t.Vulnerabilities)
-			totalTokens += len(t.Tokens)
-			totalCreds += len(t.Credentials)
-		}
-
-		summaryTop := joinNonEmpty([]string{
-			countBadge("Targets", len(m.kgTargets), lipgloss.Color("62")),
-			countBadge("Vulns", totalVulns, lipgloss.Color("196")),
-			countBadge("Creds", totalCreds, lipgloss.Color("220")),
-			countBadge("Tokens", totalTokens, lipgloss.Color("99")),
-			countBadge("Ports", totalPorts, lipgloss.Color("33")),
-		}, " ")
-		contentBuilder.WriteString(summaryTop + "\n")
-		contentBuilder.WriteString(phaseBreakdown(m.kgTargets) + "\n\n")
-
-		if len(m.kgTargets) == 0 {
-			contentBuilder.WriteString(mutedStyle.Render("No targets discovered yet."))
-		}
-
-		for i, t := range m.kgTargets {
-			cardStyle := cardBaseStyle
-			if i == m.dashboardCursor && m.activePane == 1 {
-				cardStyle = cardSelectedStyle
-			}
-
-			icon := "Host"
-			nameColor := lipgloss.Color("33")
-			if t.Type == "ip" {
-				icon = "IP"
-				nameColor = lipgloss.Color("46")
-			}
-
-			headerLeft := lipgloss.NewStyle().Foreground(nameColor).Bold(true).Render(icon + "  " + t.Value)
-			headerRight := mutedStyle.Render(fmt.Sprintf("score %d", t.Score))
-			headerWidth := max(0, m.kgViewport.Width-8-lipgloss.Width(headerRight))
-			header := lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(headerWidth).Render(headerLeft), headerRight)
-
-			badges := joinNonEmpty([]string{
-				phaseBadge(t.CurrentPhase),
-				countBadge("Ports", len(t.OpenPorts), lipgloss.Color("33")),
-				countBadge("Vulns", len(t.Vulnerabilities), lipgloss.Color("196")),
-				countBadge("Creds", len(t.Credentials), lipgloss.Color("220")),
-				countBadge("Tokens", len(t.Tokens), lipgloss.Color("99")),
-			}, " ")
-
-			previewItems := []string{}
-			if len(t.VulnerabilityDetails) > 0 {
-				previewItems = append(previewItems, fmt.Sprintf("[%s/%s] %s", t.VulnerabilityDetails[0].Status, t.VulnerabilityDetails[0].Severity, t.VulnerabilityDetails[0].Finding))
-			} else if len(t.Vulnerabilities) > 0 {
-				previewItems = append(previewItems, "[candidate] "+t.Vulnerabilities[0])
-			}
-			if len(t.Credentials) > 0 {
-				previewItems = append(previewItems, fmt.Sprintf("%s:%s", t.Credentials[0].Username, t.Credentials[0].Password))
-			}
-			if len(t.Tokens) > 0 {
-				previewItems = append(previewItems, t.Tokens[0])
-			}
-			preview := mutedStyle.Render("Select to inspect details")
-			if len(previewItems) > 0 {
-				preview = mutedStyle.Render(strings.Join(previewItems, "  •  "))
-			}
-
-			card := lipgloss.JoinVertical(lipgloss.Left, header, badges, preview)
-			contentBuilder.WriteString(cardStyle.Width(max(0, m.kgViewport.Width-2)).Render(card) + "\n")
-		}
+		return
 	}
 
-	m.kgViewport.SetContent(wordwrap.String(contentBuilder.String(), m.kgViewport.Width))
-
-	if !m.inspectorMode && len(m.kgTargets) > 0 {
-		cursorYTop := m.dashboardCursor * 5
-		cursorYBottom := cursorYTop + 4
-		if m.dashboardCursor == 0 {
-			m.kgViewport.SetYOffset(0)
-		} else if cursorYTop < m.kgViewport.YOffset {
-			m.kgViewport.SetYOffset(cursorYTop)
-		} else if cursorYBottom >= m.kgViewport.YOffset+m.kgViewport.Height {
-			m.kgViewport.SetYOffset(cursorYBottom - m.kgViewport.Height + 1)
-		}
-	}
+	m.kgViewport.SetContent(buildTargetCardsView(m.kgTargets, m.dashboardCursor, m.activePane == 1, m.kgViewport.Width))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -429,55 +556,99 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
-		case "tab":
-			m.activePane = (m.activePane + 1) % 2
+		case "tab", "shift+tab":
+			m.activePane = 1 - m.activePane
+			m.rebuildLogsViewport(false)
 			m.updateKGViewport()
-		case "1":
-			m.activeLogFilter = LogCategoryGeneral
+		case "left", "h":
+			m.activePane = 0
 			m.rebuildLogsViewport(false)
-		case "2":
-			m.activeLogFilter = LogCategoryTools
+			m.updateKGViewport()
+		case "right", "l":
+			m.activePane = 1
 			m.rebuildLogsViewport(false)
-		case "3":
-			m.activeLogFilter = LogCategoryChat
+			m.updateKGViewport()
+		case "1", "f1":
+			m.activeTab = 0
 			m.rebuildLogsViewport(false)
-		case "4":
-			m.activeLogFilter = LogCategoryErrors
+			m.updateKGViewport()
+		case "2", "f2":
+			m.activeTab = 1
 			m.rebuildLogsViewport(false)
+			m.updateKGViewport()
+		case "3", "f3":
+			m.activeTab = 2
+			m.rebuildLogsViewport(false)
+			m.updateKGViewport()
 		case "g":
 			m.collapsedSummaries = !m.collapsedSummaries
 			m.rebuildLogsViewport(false)
+		case "f":
+			switch m.activeLogFilter {
+			case LogCategoryGeneral:
+				m.activeLogFilter = LogCategoryTools
+			case LogCategoryTools:
+				m.activeLogFilter = LogCategoryChat
+			case LogCategoryChat:
+				m.activeLogFilter = LogCategoryErrors
+			default:
+				m.activeLogFilter = LogCategoryGeneral
+			}
+			m.rebuildLogsViewport(false)
 		case "up", "k":
-			if m.activePane == 1 {
-				if m.inspectorMode {
-					m.kgViewport.ScrollUp(1)
-				} else if m.dashboardCursor > 0 {
-					m.dashboardCursor--
-					m.updateKGViewport()
+			if m.activePane == 0 {
+				if m.activeTab == 2 {
+					if m.dashboardCursor > 0 {
+						m.dashboardCursor--
+						m.rebuildLogsViewport(false)
+						m.updateKGViewport()
+					}
+				} else {
+					m.logsViewport.ScrollUp(1)
 				}
 			} else {
-				m.logsViewport.ScrollUp(1)
+				if m.activeTab != 2 {
+					if m.dashboardCursor > 0 {
+						m.dashboardCursor--
+						m.rebuildLogsViewport(false)
+						m.updateKGViewport()
+					}
+				} else {
+					m.kgViewport.ScrollUp(1)
+				}
 			}
 		case "down", "j":
-			if m.activePane == 1 {
-				if m.inspectorMode {
-					m.kgViewport.ScrollDown(1)
-				} else if m.dashboardCursor < len(m.kgTargets)-1 {
-					m.dashboardCursor++
-					m.updateKGViewport()
+			if m.activePane == 0 {
+				if m.activeTab == 2 {
+					if m.dashboardCursor < len(m.kgTargets)-1 {
+						m.dashboardCursor++
+						m.rebuildLogsViewport(false)
+						m.updateKGViewport()
+					}
+				} else {
+					m.logsViewport.ScrollDown(1)
 				}
 			} else {
-				m.logsViewport.ScrollDown(1)
+				if m.activeTab != 2 {
+					if m.dashboardCursor < len(m.kgTargets)-1 {
+						m.dashboardCursor++
+						m.rebuildLogsViewport(false)
+						m.updateKGViewport()
+					}
+				} else {
+					m.kgViewport.ScrollDown(1)
+				}
 			}
 		case "enter", " ":
-			if m.activePane == 1 && !m.inspectorMode && len(m.kgTargets) > 0 {
-				m.inspectorMode = true
-				m.kgViewport.SetYOffset(0)
+			if m.activeTab == 2 && m.activePane == 0 {
+				m.activePane = 1
+				m.rebuildLogsViewport(false)
 				m.updateKGViewport()
 			}
 		case "esc", "backspace":
-			if m.activePane == 1 && m.inspectorMode {
-				m.inspectorMode = false
+			if m.activePane == 1 {
+				m.activePane = 0
+				m.rebuildLogsViewport(false)
 				m.updateKGViewport()
 			}
 		}
@@ -526,6 +697,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.dashboardCursor >= len(m.kgTargets) {
 			m.dashboardCursor = max(0, len(m.kgTargets)-1)
 		}
+		m.rebuildLogsViewport(false)
 		m.updateKGViewport()
 
 	case AgentFinishedMsg:
@@ -549,7 +721,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg := msg.(type) {
 		case tea.KeyMsg:
 			switch msg.String() {
-			case "up", "down", "k", "j", "1", "2", "3", "4", "g":
+			case "up", "down", "k", "j", "1", "2", "3", "g", "tab", "shift+tab", "f1", "f2", "f3", "left", "right", "h", "l", "enter", " ", "esc", "backspace":
 			default:
 				if m.activePane == 0 {
 					m.logsViewport, cmd = m.logsViewport.Update(msg)
@@ -590,13 +762,16 @@ func (m Model) headerView() string {
 }
 
 func (m Model) statusBarView() string {
-	pane := "Logs"
-	if m.activePane == 1 {
-		pane = "Knowledge Graph"
+	tabName := "1 Execution Logs"
+	switch m.activeTab {
+	case 1:
+		tabName = "2 Site Map"
+	case 2:
+		tabName = "3 Knowledge Base & Findings"
 	}
-	mode := "Dashboard"
-	if m.inspectorMode {
-		mode = "Inspector"
+	paneName := "Left Pane"
+	if m.activePane == 1 {
+		paneName = "Right Pane"
 	}
 	filterLabel := "All"
 	switch m.activeLogFilter {
@@ -607,37 +782,39 @@ func (m Model) statusBarView() string {
 	case LogCategoryErrors:
 		filterLabel = "Errors"
 	}
-	content := fmt.Sprintf("Pane: %s   Mode: %s   Filter: %s   Targets: %d", pane, mode, filterLabel, len(m.kgTargets))
+	content := fmt.Sprintf("View: %s   Focus: %s   Filter: %s   Targets: %d", tabName, paneName, filterLabel, len(m.kgTargets))
 	return statusBarStyle.Width(max(lipgloss.Width(content), m.width)).Render(content)
 }
 
 func (m Model) footerView() string {
-	filters := []struct {
-		label    string
-		category LogCategory
-	}{
-		{label: "1 All", category: LogCategoryGeneral},
-		{label: "2 Tools", category: LogCategoryTools},
-		{label: "3 Chat", category: LogCategoryChat},
-		{label: "4 Errors", category: LogCategoryErrors},
-	}
-
-	filterViews := make([]string, 0, len(filters))
-	for _, filter := range filters {
+	tabs := []string{"1 Execution Logs", "2 Site Map", "3 Knowledge Base & Findings"}
+	var tabViews []string
+	for i, t := range tabs {
 		style := inactiveFilterStyle
-		if m.activeLogFilter == filter.category {
+		if m.activeTab == i {
 			style = activeFilterStyle
 		}
-		filterViews = append(filterViews, style.Render(filter.label))
+		tabViews = append(tabViews, style.Render(t))
 	}
+
+	filterLabel := "All"
+	switch m.activeLogFilter {
+	case LogCategoryTools:
+		filterLabel = "Tools"
+	case LogCategoryChat:
+		filterLabel = "Chat"
+	case LogCategoryErrors:
+		filterLabel = "Errors"
+	}
+	filterTag := activeFilterStyle.Render("f Filter: " + filterLabel)
 
 	groupingLabel := inactiveFilterStyle.Render("g Expanded")
 	if m.collapsedSummaries {
 		groupingLabel = activeFilterStyle.Render("g Grouped")
 	}
 
-	keys := footerStyle.Render("Tab switch pane  j/k move  Enter inspect  Esc back  q quit")
-	controls := lipgloss.JoinHorizontal(lipgloss.Left, strings.Join(filterViews, " "), " ", groupingLabel)
+	keys := footerStyle.Render("1-3 switch view  Tab/←→ switch focus  j/k move  f filter  g collapse  q quit")
+	controls := lipgloss.JoinHorizontal(lipgloss.Left, strings.Join(tabViews, " "), " | ", filterTag, " ", groupingLabel)
 	return lipgloss.JoinVertical(lipgloss.Left, controls, keys)
 }
 
@@ -658,7 +835,14 @@ func (m Model) View() string {
 		kgBorderColor = activeColor
 	}
 
-	logsTitle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).Render(" Execution Log")
+	logsTitleStr := " Execution Log"
+	if m.activeTab == 1 {
+		logsTitleStr = " 🌐 Target Site Map"
+	} else if m.activeTab == 2 {
+		logsTitleStr = " Target Domains & Hosts"
+	}
+	logsTitle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).Render(logsTitleStr)
+
 	logsScrollStr := fmt.Sprintf(" %3.0f%% ", m.logsViewport.ScrollPercent()*100)
 	if m.logsViewport.TotalLineCount() <= m.logsViewport.Height {
 		logsScrollStr = " 100% "
@@ -667,14 +851,14 @@ func (m Model) View() string {
 	paddedLogs := lipgloss.NewStyle().Height(m.logsViewport.Height).Render(logsContent)
 	logsContentWithStatus := lipgloss.JoinVertical(lipgloss.Left, logsTitle, paddedLogs, logsStatus)
 
-	titleStr := " Knowledge Graph Dashboard"
-	if m.inspectorMode {
-		titleStr = " Target Inspector"
+	titleStr := " Knowledge Base Overview"
+	if m.activeTab == 2 {
+		titleStr = " Target Inspector & Evidence"
 	}
 	kgTitle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).Render(titleStr)
 
 	var kgScrollStr string
-	if m.inspectorMode {
+	if m.activeTab == 2 || m.inspectorMode {
 		kgScrollStr = fmt.Sprintf(" %3.0f%% ", m.kgViewport.ScrollPercent()*100)
 		if m.kgViewport.TotalLineCount() <= m.kgViewport.Height {
 			kgScrollStr = " 100% "

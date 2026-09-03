@@ -3,7 +3,6 @@ package core
 import (
 	"bytes"
 	"context"
-	"errors"
 	"io"
 	"net/http"
 	"testing"
@@ -30,7 +29,7 @@ func TestHTTPRequestSmuggling_Execute_CLTE(t *testing.T) {
 				}, nil
 			}
 			if bodyStr == "1\r\nA\r\nX" {
-				return nil, errors.New("timeout waiting for chunk")
+				return nil, context.DeadlineExceeded
 			}
 			return &http.Response{
 				StatusCode: http.StatusOK,
@@ -71,7 +70,7 @@ func TestHTTPRequestSmuggling_Execute_TECL(t *testing.T) {
 				}, nil
 			}
 			if bodyStr == "0\r\n\r\nX" {
-				return nil, errors.New("timeout waiting for byte")
+				return nil, context.DeadlineExceeded
 			}
 			return &http.Response{
 				StatusCode: http.StatusOK,
@@ -105,9 +104,9 @@ func TestHTTPRequestSmuggling_Execute_BaselineTimeout(t *testing.T) {
 			bodyBytes, _ := io.ReadAll(req.Body)
 			bodyStr := string(bodyBytes)
 			if bodyStr == "baseline" {
-				return nil, errors.New("timeout on baseline")
+				return nil, context.DeadlineExceeded
 			}
-			return nil, errors.New("timeout on payload")
+			return nil, context.DeadlineExceeded
 		},
 	}
 	original := DefaultTransport

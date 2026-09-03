@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"charm.land/fantasy"
 	"github.com/charmbracelet/log"
@@ -165,6 +166,7 @@ type KnowledgeGraph struct {
 	Targets        map[string]*Target        `json:"targets"`
 	SessionCookies map[string][]*http.Cookie `json:"session_cookies"`
 	Context        map[string]any            `json:"context"`
+	Memory         *EpisodicMemory           `json:"-"`
 	OnUpdate       func(*KnowledgeGraph)     `json:"-"`
 	updateChan     chan struct{}             `json:"-"`
 }
@@ -186,6 +188,7 @@ func NewKnowledgeGraph() *KnowledgeGraph {
 		Context:        make(map[string]any),
 		TargetDomains:  make([]string, 0),
 		allowedIPs:     make(map[string]bool),
+		Memory:         NewEpisodicMemory(),
 		updateChan:     make(chan struct{}, 1),
 	}
 	go func() {
@@ -198,9 +201,24 @@ func NewKnowledgeGraph() *KnowledgeGraph {
 	return kg
 }
 
+func (kg *KnowledgeGraph) Close() {
+	kg.Lock()
+	defer kg.Unlock()
+	if kg.updateChan != nil {
+		close(kg.updateChan)
+		kg.updateChan = nil
+	}
+}
+
 func (kg *KnowledgeGraph) triggerUpdate() {
+	kg.RLock()
+	ch := kg.updateChan
+	kg.RUnlock()
+	if ch == nil {
+		return
+	}
 	select {
-	case kg.updateChan <- struct{}{}:
+	case ch <- struct{}{}:
 	default:
 	}
 }
@@ -512,6 +530,19 @@ Output:
 	if len(allowedIPs) > 0 {
 		summary += "\n\nDiscovered IPs: " + strings.Join(allowedIPs, ", ")
 	}
+
+	if kg.Memory != nil {
+		kg.Memory.Store(MemoryEntry{
+			Content:   fmt.Sprintf("Tool: %s | Target: %s | Summary: %s", toolName, target, summary),
+			Source:    toolName,
+			Timestamp: time.Now(),
+			Metadata: map[string]string{
+				"target":    target,
+				"tool_name": toolName,
+			},
+		})
+	}
+
 	return summary, rawText, nil
 }
 

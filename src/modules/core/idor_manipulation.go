@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -137,6 +138,13 @@ func (m *IDORManipulation) testPayload(ctx context.Context, u *url.URL, payload 
 	respLen := len(bodyBytes)
 
 	if resp.StatusCode == http.StatusOK {
+		bodyStr := strings.ToLower(string(bodyBytes))
+		if strings.Contains(bodyStr, "login") || strings.Contains(bodyStr, "sign in") ||
+			strings.Contains(bodyStr, "authenticate") || strings.Contains(bodyStr, "password") ||
+			strings.Contains(bodyStr, "page not found") || strings.Contains(bodyStr, "invalid id") {
+			return
+		}
+
 		// Differential analysis: does it differ significantly from the baseline?
 		diff := respLen - baselineLen
 		if diff < 0 {

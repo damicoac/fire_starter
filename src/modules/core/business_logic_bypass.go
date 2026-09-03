@@ -88,7 +88,13 @@ func (m *BusinessLogicBypass) testLogicBypass(ctx context.Context, endpoint stri
 
 	// If the server doesn't reject us immediately with a 401/403 or logic error
 	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
-		if strings.Contains(bodyStr, "success") || strings.Contains(bodyStr, "confirmed") {
+		if (strings.Contains(bodyStr, "success") || strings.Contains(bodyStr, "confirmed") || strings.Contains(bodyStr, "\"status\":\"ok\"")) &&
+			!strings.Contains(bodyStr, "not successful") &&
+			!strings.Contains(bodyStr, "not confirmed") &&
+			!strings.Contains(bodyStr, "error") &&
+			!strings.Contains(bodyStr, "failed") &&
+			!strings.Contains(bodyStr, "invalid") &&
+			!strings.Contains(bodyStr, "unauthorized") {
 			m.Mu.Lock()
 			m.RecordPoC(req, nil, fmt.Sprintf("Potential Business Logic Bypass at: %s", testURL))
 			m.results = append(m.results, BusinessLogicBypassResult{

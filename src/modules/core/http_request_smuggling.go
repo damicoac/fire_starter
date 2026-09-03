@@ -3,10 +3,11 @@ package core
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
+	"os"
 	"sync"
 	"time"
 )
@@ -74,7 +75,7 @@ func (m *HTTPRequestSmuggling) testSmuggling(ctx context.Context, endpoint strin
 	}
 	baselineResp, err := m.Client.Do(baselineReq)
 	if err != nil {
-		if strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "context deadline exceeded") {
+		if os.IsTimeout(err) || errors.Is(err, context.DeadlineExceeded) {
 			// Baseline times out, target is naturally slow, skip to avoid false positives
 			return
 		}
@@ -89,9 +90,9 @@ func (m *HTTPRequestSmuggling) testSmuggling(ctx context.Context, endpoint strin
 	if err == nil {
 		clteReq.Header.Add("Transfer-Encoding", "chunked")
 		clteReq.Header.Add("Content-Length", "4")
-		
+
 		clteResp, err := m.Client.Do(clteReq)
-		if err != nil && (strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "context deadline exceeded")) {
+		if err != nil && (os.IsTimeout(err) || errors.Is(err, context.DeadlineExceeded)) {
 			m.Mu.Lock()
 			m.RecordPoC(clteReq, []byte(cltePayload), fmt.Sprintf("CL.TE HTTP Request Smuggling timeout at: %s", testURL))
 			m.results = append(m.results, HTTPRequestSmugglingResult{
@@ -115,7 +116,7 @@ func (m *HTTPRequestSmuggling) testSmuggling(ctx context.Context, endpoint strin
 		teclReq.Header.Add("Content-Length", "6")
 
 		teclResp, err := m.Client.Do(teclReq)
-		if err != nil && (strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "context deadline exceeded")) {
+		if err != nil && (os.IsTimeout(err) || errors.Is(err, context.DeadlineExceeded)) {
 			m.Mu.Lock()
 			m.RecordPoC(teclReq, []byte(teclPayload), fmt.Sprintf("TE.CL HTTP Request Smuggling timeout at: %s", testURL))
 			m.results = append(m.results, HTTPRequestSmugglingResult{

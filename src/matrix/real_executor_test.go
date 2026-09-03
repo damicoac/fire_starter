@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	modules "fire_starter/src/modules/core"
 )
 
 func TestRealExecutor_OSCommandInjection(t *testing.T) {
@@ -18,6 +20,10 @@ func TestRealExecutor_OSCommandInjection(t *testing.T) {
 		fmt.Fprintln(w, "uid=1000(test) gid=1000(test) groups=1000(test)")
 	}))
 	defer ts.Close()
+
+	oldTransport := modules.DefaultTransport
+	modules.DefaultTransport = ts.Client().Transport
+	defer func() { modules.DefaultTransport = oldTransport }()
 
 	executor, err := NewRealExecutor([]Decision{})
 	if err != nil {
@@ -172,12 +178,19 @@ func TestRealExecutor_ServerSideTemplateInjectionSsti_OOB(t *testing.T) {
 				end++
 			}
 			oobURL := q[start:end]
-			_, _ = http.Get(oobURL)
+			resp, err := http.Get(oobURL)
+			if err == nil {
+				resp.Body.Close()
+			}
 		}
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintln(w, "OOB simulated")
 	}))
 	defer ts.Close()
+
+	oldTransport := modules.DefaultTransport
+	modules.DefaultTransport = ts.Client().Transport
+	defer func() { modules.DefaultTransport = oldTransport }()
 
 	executor, err := NewRealExecutor([]Decision{})
 	if err != nil {

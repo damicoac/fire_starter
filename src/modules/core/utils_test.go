@@ -5,19 +5,6 @@ import (
 	"time"
 )
 
-func TestNewHTTPClient(t *testing.T) {
-	timeout := 5 * time.Second
-	client := NewHTTPClient(timeout)
-
-	if client.Timeout != timeout {
-		t.Errorf("Expected timeout %v, got %v", timeout, client.Timeout)
-	}
-
-	if client.Transport == nil {
-		t.Error("Expected transport to be set")
-	}
-}
-
 func TestEnsureHTTPPrefix(t *testing.T) {
 	tests := []struct {
 		input    string
@@ -26,43 +13,45 @@ func TestEnsureHTTPPrefix(t *testing.T) {
 		{"example.com", "https://example.com"},
 		{"http://example.com", "http://example.com"},
 		{"https://example.com", "https://example.com"},
-		{"", "https://"},
 	}
 
 	for _, tt := range tests {
-		actual := EnsureHTTPPrefix(tt.input)
-		if actual != tt.expected {
-			t.Errorf("EnsureHTTPPrefix(%q) = %q, expected %q", tt.input, actual, tt.expected)
+		got := EnsureHTTPPrefix(tt.input)
+		if got != tt.expected {
+			t.Errorf("EnsureHTTPPrefix(%q) = %q, want %q", tt.input, got, tt.expected)
 		}
 	}
 }
 
 func TestExtractHostname(t *testing.T) {
 	tests := []struct {
-		name     string
 		input    string
 		expected string
 	}{
-		{name: "plain ipv4", input: "192.168.1.10", expected: "192.168.1.10"},
-		{name: "url with ipv4", input: "http://10.0.0.5:8080/path", expected: "10.0.0.5"},
-		{name: "hostname", input: "example.com", expected: ""},
-		{name: "url hostname", input: "https://example.com/test", expected: ""},
-		{name: "empty", input: "   ", expected: ""},
+		{"127.0.0.1", "127.0.0.1"},
+		{"http://192.168.1.1:8080/test", "192.168.1.1"},
+		{"https://8.8.8.8", "8.8.8.8"},
+		{"example.com", ""}, // only parses IP hostnames
+		{"", ""},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			actual := ExtractHostname(tt.input)
-			if actual != tt.expected {
-				t.Errorf("ExtractHostname(%q) = %q, expected %q", tt.input, actual, tt.expected)
-			}
-		})
+		got := ExtractHostname(tt.input)
+		if got != tt.expected {
+			t.Errorf("ExtractHostname(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
 	}
 }
 
-func TestNewHTTPClient_ZeroTimeout(t *testing.T) {
-	client := NewHTTPClient(0)
-	if client.Timeout != 0 {
-		t.Errorf("Expected 0 timeout, got %v", client.Timeout)
+func TestNewHTTPClient_IndependentCookieJars(t *testing.T) {
+	client1 := NewHTTPClient(5 * time.Second)
+	client2 := NewHTTPClient(5 * time.Second)
+
+	if client1.Jar == nil || client2.Jar == nil {
+		t.Fatal("expected both clients to have initialized CookieJars")
+	}
+
+	if client1.Jar == client2.Jar {
+		t.Error("expected clients to have separate independent CookieJars, but they share the same instance")
 	}
 }

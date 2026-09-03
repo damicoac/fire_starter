@@ -24,10 +24,11 @@ var DefaultTransport http.RoundTripper = &http.Transport{
 }
 
 func NewHTTPClient(timeout time.Duration) *http.Client {
+	jar, _ := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
 	return &http.Client{
 		Timeout:   timeout,
 		Transport: DefaultTransport,
-		Jar:       sharedCookieJar,
+		Jar:       jar,
 	}
 }
 

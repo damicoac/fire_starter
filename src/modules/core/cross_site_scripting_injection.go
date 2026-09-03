@@ -87,6 +87,13 @@ func (m *CrossSiteScriptingInjection) Execute(ctx context.Context) ([]CrossSiteS
 
 	// 1. Discover all input vectors.
 	vectors, _ := m.DiscoverVectors(parsedURL, nil, "", headers)
+	if len(vectors) == 0 {
+		vectors = append(vectors,
+			InputVector{Type: VectorQueryParam, Key: "q", Value: ""},
+			InputVector{Type: VectorQueryParam, Key: "search", Value: ""},
+			InputVector{Type: VectorQueryParam, Key: "name", Value: ""},
+		)
+	}
 
 	var wg sync.WaitGroup
 	semaphore := make(chan struct{}, m.MaxThreads)
@@ -95,6 +102,9 @@ func (m *CrossSiteScriptingInjection) Execute(ctx context.Context) ([]CrossSiteS
 	for _, vector := range vectors {
 		// 2. For each vector, discover its reflection contexts.
 		reflections := m.DiscoverReflection(ctx, parsedURL, vector)
+		if len(reflections) == 0 {
+			reflections = append(reflections, ReflectionContext{Type: ContextHTML})
+		}
 
 		// 3. For each context, run only the relevant XSS payloads.
 		for _, reflection := range reflections {

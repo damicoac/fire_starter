@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sort"
 	"sync"
 	"time"
 )
@@ -82,8 +83,7 @@ func (ps *PortScanner) Scan(ctx context.Context) ([]portResult, error) {
 
 	select {
 	case <-done:
-		ps.sortAndReturnResults()
-		return ps.getPartialResults(), nil
+		return ps.sortAndReturnResults(), nil
 	case <-ctx.Done():
 		return ps.getPartialResults(), ctx.Err()
 	}
@@ -124,60 +124,27 @@ func (ps *PortScanner) scanPort(ctx context.Context, port int) portResult {
 }
 
 // sortAndReturnResults sorts results by port number and returns them as a slice
-func (ps *PortScanner) sortAndReturnResults() {
+func (ps *PortScanner) sortAndReturnResults() []portResult {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	
 	sorted := make([]int, 0, len(ps.results))
 	for port := range ps.results {
 		sorted = append(sorted, port)
 	}
 
-	// Simple insertion sort for efficiency on typically small datasets
-	for i := 1; i < len(sorted); i++ {
-		key := sorted[i]
-		j := i - 1
-		for j >= 0 && sorted[j] > key {
-			sorted[j+1] = sorted[j]
-			j--
-		}
-		sorted[j+1] = key
-	}
+	sort.Ints(sorted)
 
-	// Convert to ordered results slice for consistent output
 	orderedResults := make([]portResult, len(sorted))
 	for i, port := range sorted {
 		orderedResults[i] = ps.results[port]
 	}
-
-	// Update results with ordered data for JSON marshaling consistency
-	ps.results = make(map[int]portResult)
-	for i, result := range orderedResults {
-		ps.results[orderedResults[i].Port] = result
-	}
+	return orderedResults
 }
 
 // getPartialResults returns currently collected results during cancellation
 func (ps *PortScanner) getPartialResults() []portResult {
-	ports := make([]int, 0, len(ps.results))
-	for port := range ps.results {
-		ports = append(ports, port)
-	}
-
-	// Sort ports
-	for i := 1; i < len(ports); i++ {
-		key := ports[i]
-		j := i - 1
-		for j >= 0 && ports[j] > key {
-			ports[j+1] = ports[j]
-			j--
-		}
-		ports[j+1] = key
-	}
-
-	resultSlice := make([]portResult, len(ports))
-	for i, port := range ports {
-		resultSlice[i] = ps.results[port]
-	}
-
-	return resultSlice
+	return ps.sortAndReturnResults()
 }
 
 // ScanCommonPorts scans a minimal set of highly common web and remote administration ports

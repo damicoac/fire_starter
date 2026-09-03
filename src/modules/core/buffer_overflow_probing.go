@@ -116,11 +116,12 @@ func (m *BufferOverflowProbing) testPayload(ctx context.Context, u *url.URL, pay
 
 	if resp.StatusCode == http.StatusInternalServerError {
 		m.Mu.Lock()
-		m.RecordPoC(req, nil, "Large input buffer caused HTTP 500 Internal Server Error (Length: "+string(rune(len(payload)))+")")
+		detail := fmt.Sprintf("Large input buffer caused HTTP 500 Internal Server Error (Length: %d)", len(payload))
+		m.RecordPoC(req, nil, detail)
 		m.results = append(m.results, BufferOverflowProbingResult{
 			Target: m.Target,
 			Status: "vulnerable",
-			Detail: "Large input buffer caused HTTP 500 Internal Server Error (Length: " + string(rune(len(payload))) + ")",
+			Detail: detail,
 		})
 		m.Mu.Unlock()
 	}

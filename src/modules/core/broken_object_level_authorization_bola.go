@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -118,6 +119,13 @@ func (m *BrokenObjectLevelAuthorizationBola) testID(ctx context.Context, id stri
 
 	// If we can read arbitrary users without auth, ensure it differs from baseline
 	if resp.StatusCode == http.StatusOK {
+		bodyStr := strings.ToLower(string(bodyBytes))
+		if strings.Contains(bodyStr, "login") || strings.Contains(bodyStr, "sign in") ||
+			strings.Contains(bodyStr, "authenticate") || strings.Contains(bodyStr, "password") ||
+			strings.Contains(bodyStr, "page not found") || strings.Contains(bodyStr, "user not found") {
+			return
+		}
+
 		diff := respLen - baselineLen
 		if diff < 0 {
 			diff = -diff
