@@ -148,7 +148,12 @@ func (b *BaseModule) DiscoverVectors(u *url.URL, body io.Reader, contentType str
 	}
 
 	if body != nil {
-		bodyBytes, _ = io.ReadAll(body)
+		var err error
+		bodyBytes, err = io.ReadAll(body)
+		if err != nil {
+			// Since we can't return an error, we proceed with whatever was read
+			fmt.Printf("Warning: failed to fully read request body: %v\n", err)
+		}
 		b.OriginalBody = bodyBytes
 	} else {
 		b.OriginalBody = nil
@@ -351,7 +356,9 @@ func (b *BaseModule) BuildRequestWithVector(ctx context.Context, method string, 
 
 	case VectorPathSegment:
 		var idx int
-		_, _ = fmt.Sscanf(vector.Key, "path[%d]", &idx)
+		if _, err := fmt.Sscanf(vector.Key, "path[%d]", &idx); err != nil {
+			return nil, fmt.Errorf("invalid path segment key format: %s", vector.Key)
+		}
 		segments := strings.Split(strings.TrimLeft(newU.Path, "/"), "/")
 		if idx >= 0 && idx < len(segments) {
 			segments[idx] = payload
@@ -513,7 +520,9 @@ func GenerateCurlCommand(req *http.Request, bodyBytes []byte) string {
 	// Try to get body from request if not provided
 	if len(bodyBytes) == 0 && req.GetBody != nil {
 		if bodyReadCloser, err := req.GetBody(); err == nil {
-			bodyBytes, _ = io.ReadAll(bodyReadCloser)
+			if b, err := io.ReadAll(bodyReadCloser); err == nil {
+				bodyBytes = b
+			}
 			bodyReadCloser.Close()
 		}
 	}

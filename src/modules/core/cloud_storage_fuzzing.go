@@ -108,14 +108,23 @@ func (m *CloudStorageFuzzing) testBucket(ctx context.Context, bucketName string)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusForbidden {
-		// Even forbidden means it exists. OK means it's publicly readable.
+	if resp.StatusCode == http.StatusOK {
 		m.Mu.Lock()
-		m.RecordPoC(req, nil, fmt.Sprintf("Cloud bucket found: %s (HTTP %d)", bucketURL, resp.StatusCode))
+		detail := fmt.Sprintf("Publicly readable S3 bucket found: %s (HTTP 200)", bucketURL)
+		m.RecordPoC(req, nil, detail)
 		m.results = append(m.results, CloudStorageFuzzingResult{
 			Target: m.Target,
-			Status: "found",
-			Detail: fmt.Sprintf("Cloud bucket found: %s (HTTP %d)", bucketURL, resp.StatusCode),
+			Status: "vulnerable",
+			Detail: detail,
+		})
+		m.Mu.Unlock()
+	} else if resp.StatusCode == http.StatusForbidden {
+		m.Mu.Lock()
+		detail := fmt.Sprintf("Private S3 bucket exists: %s (HTTP 403 Forbidden)", bucketURL)
+		m.results = append(m.results, CloudStorageFuzzingResult{
+			Target: m.Target,
+			Status: "info",
+			Detail: detail,
 		})
 		m.Mu.Unlock()
 	}

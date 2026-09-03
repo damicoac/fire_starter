@@ -11,6 +11,7 @@ import (
 
 func TestKnowledgeGraph_Scoring(t *testing.T) {
 	kg := NewKnowledgeGraph()
+	defer kg.Close()
 
 	// Test IP Scoring
 	kg.AddIP("192.168.1.1")
@@ -63,6 +64,7 @@ func TestKnowledgeGraph_Scoring(t *testing.T) {
 
 func TestKnowledgeGraph_GetTokensForTarget(t *testing.T) {
 	kg := NewKnowledgeGraph()
+	defer kg.Close()
 
 	kg.AddToken("example.com", "default", "cookie_example=1")
 	kg.AddToken("sub.example.com", "default", "cookie_sub=1")
@@ -155,6 +157,7 @@ func TestMatchDomainOrIP(t *testing.T) {
 
 func TestKnowledgeGraph_TargetDomainsWhitelist(t *testing.T) {
 	kg := NewKnowledgeGraph()
+	defer kg.Close()
 	kg.TargetDomains = []string{"*.example.com", "192.168.1.*"}
 
 	// URL within whitelist
@@ -197,6 +200,7 @@ func TestKnowledgeGraph_TargetDomainsWhitelist(t *testing.T) {
 
 func TestKnowledgeGraph_AddURLAllowsSeededSubdomainWithoutManualWildcard(t *testing.T) {
 	kg := NewKnowledgeGraph()
+	defer kg.Close()
 	kg.TargetDomains = []string{"app.example.com", "*.app.example.com"}
 
 	kg.AddURL("https://app.example.com/login", "https://app.example.com")
@@ -208,6 +212,7 @@ func TestKnowledgeGraph_AddURLAllowsSeededSubdomainWithoutManualWildcard(t *test
 
 func TestKnowledgeGraph_AddURLDoesNotRescoreDuplicateURL(t *testing.T) {
 	kg := NewKnowledgeGraph()
+	defer kg.Close()
 	kg.TargetDomains = []string{"example.com", "*.example.com"}
 
 	kg.AddURL("https://example.com/login", "https://example.com")
@@ -225,6 +230,7 @@ func TestKnowledgeGraph_AddURLDoesNotRescoreDuplicateURL(t *testing.T) {
 
 func TestKnowledgeGraph_AddURLRejectsStaticAssets(t *testing.T) {
 	kg := NewKnowledgeGraph()
+	defer kg.Close()
 	kg.TargetDomains = []string{"example.com", "*.example.com"}
 
 	kg.AddURL("https://example.com/assets/site.css", "https://example.com")
@@ -240,6 +246,7 @@ func TestKnowledgeGraph_AddURLRejectsStaticAssets(t *testing.T) {
 
 func TestKnowledgeGraph_AddURLResolvesRelativePaths(t *testing.T) {
 	kg := NewKnowledgeGraph()
+	defer kg.Close()
 	kg.TargetDomains = []string{"example.com", "*.example.com"}
 
 	kg.AddURL("/admin/login", "https://example.com/base")
@@ -268,6 +275,7 @@ func (m *mockModel) Generate(ctx context.Context, call fantasy.Call) (*fantasy.R
 
 func TestKnowledgeGraph_EvaluateScopeWithLLM(t *testing.T) {
 	kg := NewKnowledgeGraph()
+	defer kg.Close()
 	kg.TargetDomains = []string{"*.example.com", "192.168.1.*"}
 
 	mockJSON := `{
@@ -298,6 +306,7 @@ func TestKnowledgeGraph_EvaluateScopeWithLLM(t *testing.T) {
 
 func TestKnowledgeGraph_EvaluateScopeWithLLMFallbackUsesScopeFilter(t *testing.T) {
 	kg := NewKnowledgeGraph()
+	defer kg.Close()
 	kg.TargetDomains = []string{"*.example.com", "192.168.1.*"}
 
 	ips := []string{"192.168.1.10", "10.0.0.5"}
@@ -345,6 +354,7 @@ func TestAddTestCase_PhaseFiltering(t *testing.T) {
 	}
 
 	kg := NewKnowledgeGraph()
+	defer kg.Close()
 	targetVal := "test-target.com"
 
 	// 1. Target is in PhaseVulnerabilityAnalysis (Discovery phase)

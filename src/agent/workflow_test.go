@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -60,6 +61,7 @@ func TestCollectHelperVulnQueueOnlyReturnsCandidates(t *testing.T) {
 	}
 
 	kg := matrix.NewKnowledgeGraph()
+	defer kg.Close()
 	kg.AddURL("https://app.example.com", "")
 	kg.AddVulnerability("app.example.com", "Candidate from graph")
 	kg.AddVulnerability("app.example.com", "Confirmed finding")
@@ -123,6 +125,52 @@ func TestAppendInformationalFindingsAlwaysAddsSection(t *testing.T) {
 	report = appendInformationalFindings("# Report", []matrix.VulnInfo{{TargetDomain: "app.example.com", Finding: "Server header disclosed", Severity: matrix.VulnerabilitySeverityInformational}})
 	if !strings.Contains(report, "- **app.example.com** [informational]: Server header disclosed") {
 		t.Fatalf("expected informational finding: %s", report)
+	}
+}
+
+func TestBuildVulnerabilityReportInputCaseInsensitive(t *testing.T) {
+	vulns := []matrix.VulnInfo{
+		{TargetDomain: "app.example.com", Finding: "Confirmed SQL injection", Status: " Confirmed ", Severity: matrix.VulnerabilitySeverityHigh, DateTime: time.Date(2026, 7, 8, 1, 2, 3, 0, time.UTC)},
+		{TargetDomain: "app.example.com", Finding: "Server header disclosed", Status: "INFORMATIONAL", Severity: matrix.VulnerabilitySeverityInformational, DateTime: time.Date(2026, 7, 8, 1, 2, 6, 0, time.UTC)},
+	}
+
+	reportInput, informationalFindings := buildVulnerabilityReportInput(vulns)
+	if !strings.Contains(reportInput, "Confirmed SQL injection") {
+		t.Fatalf("expected confirmed finding in report input: %s", reportInput)
+	}
+	if !strings.Contains(reportInput, "Server header disclosed") {
+		t.Fatalf("expected informational finding in report input: %s", reportInput)
+	}
+	if len(informationalFindings) != 1 || informationalFindings[0].Finding != "Server header disclosed" {
+		t.Fatalf("unexpected informational findings slice: %#v", informationalFindings)
+	}
+}
+
+func TestFallbackReportDeduplicatesInformationalFindings(t *testing.T) {
+	vulns := []matrix.VulnInfo{
+		{TargetDomain: "app.example.com", Finding: "Confirmed SQL injection", Status: matrix.VulnerabilityStatusConfirmed, Severity: matrix.VulnerabilitySeverityHigh, DateTime: time.Date(2026, 7, 8, 1, 2, 3, 0, time.UTC)},
+		{TargetDomain: "app.example.com", Finding: "Server header disclosed", Status: matrix.VulnerabilityStatusInformational, Severity: matrix.VulnerabilitySeverityInformational, DateTime: time.Date(2026, 7, 8, 1, 2, 6, 0, time.UTC)},
+	}
+
+	_, informationalFindings := buildVulnerabilityReportInput(vulns)
+	confirmedSummary := buildConfirmedVulnerabilitiesSummary(vulns)
+	reportStr := "# Final Report\n\n**Engagement Completed (Failed to generate narrative report).**\n\n" + confirmedSummary
+	reportStr = appendInformationalFindings(reportStr, informationalFindings)
+
+	// Ensure Server header disclosed only appears ONCE in the full report
+	count := strings.Count(reportStr, "Server header disclosed")
+	if count != 1 {
+		t.Fatalf("expected informational finding to appear exactly once in fallback report, got %d occurrences:\n%s", count, reportStr)
+	}
+}
+
+func TestSaveTargetReportUpdatesKnowledgeGraph(t *testing.T) {
+	kg := matrix.NewKnowledgeGraph()
+	defer kg.Close()
+	saveTargetReport(context.Background(), "app.example.com", Config{}, kg, nil)
+	val, ok := kg.Context["target_reporting_app.example.com"]
+	if !ok || val != true {
+		t.Fatalf("expected target_reporting_app.example.com to be set to true in KG context, got val=%v, ok=%v", val, ok)
 	}
 }
 

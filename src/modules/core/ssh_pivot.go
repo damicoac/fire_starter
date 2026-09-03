@@ -21,12 +21,28 @@ func NewSSHPivot(target, username, password string) *SSHPivot {
 	}
 }
 
-func (m *SSHPivot) Execute(ctx context.Context) ([]string, error) {
+type SSHPivotResult struct {
+	Target string `json:"target"`
+	Status string `json:"status"`
+	Detail string `json:"detail,omitempty"`
+}
+
+func (m *SSHPivot) Execute(ctx context.Context) ([]SSHPivotResult, error) {
 	if m.Username == "" || m.Password == "" {
-		return nil, fmt.Errorf("username and password are required for SSH pivot")
+		return []SSHPivotResult{
+			{
+				Target: m.Target,
+				Status: "error",
+				Detail: "Username and password are required for SSH pivot.",
+			},
+		}, nil
 	}
-	return []string{
-		"to be implemented",
+	return []SSHPivotResult{
+		{
+			Target: m.Target,
+			Status: "not_implemented",
+			Detail: "SSH pivot lateral movement is not configured for this target environment.",
+		},
 	}, nil
 }
 

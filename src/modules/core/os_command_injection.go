@@ -148,6 +148,7 @@ func (m *OSCommandInjection) Execute(ctx context.Context) ([]OSCommandInjectionR
 
 	// Discover vectors
 	vectors, _ := m.DiscoverVectors(parsedURL, nil, "", headers)
+	fmt.Printf("vectors length: %d\n", len(vectors))
 
 	hasQueryOrBody := false
 	for _, v := range vectors {
@@ -176,6 +177,7 @@ func (m *OSCommandInjection) Execute(ctx context.Context) ([]OSCommandInjectionR
 	for _, v := range vectors {
 		for _, p := range osPayloads {
 			jobChan <- job{vector: v, payload: p}
+			fmt.Printf("Job queued: %v\n", v.Key)
 		}
 	}
 	close(jobChan)
@@ -279,6 +281,7 @@ func (m *OSCommandInjection) sendPayload(ctx context.Context, u *url.URL, vector
 		return 0, "", nil, fmt.Errorf("unsupported vector type: %s", vector.Type)
 	}
 
+	fmt.Printf("req err: %v\n", err)
 	if err != nil || req == nil {
 		return 0, "", nil, err
 	}
@@ -289,6 +292,7 @@ func (m *OSCommandInjection) sendPayload(ctx context.Context, u *url.URL, vector
 
 	start := time.Now()
 	resp, err := m.Client.Do(req)
+	fmt.Printf("m.Client.Do err: %v\n", err)
 	duration := time.Since(start)
 
 	if err != nil {

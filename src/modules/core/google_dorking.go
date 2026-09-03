@@ -77,7 +77,11 @@ func (m *GoogleDorking) Execute(ctx context.Context) ([]GoogleDorkingResult, err
 				default:
 					m.testDork(ctx, query)
 					// Small delay to prevent instant ban
-					time.Sleep(2 * time.Second)
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(2 * time.Second):
+					}
 				}
 			}
 		}()
