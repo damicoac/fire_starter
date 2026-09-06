@@ -82,7 +82,7 @@ If a module confirms a finding, record technical evidence through the base modul
 m.RecordPoC(req, bodyBytes, "Finding description")
 ```
 
-The knowledge graph and vulnerability logging pipeline can then promote that evidence into database-backed findings.
+The knowledge graph and vulnerability logging pipeline first stores module signals as `candidate` records. Helper validation must resolve each candidate before reporting: `confirmed` records become report findings with a separate severity, `informational` records are appended separately, and `disproven` records are retained as tested-but-not-reportable evidence.
 
 ## Testing guidance
 
@@ -105,4 +105,5 @@ go test ./...
 - Keep modules focused on one technique.
 - Prefer structured result objects over large free-form strings.
 - Reuse shared helpers from `BaseModule` and `registry.go` instead of re-implementing parsing logic.
+- Consider utilizing `assessment_confidence.go` helpers for scoring confidence to eliminate false positives before recording findings.
 - Do not add modules under `src/modules/community/` unless the runtime is updated to load them; the current executor imports factories from `src/modules/core`.

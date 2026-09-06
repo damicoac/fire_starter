@@ -5,11 +5,11 @@ import (
 	"flag"
 	"fmt"
 	stdlog "log"
-
 	"os"
 
 	"fire_starter/src/agent"
 	"fire_starter/src/matrix"
+	"fire_starter/src/mcp"
 	"fire_starter/src/tui"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/log"
@@ -25,11 +25,27 @@ func main() {
 	baseURL := flag.String("base-url", "", "Custom base URL for the provider")
 	maxIters := flag.Int("max-iters", 0, "Maximum execution loop iterations")
 	verbose := flag.Bool("verbose", false, "Enable verbose logging")
-	
-	// Create a custom flag variable that defaults to the config's value (true).
 	efficiency := flag.Bool("efficiency", true, "Enable efficiency mode to skip low value targets (default true, use -efficiency=false to disable)")
+	mcpMode := flag.Bool("mcp", false, "Run in Model Context Protocol (MCP) server mode via STDIO")
 
 	flag.Parse()
+
+	if *mcpMode {
+		kg := matrix.NewKnowledgeGraph()
+		defer kg.Close()
+
+		decisions, err := matrix.LoadDecisions("src/matrix/decisions.json")
+		if err != nil {
+			decisions, _ = matrix.LoadDecisions("decisions.json")
+		}
+		executor, _ := matrix.NewRealExecutor(decisions)
+
+		server := mcp.NewMCPServer(kg, executor)
+		if err := server.ServeSTDIO(os.Stdin, os.Stdout); err != nil {
+			log.Fatalf("MCP Server error: %v", err)
+		}
+		return
+	}
 
 	loadedCfg, err := agent.LoadConfig(*configPath)
 	if err != nil {

@@ -3,10 +3,12 @@ package core
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -183,4 +185,69 @@ func TestSQLValidator_IsVulnerable_ErrorBased_Execute_HTTPError(t *testing.T) {
 	m := NewSQLInjectionTesting("http://example.com")
 	ctx := context.Background()
 	_, _ = m.Execute(ctx)
+}
+
+func TestSQLInjectionTesting_Execute_DynamicPage_NoFalsePositive(t *testing.T) {
+	var reqCounter int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := atomic.AddInt64(&reqCounter, 1)
+		// Dynamic non-SQLi page returning distinct tokens / lengths on every hit
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, "Dynamic page content token=%d timestamp=%d extra_padding=%s", count, time.Now().UnixNano(), strings.Repeat("x", int(count%20)))
+	}))
+	defer server.Close()
+
+	m := NewSQLInjectionTesting(server.URL + "/?id=1")
+	results, err := m.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	for _, res := range results {
+		if strings.Contains(res.Detail, "boolean-blind") {
+			t.Errorf("Unexpected false positive on dynamic page: %+v", res)
+		}
+	}
+}
+
+func TestSQLInjectionTesting_Execute_ValidBaseRecord_Detected(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("id")
+
+		// True condition: matches valid base record
+		if q == "1" || q == "' or '1'='1" || q == "' OR 1=1--" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, "User profile: Alice (ID: 1, Role: Member)")
+			return
+		}
+
+		// False condition: record not found
+		if q == "' and '1'='2" || q == "' OR 1=2--" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, "User profile not found")
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "Default page")
+	}))
+	defer server.Close()
+
+	m := NewSQLInjectionTesting(server.URL + "/?id=1")
+	results, err := m.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	foundBooleanBlind := false
+	for _, res := range results {
+		if strings.Contains(res.Detail, "boolean-blind") {
+			foundBooleanBlind = true
+			break
+		}
+	}
+
+	if !foundBooleanBlind {
+		t.Errorf("Expected boolean-blind vulnerability to be confirmed on valid base record")
+	}
 }

@@ -15,11 +15,14 @@ Fire Starter is a Go-based autonomous security assessment agent built for author
 ## Key features
 
 - Phase-aware autonomous workflow driven by `src/matrix/decisions.json`
-- Bubble Tea TUI with live execution logs and a knowledge graph sidebar
+- Bubble Tea TUI with live execution logs, site map, target inspector, log category filtering, and summary collapsing
+- Session Cookie Jar tracking and bearer token management with auth retry throttling
+- Formal vulnerability lifecycle tracking (`candidate`, `confirmed`, `informational`, `disproven`) and separate severity scoring (`critical`, `high`, `medium`, `low`, `informational`, `unknown`)
+- Dedicated assessment confidence evaluation (`src/modules/core/assessment_confidence.go`) to prevent false positives
 - Modular Go execution layer with self-registering module factories in `src/modules/core`
-- Shared knowledge graph that tracks targets, ports, credentials, tokens, and findings
-- SQLite-backed vulnerability logging in `fire_starter.db`
-- Markdown report output in `fire_starter_report.md`
+- Shared knowledge graph that tracks targets, open ports, session credentials, tokens, and vulnerability evidence
+- SQLite-backed persistence in `fire_starter.db` for execution logs and vulnerability records
+- Markdown report output in `fire_starter_report.md` separating confirmed vulnerabilities from informational findings
 - Configurable provider support for OpenAI, Anthropic, Gemini, and local OpenAI-compatible endpoints
 - Optional efficiency mode for aggressively triaging low-value targets
 
@@ -90,12 +93,15 @@ go build -o fire_starter ./cmd/fire_starter
 
 ## TUI navigation
 
-The interface has a log pane and a knowledge graph pane.
-
-- `Tab`: switch focus between panes
-- `Up` / `Down` or `k` / `j`: move in the focused pane
-- `Enter` or `Space`: open the selected target from the knowledge graph pane
-- `Esc` or `Backspace`: leave the target inspector view
+- `1` / `F1`: `Execution Logs` view
+- `2` / `F2`: `Site Map` attack surface view
+- `3` / `F3`: `Knowledge Base & Target Inspector` evidence view
+- `Tab` / `Shift+Tab` or `h` / `l` / `←` / `→`: switch focus between Left Pane and Right Pane
+- `Up` / `Down` or `k` / `j`: scroll viewports or move target selection
+- `f`: cycle log category filters (`All`, `Modules`, `Agent`, `Errors`)
+- `g`: toggle collapsing tool execution summaries
+- `Enter` or `Space`: inspect details for the selected target
+- `Esc` or `Backspace`: return focus to left pane
 - `q` or `Ctrl+C`: quit
 
 ## Configuration file
@@ -142,15 +148,16 @@ When an engagement runs successfully, Fire Starter writes:
 - `fire_starter_report.md`: final markdown report plus a knowledge graph dump
 - `fire_starter.db`: SQLite database containing vulnerability records and execution logs
 
-Confirmed module-level proof-of-concept data is carried into vulnerability logging so technical evidence can be retained separately from the final narrative report.
+Confirmed module-level proof-of-concept data is carried into vulnerability logging so technical evidence can be retained separately from the final narrative report. Vulnerability lifecycle is tracked as `candidate`, `confirmed`, `disproven`, or `informational`, with severity tracked separately as `critical`, `high`, `medium`, `low`, `informational`, or `unknown`; only `confirmed` records are treated as vulnerabilities in the main section of the final report, while `informational` records are always appended in a separate section.
 
 ## Architecture at a glance
 
 1. `cmd/fire_starter/main.go` parses flags, loads config, and starts the TUI.
-2. `src/agent/workflow.go` initializes the provider, orchestrates targets, and writes the final report.
+2. `src/agent/workflow.go` initializes the provider, orchestrates targets, manages session cookie state, and spawns helper sub-agents for candidate verification.
 3. `src/matrix/tool_registry.go` exposes tools from the decision matrix.
 4. `src/matrix/real_executor.go` maps techniques to registered module factories in `src/modules/core`.
-5. `src/matrix/knowledge_graph.go` aggregates execution results, extracted intelligence, and vulnerability evidence.
+5. `src/matrix/knowledge_graph.go` aggregates execution results, extracted intelligence, session credentials, and vulnerability evidence.
+6. `src/matrix/db.go` provides SQLite backend persistence for vulnerability lifecycle states and execution logs.
 
 ## Module development
 

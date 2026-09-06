@@ -40,7 +40,7 @@ func (m *SSHPivot) Execute(ctx context.Context) ([]SSHPivotResult, error) {
 	return []SSHPivotResult{
 		{
 			Target: m.Target,
-			Status: "not_implemented",
+			Status: "unsupported_environment",
 			Detail: "SSH pivot lateral movement is not configured for this target environment.",
 		},
 	}, nil

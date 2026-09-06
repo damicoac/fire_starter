@@ -27,7 +27,7 @@ func (m *LocalPrivilegeEscalation) Execute(ctx context.Context) ([]LocalPrivileg
 	return []LocalPrivilegeEscalationResult{
 		{
 			Target: m.Target,
-			Status: "not_implemented",
+			Status: "unsupported_environment",
 			Detail: "Local privilege escalation post-exploitation is not configured for this target environment.",
 		},
 	}, nil

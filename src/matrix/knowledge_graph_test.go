@@ -15,49 +15,52 @@ func TestKnowledgeGraph_Scoring(t *testing.T) {
 
 	// Test IP Scoring
 	kg.AddIP("192.168.1.1")
-	target := kg.Targets["192.168.1.1"]
-	if target == nil || target.Score != 1 {
+	target, ok := kg.GetTarget("192.168.1.1")
+	if !ok || target.Score != 1 {
 		t.Errorf("Expected IP score 1, got %v", target)
 	}
 
 	kg.AddIP("192.168.1.1")
-	if target.Score != 2 {
-		t.Errorf("Expected IP score 2 after second add, got %d", target.Score)
+	target, _ = kg.GetTarget("192.168.1.1")
+	if target == nil || target.Score != 2 {
+		t.Errorf("Expected IP score 2 after second add, got %v", target)
 	}
 
 	// Test Port Scoring
 	kg.AddPort("192.168.1.1", 80)
-	if target.Score != 12 { // 2 + 10
-		t.Errorf("Expected IP score 12 after adding port, got %d", target.Score)
+	target, _ = kg.GetTarget("192.168.1.1")
+	if target == nil || target.Score != 12 { // 2 + 10
+		t.Errorf("Expected IP score 12 after adding port, got %v", target)
 	}
 
 	// Test URL Scoring
 	kg.AddURL("http://example.com", "")
-	targetUrl := kg.Targets["example.com"]
-	if targetUrl == nil || targetUrl.Score != 1 {
+	targetUrl, ok := kg.GetTarget("example.com")
+	if !ok || targetUrl.Score != 1 {
 		t.Errorf("Expected URL score 1, got %v", targetUrl)
 	}
 
 	kg.AddURL("http://example.com?id=1", "")
-	if kg.Targets["example.com?id=1"] != nil {
+	if kg.HasTargetKey("example.com?id=1") {
 		t.Errorf("Expected parameterized URL to be folded into base target")
 	}
-	if targetUrl.Score != 7 { // 1 (from http://example.com) + 6 (from http://example.com?id=1)
-		t.Errorf("Expected URL score 7 for param URL folded into base target, got %d", targetUrl.Score)
+	targetUrl, _ = kg.GetTarget("example.com")
+	if targetUrl == nil || targetUrl.Score != 7 { // 1 (from http://example.com) + 6 (from http://example.com?id=1)
+		t.Errorf("Expected URL score 7 for param URL folded into base target, got %v", targetUrl)
 	}
 
 	// Test www normalization
 	kg.AddURL("http://www.example.com", "")
-	if kg.Targets["www.example.com"] != nil {
+	if kg.HasTargetKey("www.example.com") {
 		t.Errorf("Expected URL to be normalized and merged")
 	}
 	kg.AddURL("https://www.example.com", "")
-	if kg.Targets["www.example.com"] != nil {
+	if kg.HasTargetKey("www.example.com") {
 		t.Errorf("Expected https://www.example.com to be merged as well")
 	}
 	kg.AddURL("www.test.com", "")
-	targetTest := kg.Targets["test.com"]
-	if targetTest == nil || targetTest.Value != "test.com" {
+	targetTest, ok := kg.GetTarget("test.com")
+	if !ok || targetTest.Value != "test.com" {
 		t.Errorf("Expected www.test.com to be normalized to test.com")
 	}
 }
@@ -162,38 +165,38 @@ func TestKnowledgeGraph_TargetDomainsWhitelist(t *testing.T) {
 
 	// URL within whitelist
 	kg.AddURL("http://example.com/api", "")
-	if kg.Targets["example.com/api"] == nil {
+	if _, ok := kg.GetTarget("example.com/api"); !ok {
 		t.Errorf("Expected example.com/api to be ingested")
 	}
 
 	// Subdomain URL within whitelist
 	kg.AddURL("https://sub.example.com/test", "")
-	if kg.Targets["sub.example.com/test"] == nil {
+	if _, ok := kg.GetTarget("sub.example.com/test"); !ok {
 		t.Errorf("Expected sub.example.com/test to be ingested")
 	}
 
 	// URL outside whitelist
 	kg.AddURL("http://attacker.com/api", "")
-	if kg.Targets["attacker.com/api"] != nil {
+	if _, ok := kg.GetTarget("attacker.com/api"); ok {
 		t.Errorf("Expected attacker.com/api to be ignored")
 	}
 
 	// IP matching wildcard pattern
 	kg.AddIP("192.168.1.100")
-	if kg.Targets["192.168.1.100"] == nil {
+	if _, ok := kg.GetTarget("192.168.1.100"); !ok {
 		t.Errorf("Expected 192.168.1.100 to be ingested via wildcard match")
 	}
 
 	// IP not matching wildcard pattern
 	kg.AddIP("10.0.0.1")
-	if kg.Targets["10.0.0.1"] != nil {
+	if _, ok := kg.GetTarget("10.0.0.1"); ok {
 		t.Errorf("Expected 10.0.0.1 to be ignored")
 	}
 
 	// Dynamically allowed IP (manually added or resolved)
 	kg.AddAllowedIP("8.8.8.8")
 	kg.AddIP("8.8.8.8")
-	if kg.Targets["8.8.8.8"] == nil {
+	if _, ok := kg.GetTarget("8.8.8.8"); !ok {
 		t.Errorf("Expected 8.8.8.8 to be ingested via dynamic allowed list")
 	}
 }
@@ -205,7 +208,7 @@ func TestKnowledgeGraph_AddURLAllowsSeededSubdomainWithoutManualWildcard(t *test
 
 	kg.AddURL("https://app.example.com/login", "https://app.example.com")
 
-	if kg.Targets["app.example.com/login"] == nil {
+	if _, ok := kg.GetTarget("app.example.com/login"); !ok {
 		t.Fatalf("expected seeded subdomain target to be ingested")
 	}
 }
@@ -216,13 +219,14 @@ func TestKnowledgeGraph_AddURLDoesNotRescoreDuplicateURL(t *testing.T) {
 	kg.TargetDomains = []string{"example.com", "*.example.com"}
 
 	kg.AddURL("https://example.com/login", "https://example.com")
-	target := kg.Targets["example.com/login"]
-	if target == nil {
+	target, ok := kg.GetTarget("example.com/login")
+	if !ok || target == nil {
 		t.Fatalf("expected login target to be ingested")
 	}
 	initialScore := target.Score
 
 	kg.AddURL("https://example.com/login", "https://example.com")
+	target, _ = kg.GetTarget("example.com/login")
 	if target.Score != initialScore {
 		t.Fatalf("expected duplicate URL discovery to keep score %d, got %d", initialScore, target.Score)
 	}
@@ -236,10 +240,10 @@ func TestKnowledgeGraph_AddURLRejectsStaticAssets(t *testing.T) {
 	kg.AddURL("https://example.com/assets/site.css", "https://example.com")
 	kg.AddURL("https://example.com/static/app.js", "https://example.com")
 
-	if kg.Targets["example.com/assets/site.css"] != nil {
+	if _, ok := kg.GetTarget("example.com/assets/site.css"); ok {
 		t.Fatalf("expected css asset to be ignored")
 	}
-	if kg.Targets["example.com/static/app.js"] != nil {
+	if _, ok := kg.GetTarget("example.com/static/app.js"); ok {
 		t.Fatalf("expected js asset to be ignored")
 	}
 }
@@ -251,7 +255,7 @@ func TestKnowledgeGraph_AddURLResolvesRelativePaths(t *testing.T) {
 
 	kg.AddURL("/admin/login", "https://example.com/base")
 
-	if kg.Targets["example.com/admin/login"] == nil {
+	if _, ok := kg.GetTarget("example.com/admin/login"); !ok {
 		t.Fatalf("expected relative path to resolve against base target")
 	}
 }

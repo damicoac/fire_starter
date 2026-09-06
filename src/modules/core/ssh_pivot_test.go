@@ -27,8 +27,8 @@ func TestSSHPivot_Execute(t *testing.T) {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
 
-	if results[0].Status != "not_implemented" {
-		t.Errorf("expected status 'not_implemented', got %s", results[0].Status)
+	if results[0].Status != "unsupported_environment" {
+		t.Errorf("expected status 'unsupported_environment', got %s", results[0].Status)
 	}
 }
 
@@ -56,7 +56,7 @@ func TestSSHPivot_Registry(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected []SSHPivotResult, got %T", res)
 	}
-	if len(results) == 0 || results[0].Status != "not_implemented" {
+	if len(results) == 0 || results[0].Status != "unsupported_environment" {
 		t.Errorf("unexpected results: %+v", results)
 	}
 }

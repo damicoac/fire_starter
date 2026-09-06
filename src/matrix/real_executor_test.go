@@ -1,6 +1,7 @@
 package matrix
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -40,7 +41,7 @@ func TestRealExecutor_OSCommandInjection(t *testing.T) {
 		},
 	}
 
-	output, err := executor.Execute(decision)
+	output, err := executor.Execute(context.Background(), decision)
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
@@ -101,7 +102,7 @@ func TestRealExecutor_ServerSideTemplateInjectionSsti(t *testing.T) {
 		},
 	}
 
-	output, err := executor.Execute(decision)
+	output, err := executor.Execute(context.Background(), decision)
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
@@ -132,7 +133,7 @@ func TestRealExecutor_PathTraversalAttack(t *testing.T) {
 		},
 	}
 
-	output, err := executor.Execute(decision)
+	output, err := executor.Execute(context.Background(), decision)
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
@@ -151,7 +152,7 @@ func TestRealExecutor_TechniqueMatching(t *testing.T) {
 		Technique:  "json_hijacking",
 		Payload:    map[string]any{"url": "http://127.0.0.1"},
 	}
-	output1, _ := executor.Execute(decision1)
+	output1, _ := executor.Execute(context.Background(), decision1)
 	if strings.Contains(output1, "JsonHijackingTest") {
 		t.Errorf("Expected json_hijacking to NOT match json_hijacking_test, but it did.")
 	}
@@ -162,7 +163,7 @@ func TestRealExecutor_TechniqueMatching(t *testing.T) {
 		Technique:  "google_dorking",
 		Payload:    map[string]any{"url": "http://127.0.0.1"},
 	}
-	output2, _ := executor.Execute(decision2)
+	output2, _ := executor.Execute(context.Background(), decision2)
 	if strings.Contains(output2, "GoogleDorkingForApis") {
 		t.Errorf("Expected google_dorking to NOT match google_dorking_for_apis, but it did.")
 	}
@@ -206,7 +207,7 @@ func TestRealExecutor_ServerSideTemplateInjectionSsti_OOB(t *testing.T) {
 		},
 	}
 
-	output, err := executor.Execute(decision)
+	output, err := executor.Execute(context.Background(), decision)
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
@@ -224,7 +225,7 @@ func TestRealExecutor_ExecuteReal(t *testing.T) {
 
 	// ExecuteReal
 	decision := Decision{Technique: "unknown_technique", Payload: map[string]any{"ip": "10.0.0.1"}}
-	output, err := executor.ExecuteReal(decision, decision.Payload, func(s string) {})
+	output, err := executor.ExecuteReal(context.Background(), decision, decision.Payload, func(s string) {})
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -240,7 +241,7 @@ func TestRealExecutor_ExecuteMissingTarget(t *testing.T) {
 	}
 
 	decision := Decision{Technique: "unknown_technique"}
-	_, err = executor.ExecuteReal(decision, nil, func(s string) {})
+	_, err = executor.ExecuteReal(context.Background(), decision, nil, func(s string) {})
 	if err == nil {
 		t.Error("expected error for missing target")
 	}
@@ -260,13 +261,13 @@ func TestRealExecutor_ExecuteByToolName(t *testing.T) {
 	}
 
 	// Valid execution
-	_, err := executor.ExecuteByToolName("test_tool_name", map[string]any{"ip": "1.2.3.4"}, func(s string) {})
+	_, err := executor.ExecuteByToolName(context.Background(), "test_tool_name", map[string]any{"ip": "1.2.3.4"}, func(s string) {})
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 
 	// Invalid tool name
-	_, err = executor.ExecuteByToolName("missing_tool", map[string]any{"ip": "1.2.3.4"}, func(s string) {})
+	_, err = executor.ExecuteByToolName(context.Background(), "missing_tool", map[string]any{"ip": "1.2.3.4"}, func(s string) {})
 	if err == nil {
 		t.Error("expected error for missing tool")
 	}

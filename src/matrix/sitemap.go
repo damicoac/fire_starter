@@ -133,3 +133,36 @@ func countNodes(node *SiteNode) int {
 	}
 	return count
 }
+
+// Clone returns a deep copy of the SiteMap for thread-safe reading/rendering
+func (sm *SiteMap) Clone() *SiteMap {
+	if sm == nil {
+		return nil
+	}
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	return &SiteMap{
+		Host: sm.Host,
+		Root: sm.Root.clone(),
+	}
+}
+
+func (sn *SiteNode) clone() *SiteNode {
+	if sn == nil {
+		return nil
+	}
+	newNode := &SiteNode{
+		Path:        sn.Path,
+		Method:      sn.Method,
+		StatusCode:  sn.StatusCode,
+		ContentType: sn.ContentType,
+		Parameters:  append([]string(nil), sn.Parameters...),
+		Children:    make(map[string]*SiteNode, len(sn.Children)),
+		Discovered:  sn.Discovered,
+	}
+	for k, v := range sn.Children {
+		newNode.Children[k] = v.clone()
+	}
+	return newNode
+}

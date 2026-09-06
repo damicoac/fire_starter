@@ -53,7 +53,7 @@ Tests cover behavior such as:
 
 - Extraction from structured JSON and malformed text
 - Deduplication of tokens, entities, and findings
-- Vulnerability persistence and processed-state handling
+- Vulnerability persistence, lifecycle status, and severity handling
 - Concurrent update safety
 - Scope filtering for newly discovered assets
 

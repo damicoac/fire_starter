@@ -90,7 +90,8 @@ var sqlErrors = []string{
 }
 
 type SQLValidator struct {
-	Threshold time.Duration
+	Threshold        time.Duration
+	BaselineDuration time.Duration
 }
 
 func (v *SQLValidator) IsVulnerable(resp *http.Response, body string, payload SQLPayload, duration time.Duration, baseBody string) bool {
@@ -104,21 +105,20 @@ func (v *SQLValidator) IsVulnerable(resp *http.Response, body string, payload SQ
 			}
 		}
 	case SQLCmdTimeBased:
-		if duration >= v.Threshold {
+		minThreshold := v.Threshold
+		if v.BaselineDuration > 0 {
+			minThreshold = v.BaselineDuration + v.Threshold
+		}
+		if duration >= minThreshold {
 			return true
 		}
 	case SQLCmdBoolean:
-		// Logic for boolean-blind (diffing body vs baseBody)
-		// Basic implementation: if bodies are significantly different in length
-		if len(body) != len(baseBody) {
-			// Significant length difference (more than 5%) could indicate a different response
-			diff := len(body) - len(baseBody)
-			if diff < 0 {
-				diff = -diff
-			}
-			if float64(diff)/float64(len(baseBody)+1) > 0.05 {
-				return true
-			}
+		// When a verify value is present, trigger candidate evaluation for differential testing
+		if payload.VerifyValue != "" {
+			return true
+		}
+		if baseBody != "" && body != baseBody {
+			return true
 		}
 	}
 	return false
@@ -190,15 +190,18 @@ func (m *SQLInjectionTesting) Execute(ctx context.Context) ([]SQLInjectionTestin
 
 	var wg sync.WaitGroup
 	semaphore := make(chan struct{}, m.MaxThreads)
-	validator := &SQLValidator{Threshold: m.Threshold}
-
 	for _, vector := range vectors {
 		// Get base response for differential analysis
-		baseBody, err := m.getBaseResponse(ctx, parsedURL, vector)
+		baseBody, baseDuration, err := m.getBaseResponse(ctx, parsedURL, vector)
 		if err != nil {
 			// Log and continue with other vectors
 			log.Warnf("Warning: failed to get base response for vector %s: %v", vector.Key, err)
 			continue
+		}
+
+		validator := &SQLValidator{
+			Threshold:        m.Threshold,
+			BaselineDuration: baseDuration,
 		}
 
 		payloads := getCombinedSQLPayloads()
@@ -223,21 +226,23 @@ func (m *SQLInjectionTesting) Execute(ctx context.Context) ([]SQLInjectionTestin
 	return m.results, nil
 }
 
-func (m *SQLInjectionTesting) getBaseResponse(ctx context.Context, u *url.URL, vector InputVector) (string, error) {
+func (m *SQLInjectionTesting) getBaseResponse(ctx context.Context, u *url.URL, vector InputVector) (string, time.Duration, error) {
 	// Send request with original vector value to get a baseline
 	req, err := m.createRequest(ctx, u, vector, vector.Value)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 
+	start := time.Now()
 	resp, err := m.Client.Do(req)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	defer resp.Body.Close()
 
+	duration := time.Since(start)
 	body, _ := io.ReadAll(resp.Body)
-	return string(body), nil
+	return string(body), duration, nil
 }
 
 func (m *SQLInjectionTesting) createRequest(ctx context.Context, u *url.URL, vector InputVector, value string) (*http.Request, error) {
@@ -313,25 +318,32 @@ func (m *SQLInjectionTesting) testVector(ctx context.Context, u *url.URL, vector
 
 	if validator.IsVulnerable(resp, body, payload, duration, baseBody) {
 		// Double check if it's boolean blind
-		if payload.Type == SQLCmdBoolean && payload.VerifyValue != "" {
+		if payload.Type == SQLCmdBoolean {
+			if payload.VerifyValue == "" {
+				return // Do not flag boolean-blind as vulnerable without differential verification payload
+			}
 			reqVerify, err := m.createRequest(ctx, u, vector, payload.VerifyValue)
-			if err == nil {
-				respVerify, err := m.Client.Do(reqVerify)
-				if err == nil {
-					defer respVerify.Body.Close()
-					bodyVerifyBytes, _ := io.ReadAll(respVerify.Body)
-					bodyVerify := string(bodyVerifyBytes)
+			if err != nil {
+				return
+			}
+			respVerify, err := m.Client.Do(reqVerify)
+			if err != nil {
+				return
+			}
+			defer respVerify.Body.Close()
+			bodyVerifyBytes, _ := io.ReadAll(respVerify.Body)
+			bodyVerify := string(bodyVerifyBytes)
 
-					// If the verify body is different from the payload body and similar to the base body
-					// then it's a very strong indicator of SQL injection
-					if bodyVerify != body && validator.IsVulnerable(nil, body, payload, 0, bodyVerify) {
-						detail := fmt.Sprintf("Differential analysis confirmed boolean-blind injection. DB: %s", payload.DB)
-						m.RecordPoC(req, nil, detail)
-						m.addResult(vector, payload, "vulnerable", detail)
-						return
-					}
+			// True payload produces a different response than False payload (VerifyValue)
+			if bodyVerify != body {
+				tier := EvaluateDifferentialEvidence(body, bodyVerify, baseBody)
+				if tier == EvidenceConfirmed || tier == EvidenceStrong {
+					detail := fmt.Sprintf("Differential analysis confirmed boolean-blind injection. DB: %s", payload.DB)
+					m.RecordPoC(req, nil, detail)
+					m.addResult(vector, payload, "vulnerable", detail)
 				}
 			}
+			return
 		} else {
 			detail := fmt.Sprintf("SQL injection detected. Type: %s. DB: %s", payload.Type, payload.DB)
 			m.RecordPoC(req, nil, detail)

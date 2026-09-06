@@ -208,6 +208,10 @@ func scoreTool(def matrix.ToolDefinition, target *matrix.Target, snapshot matrix
 	score := 0
 	reasons := make([]string, 0, 4)
 
+	if def.Technique == "local_privilege_escalation" || def.Technique == "ssh_pivot" {
+		return scoredTool{Definition: def, Score: -100, Reasons: []string{"unsupported environment for stubbed module"}}
+	}
+
 	for _, exec := range target.ExecutedTools {
 		if exec == def.Name {
 			if def.Name != "decision_http_request" {
@@ -619,8 +623,7 @@ func collectHelperVulnQueue(currentTarget string, kg *matrix.KnowledgeGraph) []m
 		}
 	}
 
-	kg.RLock()
-	if t, ok := kg.Targets[normalizedTarget]; ok {
+	if t, ok := kg.GetTarget(normalizedTarget); ok {
 		for _, finding := range t.Vulnerabilities {
 			trimmed := strings.TrimSpace(finding)
 			if trimmed != "" && !seen[trimmed] && !resolvedFindings[trimmed] {
@@ -633,7 +636,6 @@ func collectHelperVulnQueue(currentTarget string, kg *matrix.KnowledgeGraph) []m
 			}
 		}
 	}
-	kg.RUnlock()
 
 	if vulns, err := matrix.GetVulnerabilities(); err == nil {
 		for _, v := range vulns {
@@ -803,35 +805,17 @@ func runVulnerabilityHelperSubAgent(
 				var resBytes []byte
 				switch qType {
 				case "ips":
-					var ips []string
-					for _, t := range kg.Targets {
-						if t.Type == "ip" {
-							ips = append(ips, t.Value)
-						}
-					}
-					resBytes, err = json.Marshal(ips)
+					resBytes, err = json.Marshal(kg.GetIPTargets())
 					if err != nil {
 						resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
 					}
 				case "urls":
-					var urls []string
-					for _, t := range kg.Targets {
-						if t.Type == "url" {
-							urls = append(urls, t.Value)
-						}
-					}
-					resBytes, err = json.Marshal(urls)
+					resBytes, err = json.Marshal(kg.GetURLTargets())
 					if err != nil {
 						resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
 					}
 				case "ports":
-					ports := make(map[string][]int)
-					for _, t := range kg.Targets {
-						if len(t.OpenPorts) > 0 {
-							ports[t.Value] = t.OpenPorts
-						}
-					}
-					resBytes, err = json.Marshal(ports)
+					resBytes, err = json.Marshal(kg.GetTargetPorts())
 					if err != nil {
 						resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
 					}
@@ -1006,7 +990,7 @@ func runVulnerabilityHelperSubAgent(
 					iterPayload["cookies"] = ""
 				}
 
-				resultData, execErr := executor.ExecuteByToolName(tc.ToolName, iterPayload, func(s string) {
+				resultData, execErr := executor.ExecuteByToolName(ctx, tc.ToolName, iterPayload, func(s string) {
 					log.Debug(s)
 				})
 
@@ -1170,14 +1154,7 @@ func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*m
 			break
 		}
 
-		var pendingTargets []string
-		kg.RLock()
-		for val := range kg.Targets {
-			if !processedTargets[val] {
-				pendingTargets = append(pendingTargets, val)
-			}
-		}
-		kg.RUnlock()
+		pendingTargets := kg.GetPendingTargets(processedTargets)
 
 		if len(pendingTargets) == 0 {
 			break
@@ -1356,13 +1333,11 @@ IP whitelist policy:
 	executedPayloads := make(map[string]bool)
 	spawnedHelpers := make(map[string]bool)
 	httpRequestState := &httpRequestGateState{}
-	kg.RLock()
-	if existingTarget := kg.Targets[currentTarget]; existingTarget != nil {
+	if existingTarget, ok := kg.GetTarget(currentTarget); ok {
 		httpRequestState.hasExecuted = contains(existingTarget.ExecutedTools, "decision_http_request")
 		httpRequestState.lastTargetFingerprint = httpRequestTargetFingerprint(existingTarget)
 		httpRequestState.lastAuthFingerprint = httpRequestAuthFingerprint(existingTarget)
 	}
-	kg.RUnlock()
 
 	for {
 		if *globalIters >= cfg.MaxIters {
@@ -1373,9 +1348,7 @@ IP whitelist policy:
 		*globalIters++
 
 		scored := make([]scoredTool, 0)
-		kg.RLock()
-		targetObj := kg.Targets[currentTarget]
-		if targetObj != nil {
+		if targetObj, ok := kg.GetTarget(currentTarget); ok {
 			for _, t := range executor.Tools() {
 				toolStage := matrix.Phase(matrix.MapTechniqueToStage(t.Technique))
 				if toolStage == targetObj.CurrentPhase || toolStage == matrix.PhaseReconnaissance || t.Name == "decision_http_request" {
@@ -1386,7 +1359,6 @@ IP whitelist policy:
 				}
 			}
 		}
-		kg.RUnlock()
 
 		uniqueScored := make(map[string]scoredTool)
 		for _, st := range scored {
@@ -1431,7 +1403,7 @@ IP whitelist policy:
 		var summaryBuilder strings.Builder
 		summaryBuilder.WriteString("Current Intelligence Summary (Context for Tools):\n")
 		normalizedCurrent := normalizeTarget(currentTarget)
-		for _, t := range kg.Targets {
+		for _, t := range kg.GetTargetsSnapshot() {
 			normalizedT := normalizeTarget(t.Value)
 			if normalizedT == normalizedCurrent {
 				summaryBuilder.WriteString(fmt.Sprintf("- Target: %s (Phase: %s) [CURRENT TARGET]\n", t.Value, t.CurrentPhase))
@@ -1723,35 +1695,17 @@ IP whitelist policy:
 				var resBytes []byte
 				switch qType {
 				case "ips":
-					var ips []string
-					for _, t := range kg.Targets {
-						if t.Type == "ip" {
-							ips = append(ips, t.Value)
-						}
-					}
-					resBytes, err = json.Marshal(ips)
+					resBytes, err = json.Marshal(kg.GetIPTargets())
 					if err != nil {
 						resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
 					}
 				case "urls":
-					var urls []string
-					for _, t := range kg.Targets {
-						if t.Type == "url" {
-							urls = append(urls, t.Value)
-						}
-					}
-					resBytes, err = json.Marshal(urls)
+					resBytes, err = json.Marshal(kg.GetURLTargets())
 					if err != nil {
 						resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
 					}
 				case "ports":
-					ports := make(map[string][]int)
-					for _, t := range kg.Targets {
-						if len(t.OpenPorts) > 0 {
-							ports[t.Value] = t.OpenPorts
-						}
-					}
-					resBytes, err = json.Marshal(ports)
+					resBytes, err = json.Marshal(kg.GetTargetPorts())
 					if err != nil {
 						resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
 					}
@@ -1896,7 +1850,7 @@ IP whitelist policy:
 					iterPayload["cookies"] = ""
 				}
 
-				resultData, execErr := executor.ExecuteByToolName(tc.ToolName, iterPayload, func(s string) {
+				resultData, execErr := executor.ExecuteByToolName(ctx, tc.ToolName, iterPayload, func(s string) {
 					log.Debug(s)
 				})
 
@@ -1930,8 +1884,7 @@ IP whitelist policy:
 
 					afterGraph := kg.Snapshot()
 					if tc.ToolName == "decision_http_request" {
-						kg.Lock()
-						if targetObj := kg.Targets[currentTarget]; targetObj != nil {
+						kg.MutateTarget(currentTarget, func(targetObj *matrix.Target) {
 							if targetObj.HTTPRequestGate == nil {
 								targetObj.HTTPRequestGate = make(map[string]bool)
 							}
@@ -1941,8 +1894,7 @@ IP whitelist policy:
 								targetObj.HTTPRequestGate[authReopenGateKey(targetFingerprint, authFingerprint)] = true
 							}
 							updateHTTPRequestGateState(httpRequestState, targetObj)
-						}
-						kg.Unlock()
+						})
 					}
 					log.Infof("KNOWLEDGE_GRAPH_UPDATE tool=%s session=%s delta=%s snapshot=%s", tc.ToolName, sess, snapshotDelta(beforeGraph, afterGraph), summarizeSnapshot(afterGraph))
 					_, _ = canCompleteTarget(afterGraph, currentTarget, cfg.EfficiencyMode)

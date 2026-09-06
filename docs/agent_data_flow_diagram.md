@@ -87,33 +87,45 @@ Efficiency mode is enabled by default. When left on, the target agent is allowed
 - executes the module
 - attaches proof-of-concept evidence captured via `BaseModule.RecordPoC(...)`
 
-## 4. Knowledge graph and persistence
+## 4. Knowledge graph, session management, and persistence
 
 `src/matrix/knowledge_graph.go` tracks the evolving engagement state, including:
 
 - discovered targets
-- open ports
-- credentials and tokens
-- vulnerability summaries
+- open ports and services
+- session credentials, auth tokens, and automated cookie jar state
+- vulnerability summaries and status details
 - target phase transitions
 
 `src/matrix/db.go` persists execution logs and vulnerability records to `fire_starter.db`.
 
-This split keeps fast iteration state in memory while still retaining durable evidence on disk.
+Vulnerability records use an explicit lifecycle status:
+
+- `candidate`: unconfirmed signal that still needs helper validation
+- `confirmed`: validated security issue eligible for the main findings section
+- `disproven`: tested signal that should not appear as a report finding
+- `informational`: validated observation that should be appended separately from vulnerabilities
+
+Severity is tracked separately as `critical`, `high`, `medium`, `low`, `informational`, or `unknown`. The old `processed` lifecycle field has been removed; `status` is the lifecycle source of truth.
+
+This split keeps fast iteration state and session tokens in memory while still retaining durable evidence on disk.
 
 ## 5. Helper sub-agent flow
 
-During deeper validation, the target loop can spawn a focused helper sub-agent for a specific finding. That helper gets the target, finding summary, available tools, and current graph context so it can refine exploitability evidence and update the persistent vulnerability record.
+During deeper validation, the target loop can spawn a focused helper sub-agent for a specific finding. That helper gets the target, finding summary, available tools, session cookies/tokens, and current graph context so it can refine exploitability evidence and update the persistent vulnerability record.
 
 ## 6. Report generation
 
 At the end of a run, the workflow:
 
-1. reads persisted vulnerabilities
-2. asks the configured model for a narrative report when possible
-3. falls back to a minimal markdown report if report generation fails
-4. appends a JSON knowledge graph dump
-5. writes the result to `fire_starter_report.md`
+1. reads persisted vulnerability records
+2. includes only `confirmed` records in the main vulnerability summary with their separate severity
+3. appends `informational` records in a separate report section
+4. excludes `candidate` and `disproven` records from report findings
+5. asks the configured model for a narrative report when possible
+6. falls back to a minimal markdown report if report generation fails
+7. appends a JSON knowledge graph dump
+8. writes the result to `fire_starter_report.md`
 
 ## 7. TUI data flow
 
@@ -122,4 +134,4 @@ The TUI in `src/tui` receives two message streams:
 - execution logs written through the program writer
 - knowledge graph updates serialized to JSON
 
-The UI shows a live log pane plus a target-oriented knowledge graph browser with an inspector mode for individual targets.
+The UI provides a 3-tab layout (Execution Logs, Site Map, Knowledge Base & Target Inspector) with live log category filtering (`All`, `Modules`, `Agent`, `Errors`), summary collapsing, and interactive target inspection.

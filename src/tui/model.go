@@ -89,6 +89,7 @@ type KGTarget struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
+	SiteMap *matrix.SiteMap `json:"site_map,omitempty"`
 }
 
 type Model struct {
@@ -144,6 +145,7 @@ func parseKG(data []byte, existingTargets []KGTarget) []KGTarget {
 				Username string `json:"username"`
 				Password string `json:"password"`
 			} `json:"credentials"`
+			SiteMap *matrix.SiteMap `json:"site_map"`
 		} `json:"targets"`
 		VulnerabilityRecords []struct {
 			TargetDomain string `json:"TargetDomain"`
@@ -178,6 +180,7 @@ func parseKG(data []byte, existingTargets []KGTarget) []KGTarget {
 			VulnerabilityDetails: vulnerabilityDetailsByTarget[t.Value],
 			DiscoveredURLs:       t.DiscoveredURLs,
 			Credentials:          t.Credentials,
+			SiteMap:              t.SiteMap,
 		})
 	}
 
@@ -308,9 +311,12 @@ func buildSiteMapView(targets []KGTarget, width int) string {
 
 	for i, t := range targets {
 		totalURLs += len(t.DiscoveredURLs)
-		sm := matrix.NewSiteMap(t.Value)
-		for _, u := range t.DiscoveredURLs {
-			sm.AddURL(u, "", 0, "", nil)
+		sm := t.SiteMap
+		if sm == nil {
+			sm = matrix.NewSiteMap(t.Value)
+			for _, u := range t.DiscoveredURLs {
+				_ = sm.AddURL(u, "", 0, "", nil)
+			}
 		}
 		siteMaps[i] = sm
 		totalNodes += sm.NodeCount()

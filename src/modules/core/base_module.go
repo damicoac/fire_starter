@@ -75,6 +75,7 @@ type OOBInteraction struct {
 type OOBManager struct {
 	PublicHost   string
 	Listener     net.Listener
+	Server       *http.Server
 	Interactions map[string][]OOBInteraction
 	Mu           sync.Mutex
 }
@@ -86,31 +87,40 @@ func (m *OOBManager) StartOOBReceiver(listenAddr string) error {
 	}
 	m.Listener = l
 	m.Interactions = make(map[string][]OOBInteraction)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := strings.Trim(r.URL.Path, "/")
+		if id != "" {
+			interaction := OOBInteraction{
+				ID:        id,
+				Protocol:  "http",
+				RemoteIP:  r.RemoteAddr,
+				Timestamp: time.Now(),
+			}
+			m.Mu.Lock()
+			m.Interactions[id] = append(m.Interactions[id], interaction)
+			m.Mu.Unlock()
+		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "OK")
+	})
+	m.Server = &http.Server{Handler: handler}
 
 	go func() {
-		_ = http.Serve(l, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			id := strings.Trim(r.URL.Path, "/")
-			if id != "" {
-				interaction := OOBInteraction{
-					ID:        id,
-					Protocol:  "http",
-					RemoteIP:  r.RemoteAddr,
-					Timestamp: time.Now(),
-				}
-				m.Mu.Lock()
-				m.Interactions[id] = append(m.Interactions[id], interaction)
-				m.Mu.Unlock()
-			}
-			w.WriteHeader(http.StatusOK)
-			fmt.Fprintf(w, "OK")
-		}))
+		_ = m.Server.Serve(l)
 	}()
 	return nil
 }
 
 func (m *OOBManager) StopOOBReceiver() {
+	if m.Server != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = m.Server.Shutdown(ctx)
+		m.Server = nil
+	}
 	if m.Listener != nil {
-		m.Listener.Close()
+		_ = m.Listener.Close()
+		m.Listener = nil
 	}
 }
 
