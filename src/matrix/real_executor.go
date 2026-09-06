@@ -65,37 +65,37 @@ func (e *RealExecutor) Tools() []ToolDefinition {
 	return e.registry.ListTools()
 }
 
-func (e *RealExecutor) Execute(decision Decision) (string, error) {
+func (e *RealExecutor) Execute(ctx context.Context, decision Decision) (string, error) {
 	payload := decision.Payload
 	if payload == nil {
 		payload = make(map[string]any)
 	}
-	return e.executeDecision(decision, payload, func(string) {})
+	return e.executeDecision(ctx, decision, payload, func(string) {})
 }
 
-func (e *RealExecutor) ExecuteByIdentifier(identifier string, payload map[string]any, onLog func(string)) (string, error) {
+func (e *RealExecutor) ExecuteByIdentifier(ctx context.Context, identifier string, payload map[string]any, onLog func(string)) (string, error) {
 	tool, ok := e.registry.ToolForIdentifier(identifier)
 	if !ok {
 		return "", fmt.Errorf("tool for identifier %s not found", identifier)
 	}
 	decision := Decision{Identifier: tool.Identifier, Technique: tool.Technique}
-	return e.executeDecision(decision, payload, onLog)
+	return e.executeDecision(ctx, decision, payload, onLog)
 }
 
-func (e *RealExecutor) ExecuteByToolName(toolName string, payload map[string]any, onLog func(string)) (string, error) {
+func (e *RealExecutor) ExecuteByToolName(ctx context.Context, toolName string, payload map[string]any, onLog func(string)) (string, error) {
 	tool, ok := e.toolByName[toolName]
 	if !ok {
 		return "", fmt.Errorf("tool %s not found", toolName)
 	}
 	decision := Decision{Identifier: tool.Identifier, Technique: tool.Technique}
-	return e.executeDecision(decision, payload, onLog)
+	return e.executeDecision(ctx, decision, payload, onLog)
 }
 
-func (e *RealExecutor) ExecuteReal(decision Decision, payload map[string]any, onLog func(string)) (string, error) {
-	return e.executeDecision(decision, payload, onLog)
+func (e *RealExecutor) ExecuteReal(ctx context.Context, decision Decision, payload map[string]any, onLog func(string)) (string, error) {
+	return e.executeDecision(ctx, decision, payload, onLog)
 }
 
-func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any, onLog func(string)) (string, error) {
+func (e *RealExecutor) executeDecision(ctx context.Context, decision Decision, payload map[string]any, onLog func(string)) (string, error) {
 	stage := MapTechniqueToStage(decision.Technique)
 	onLog(fmt.Sprintf("Mapped decision technique '%s' to node stage '%s'", decision.Technique, stage))
 
@@ -158,7 +158,7 @@ func (e *RealExecutor) executeDecision(decision Decision, payload map[string]any
 
 		injectCookies(module.GetUnderlying())
 		
-		results, err := module.Execute(context.Background())
+		results, err := module.Execute(ctx)
 		if err != nil {
 			return fmt.Sprintf("%s failed: %v", technique, err), err
 		}

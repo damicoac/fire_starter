@@ -55,3 +55,24 @@ func formatEvidenceDetail(tier EvidenceTier, summary string) string {
 	}
 	return "[evidence:" + string(tier) + "] " + summary
 }
+
+// EvaluateDifferentialEvidence compares responses from true and false conditions against a baseline.
+// Returns EvidenceConfirmed if one condition matches the baseline while the other diverges.
+// If no baseline is available, returns EvidenceStrong if trueBody != falseBody.
+// Otherwise returns EvidenceWeak.
+func EvaluateDifferentialEvidence(trueBody, falseBody, baseBody string) EvidenceTier {
+	if trueBody == "" || falseBody == "" {
+		return EvidenceWeak
+	}
+	if trueBody == falseBody {
+		return EvidenceWeak
+	}
+	if baseBody != "" {
+		if (trueBody == baseBody && falseBody != baseBody) || (trueBody != baseBody && falseBody == baseBody) {
+			return EvidenceConfirmed
+		}
+		// If both conditions differ from baseline, page responses may be volatile/dynamic
+		return EvidenceWeak
+	}
+	return EvidenceStrong
+}

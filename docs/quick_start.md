@@ -92,18 +92,23 @@ Notes:
 
 ## 6. TUI controls
 
-- `Tab`: switch focus between the logs pane and knowledge graph pane
-- `Up` / `Down` or `k` / `j`: move in the focused pane
-- `Enter` or `Space`: inspect the selected target in the knowledge graph pane
-- `Esc` or `Backspace`: exit the inspector view
+- `1` / `F1`: `Execution Logs` view
+- `2` / `F2`: `Site Map` attack surface view
+- `3` / `F3`: `Knowledge Base & Target Inspector` evidence view
+- `Tab` / `Shift+Tab` or `h` / `l` / `←` / `→`: switch focus between Left Pane and Right Pane
+- `Up` / `Down` or `k` / `j`: scroll viewports or move target selection
+- `f`: cycle log category filters (`All`, `Modules`, `Agent`, `Errors`)
+- `g`: toggle collapsing tool execution summaries
+- `Enter` or `Space`: inspect details for the selected target
+- `Esc` or `Backspace`: return focus to left pane
 - `q` or `Ctrl+C`: quit
 
 ## 7. What gets written to disk
 
 A completed run produces:
 
-- `fire_starter_report.md`: final markdown report with a knowledge graph dump
-- `fire_starter.db`: SQLite database storing execution logs and vulnerability records
+- `fire_starter_report.md`: final markdown report with confirmed vulnerability findings, informational section, and a knowledge graph dump
+- `fire_starter.db`: SQLite database storing execution logs and vulnerability lifecycle records (`candidate`, `confirmed`, `informational`, `disproven`)
 
 ## 8. Troubleshooting
 

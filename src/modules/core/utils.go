@@ -12,13 +12,7 @@ import (
 	"golang.org/x/net/publicsuffix"
 )
 
-var sharedCookieJar http.CookieJar
-
-func init() {
-	sharedCookieJar, _ = cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
-}
-
-// NewHTTPClient returns a configured *http.Client with reasonable timeouts, insecure skip verify, and a shared CookieJar.
+// NewHTTPClient returns a configured *http.Client with reasonable timeouts, insecure skip verify, and an independent CookieJar.
 var DefaultTransport http.RoundTripper = &http.Transport{
 	TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 }

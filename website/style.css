@@ -422,8 +422,14 @@ section {
 /* Features Grid */
 .features-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    grid-template-columns: repeat(2, 1fr);
     gap: 2rem;
+}
+
+@media (max-width: 868px) {
+    .features-grid {
+        grid-template-columns: 1fr;
+    }
 }
 
 .feature-card {
@@ -476,8 +482,14 @@ section {
 
 .coverage-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    grid-template-columns: repeat(2, 1fr);
     gap: 2rem;
+}
+
+@media (max-width: 868px) {
+    .coverage-grid {
+        grid-template-columns: 1fr;
+    }
 }
 
 .coverage-card {
@@ -520,20 +532,38 @@ section {
     margin-bottom: 0.2rem;
 }
 
-/* Actionable Reports Mockup styling */
-.report-demo-preview {
-    max-width: 800px;
-    margin: 0 auto;
+/* Reports Section Layout styling */
+.reports-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 2rem;
+}
+
+@media (max-width: 868px) {
+    .reports-grid {
+        grid-template-columns: 1fr;
+    }
 }
 
 .report-card {
     background: rgba(239, 68, 68, 0.04);
     border: 1px solid rgba(239, 68, 68, 0.15);
-    border-radius: 12px;
+    border-radius: 14px;
     padding: 1.5rem;
+    display: flex;
+    flex-direction: column;
 }
+
+.report-card.db-card {
+    background: rgba(59, 130, 246, 0.04);
+    border-color: rgba(59, 130, 246, 0.18);
+}
+
 html[data-theme="light"] .report-card {
     background: rgba(239, 68, 68, 0.02);
+}
+html[data-theme="light"] .report-card.db-card {
+    background: rgba(59, 130, 246, 0.02);
 }
 
 .report-card-title {
@@ -1275,8 +1305,8 @@ html[data-theme="light"] .workflow-step:hover .step-body {
 @media (min-width: 1024px) {
     .hero-content {
         display: grid;
-        grid-template-columns: 1.1fr 0.9fr;
-        gap: 4rem;
+        grid-template-columns: 1fr 1fr;
+        gap: 3.5rem;
         align-items: center;
         max-width: 1300px;
         text-align: left;
@@ -1287,18 +1317,18 @@ html[data-theme="light"] .workflow-step:hover .step-body {
         display: flex;
         flex-direction: column;
         align-items: flex-start;
-        order: 2; /* Put text info on the right */
+        order: 1; /* Headline and text on the left */
     }
     
     .hero-dashboard-preview {
-        order: 1; /* Put screenshot on the left */
+        order: 2; /* Dashboard preview on the right */
         margin-top: 0;
         max-width: 100%;
     }
     
     .hero-content h1 {
         text-align: left;
-        font-size: 3.5rem; /* scale down slightly to fit beautifully side-by-side */
+        font-size: 3.5rem;
         margin-bottom: 1.25rem;
     }
     
@@ -1310,7 +1340,7 @@ html[data-theme="light"] .workflow-step:hover .step-body {
     }
     
     .terminal-container {
-        margin: 0 0 1.75rem 0; /* remove centering margin, add bottom margin */
+        margin: 0 0 1.75rem 0;
         width: 100%;
         max-width: 100%;
     }

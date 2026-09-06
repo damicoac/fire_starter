@@ -407,3 +407,24 @@ func TestReachedIterationLimit(t *testing.T) {
 		})
 	}
 }
+
+func TestScoreTool_ExcludesStubbedModules(t *testing.T) {
+	target := &matrix.Target{
+		Value:        "192.168.1.50",
+		Type:         "ip",
+		CurrentPhase: matrix.PhaseExploitation,
+	}
+	snapshot := matrix.KnowledgeSnapshot{}
+
+	stubbedTechs := []string{"local_privilege_escalation", "ssh_pivot"}
+	for _, tech := range stubbedTechs {
+		def := matrix.ToolDefinition{
+			Name:      "test_" + tech,
+			Technique: tech,
+		}
+		scored := scoreTool(def, target, snapshot, nil)
+		if scored.Score >= 0 {
+			t.Errorf("expected stubbed module %s to have negative score, got %d", tech, scored.Score)
+		}
+	}
+}

@@ -42,3 +42,35 @@ func TestMeetsThreshold(t *testing.T) {
 		t.Fatalf("expected threshold to fail")
 	}
 }
+
+func TestEvaluateDifferentialEvidence(t *testing.T) {
+	// Case 1: identical true and false bodies -> Weak
+	if got := EvaluateDifferentialEvidence("same", "same", "base"); got != EvidenceWeak {
+		t.Fatalf("expected EvidenceWeak for identical bodies, got %s", got)
+	}
+
+	// Case 2: true matches base, false differs -> Confirmed
+	if got := EvaluateDifferentialEvidence("base", "differ", "base"); got != EvidenceConfirmed {
+		t.Fatalf("expected EvidenceConfirmed, got %s", got)
+	}
+
+	// Case 3: true differs, false matches base -> Confirmed
+	if got := EvaluateDifferentialEvidence("differ", "base", "base"); got != EvidenceConfirmed {
+		t.Fatalf("expected EvidenceConfirmed, got %s", got)
+	}
+
+	// Case 4: true differs from false and both differ from baseline -> Weak (dynamic page protection)
+	if got := EvaluateDifferentialEvidence("differ1", "differ2", "base"); got != EvidenceWeak {
+		t.Fatalf("expected EvidenceWeak for volatile baseline mismatch, got %s", got)
+	}
+
+	// Case 5: no baseline available but true differs from false -> Strong
+	if got := EvaluateDifferentialEvidence("differ1", "differ2", ""); got != EvidenceStrong {
+		t.Fatalf("expected EvidenceStrong without baseline, got %s", got)
+	}
+
+	// Case 6: empty bodies -> Weak
+	if got := EvaluateDifferentialEvidence("", "", ""); got != EvidenceWeak {
+		t.Fatalf("expected EvidenceWeak for empty bodies, got %s", got)
+	}
+}

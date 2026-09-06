@@ -26,7 +26,9 @@ type OSPayload struct {
 }
 
 type OSValidator struct {
-	Threshold time.Duration
+	Threshold        time.Duration
+	BaselineDuration time.Duration
+	BaselineBody     string
 }
 
 func (v *OSValidator) IsVulnerable(resp *http.Response, body string, payload OSPayload, duration time.Duration) bool {
@@ -46,12 +48,20 @@ func (v *OSValidator) IsVulnerable(resp *http.Response, body string, payload OSP
 			}
 		}
 	case CmdTimeBased:
-		if duration >= v.Threshold {
+		minThreshold := v.Threshold
+		if v.BaselineDuration > 0 {
+			minThreshold = v.BaselineDuration + v.Threshold
+		}
+		if duration >= minThreshold {
 			return true
 		}
 	case CmdBoolean:
-		// Boolean detection often uses echo to confirm execution
-		if strings.Contains(body, "VULNERABLE") {
+		// Boolean detection: check for the marker, but reject if already present in baseline
+		marker := "VULNERABLE"
+		if strings.Contains(body, marker) {
+			if v.BaselineBody != "" && strings.Contains(v.BaselineBody, marker) {
+				return false
+			}
 			return true
 		}
 	}
@@ -148,7 +158,6 @@ func (m *OSCommandInjection) Execute(ctx context.Context) ([]OSCommandInjectionR
 
 	// Discover vectors
 	vectors, _ := m.DiscoverVectors(parsedURL, nil, "", headers)
-	fmt.Printf("vectors length: %d\n", len(vectors))
 
 	hasQueryOrBody := false
 	for _, v := range vectors {
@@ -164,8 +173,12 @@ func (m *OSCommandInjection) Execute(ctx context.Context) ([]OSCommandInjectionR
 		vectors = append(vectors, InputVector{Type: VectorQueryParam, Key: "exec", Value: ""})
 	}
 
+	baseDuration, baseBody, _, _ := m.sendPayload(ctx, parsedURL, InputVector{Type: VectorQueryParam, Key: "_fs_probe", Value: "1"}, "")
+
 	validator := &OSValidator{
-		Threshold: m.Threshold,
+		Threshold:        m.Threshold,
+		BaselineDuration: baseDuration,
+		BaselineBody:     baseBody,
 	}
 
 	type job struct {
@@ -177,7 +190,6 @@ func (m *OSCommandInjection) Execute(ctx context.Context) ([]OSCommandInjectionR
 	for _, v := range vectors {
 		for _, p := range osPayloads {
 			jobChan <- job{vector: v, payload: p}
-			fmt.Printf("Job queued: %v\n", v.Key)
 		}
 	}
 	close(jobChan)
@@ -236,6 +248,9 @@ func (m *OSCommandInjection) testVector(ctx context.Context, u *url.URL, vector 
 		} else if payload.Type == CmdBoolean || payload.Type == CmdReflection {
 			// Chained command verification: verify with a different token to ensure it's not a fluke or static response
 			verifyToken := "VERIFIED"
+			if validator.BaselineBody != "" && strings.Contains(validator.BaselineBody, verifyToken) {
+				verifyToken = "VERIFIED_CANARY_CHECK"
+			}
 			verifyValue := strings.Replace(payload.Value, "VULNERABLE", verifyToken, 1)
 			verifyValue = strings.Replace(verifyValue, "id", "echo "+verifyToken, 1)
 			verifyValue = strings.Replace(verifyValue, "whoami", "echo "+verifyToken, 1)
@@ -246,6 +261,9 @@ func (m *OSCommandInjection) testVector(ctx context.Context, u *url.URL, vector 
 			}
 
 			if !strings.Contains(verifyBody, verifyToken) {
+				return
+			}
+			if validator.BaselineBody != "" && strings.Contains(validator.BaselineBody, verifyToken) {
 				return
 			}
 		}
@@ -281,7 +299,6 @@ func (m *OSCommandInjection) sendPayload(ctx context.Context, u *url.URL, vector
 		return 0, "", nil, fmt.Errorf("unsupported vector type: %s", vector.Type)
 	}
 
-	fmt.Printf("req err: %v\n", err)
 	if err != nil || req == nil {
 		return 0, "", nil, err
 	}
@@ -292,7 +309,6 @@ func (m *OSCommandInjection) sendPayload(ctx context.Context, u *url.URL, vector
 
 	start := time.Now()
 	resp, err := m.Client.Do(req)
-	fmt.Printf("m.Client.Do err: %v\n", err)
 	duration := time.Since(start)
 
 	if err != nil {

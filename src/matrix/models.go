@@ -2,6 +2,7 @@ package matrix
 
 import (
 	_ "embed"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"time"
@@ -65,6 +66,23 @@ func ReadDecisionsFile(path string) ([]byte, error) {
 		path = filepath.Join("..", "..", "src", "matrix", "decisions.json")
 	}
 	return os.ReadFile(path)
+}
+
+// LoadDecisions reads and parses the decisions configuration into a slice of Decisions.
+func LoadDecisions(path ...string) ([]Decision, error) {
+	p := "src/matrix/decisions.json"
+	if len(path) > 0 && path[0] != "" {
+		p = path[0]
+	}
+	bytes, err := ReadDecisionsFile(p)
+	if err != nil {
+		return nil, err
+	}
+	var data DecisionData
+	if err := json.Unmarshal(bytes, &data); err != nil {
+		return nil, err
+	}
+	return data.Decisions, nil
 }
 
 func NextPhase(current Phase) Phase {

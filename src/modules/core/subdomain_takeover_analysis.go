@@ -18,11 +18,16 @@ type SubdomainTakeoverAnalysisResult struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+func defaultLookupCNAME(ctx context.Context, host string) (string, error) {
+	return net.DefaultResolver.LookupCNAME(ctx, host)
+}
+
 // SubdomainTakeoverAnalysis executes the subdomain_takeover_analysis security technique.
 type SubdomainTakeoverAnalysis struct {
 	BaseModule
-	Target  string
-	results []SubdomainTakeoverAnalysisResult
+	Target      string
+	results     []SubdomainTakeoverAnalysisResult
+	LookupCNAME func(ctx context.Context, host string) (string, error)
 }
 
 // NewSubdomainTakeoverAnalysis creates a new instance.
@@ -34,7 +39,8 @@ func NewSubdomainTakeoverAnalysis(target string) *SubdomainTakeoverAnalysis {
 			Client:     NewHTTPClient(10 * time.Second),
 			MaxThreads: 5,
 		},
-		Target: target,
+		Target:      target,
+		LookupCNAME: defaultLookupCNAME,
 	}
 }
 
@@ -96,7 +102,11 @@ func (m *SubdomainTakeoverAnalysis) Execute(ctx context.Context) ([]SubdomainTak
 }
 
 func (m *SubdomainTakeoverAnalysis) testSubdomain(ctx context.Context, sub string) {
-	cname, err := net.LookupCNAME(sub)
+	lookup := m.LookupCNAME
+	if lookup == nil {
+		lookup = defaultLookupCNAME
+	}
+	cname, err := lookup(ctx, sub)
 	if err != nil {
 		return
 	}

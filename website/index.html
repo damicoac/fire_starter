@@ -54,7 +54,7 @@
             <div class="hero-content">
                 <div class="hero-info">
                     <h1>Autonomous<br><span class="gradient-text">Security Assessment Agent.</span></h1>
-                    <p class="subtitle">Run authorized assessments from your terminal with a live Bubble Tea UI, phase-aware orchestration, modular Go checks, and local report artifacts you can inspect end to end.</p>
+                    <p class="subtitle">Run authorized assessments from your terminal with a live Bubble Tea UI, session cookie jar tracking, vulnerability lifecycle management, modular Go checks, and local SQLite & markdown report artifacts you can inspect end to end.</p>
                     
                     <div class="terminal-container">
                         <div class="terminal-header">
@@ -107,7 +107,7 @@
             <div class="section-header">
                 <span class="section-tag">Platform Features</span>
                 <h2 class="section-title">Built for local, inspectable assessments</h2>
-                <p class="section-subtitle">Fire Starter keeps orchestration, evidence, and outputs inside your environment so you can validate what happened and why.</p>
+                <p class="section-subtitle">Fire Starter keeps orchestration, session context, evidence, and persistence inside your environment so you can validate what happened and why.</p>
             </div>
 
             <div class="features-grid">
@@ -116,21 +116,28 @@
                         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
                     </div>
                     <h3>Self-hosted runtime</h3>
-                    <p>Build and run the agent locally with Go. Use hosted model providers or point `-provider local` at an OpenAI-compatible endpoint while keeping scan execution in your own environment.</p>
+                    <p>Build and run the agent locally with Go. Use hosted model providers (OpenAI, Anthropic, Gemini) or point <code>-provider local</code> at an OpenAI-compatible endpoint while keeping scanning local.</p>
                 </div>
                 <div class="feature-card">
                     <div class="feature-icon-wrapper">
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="9" x2="15" y2="9"></line><line x1="9" y1="13" x2="15" y2="13"></line><line x1="9" y1="17" x2="15" y2="17"></line></svg>
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
                     </div>
-                    <h3>Modular Go techniques</h3>
-                    <p>Add a technique entry in `src/matrix/decisions.json`, implement the module in `src/modules/core`, and register it with `RegisterModule(...)` to make it available to the runtime.</p>
+                    <h3>Vulnerability Lifecycle & Confidence</h3>
+                    <p>Track findings through explicit lifecycle states (<code>candidate</code>, <code>confirmed</code>, <code>informational</code>, <code>disproven</code>) with separate severity scoring (<code>critical</code> to <code>low</code>) and confidence validation.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon-wrapper">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg>
+                    </div>
+                    <h3>Session & Cookie Jar Management</h3>
+                    <p>Automatic cookie jar tracking and bearer token extraction allow seamless session propagation across main agent workflows and focused helper sub-agents with auth retry throttling.</p>
                 </div>
                 <div class="feature-card">
                     <div class="feature-icon-wrapper">
                         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
                     </div>
-                    <h3>Traceable evidence</h3>
-                    <p>The workflow keeps a live knowledge graph in memory, stores findings in `fire_starter.db`, and writes `fire_starter_report.md` when the engagement concludes.</p>
+                    <h3>Dual-Pane TUI & SQLite Persistence</h3>
+                    <p>Interactive Bubble Tea TUI with log category filters (All, Errors, Agent, Modules, System), knowledge graph inspector, and durable SQLite storage in <code>fire_starter.db</code>.</p>
                 </div>
             </div>
         </section>
@@ -139,7 +146,7 @@
             <div class="section-header">
                 <span class="section-tag">Autonomous Workflow</span>
                 <h2 class="section-title">A phase-aware assessment loop</h2>
-                <p class="section-subtitle">The agent scores available tools per target, updates the knowledge graph after execution, and advances through the engagement based on evidence.</p>
+                <p class="section-subtitle">The agent scores available tools per target, updates the knowledge graph after execution, and advances through the engagement based on verified evidence.</p>
             </div>
 
             <div class="pipeline-layout">
@@ -149,27 +156,27 @@
                         <p>Bootstraps target knowledge through discovery-oriented techniques such as search, subdomain work, and initial surface mapping.</p>
                     </div>
                     <div class="timeline-step">
-                        <h4>2. Scanning</h4>
-                        <p>Expands context with route checks, port discovery, and error analysis to identify reachable attack surfaces.</p>
+                        <h4>2. Scanning & Surface Mapping</h4>
+                        <p>Expands context with route checks, port discovery, component version analysis, and security header checks to identify reachable attack surfaces.</p>
                     </div>
                     <div class="timeline-step">
-                        <h4>3. Vulnerability Analysis</h4>
-                        <p>Validates likely weaknesses, enriches context, and promotes promising leads into deeper investigation.</p>
+                        <h4>3. Vulnerability Analysis & Candidate Scoring</h4>
+                        <p>Probes likely weaknesses (JWT, mass assignment, SQLi, BOLA), records initial signals as <code>candidate</code> findings, and enriches session state.</p>
                     </div>
                     <div class="timeline-step">
-                        <h4>4. Exploitation</h4>
-                        <p>Runs active technique modules, records proof-of-concept evidence, and updates database-backed findings.</p>
+                        <h4>4. Helper Verification & Exploitation</h4>
+                        <p>Spawns focused helper sub-agents to validate candidates, capturing proof-of-concept evidence and promoting findings to <code>confirmed</code> or <code>informational</code> status.</p>
                     </div>
                     <div class="timeline-step">
-                        <h4>5. Reporting</h4>
-                        <p>Generates a markdown report and preserves the final knowledge graph state for review.</p>
+                        <h4>5. Reporting & Knowledge Graph Dump</h4>
+                        <p>Generates <code>fire_starter_report.md</code> with confirmed findings and severity metrics while storing full execution records in <code>fire_starter.db</code>.</p>
                     </div>
                 </div>
 
                 <div class="knowledge-graph-card">
                     <div class="graph-header">
                         <h3>Shared knowledge graph</h3>
-                        <p>Each tool call can enrich the same target-centric state model</p>
+                        <p>Each tool call enriches the target state and vulnerability database</p>
                     </div>
                     <div class="graph-items">
                         <div class="graph-item">
@@ -213,10 +220,11 @@
                         <div class="graph-item">
                             <div class="graph-item-icon">⚠️</div>
                             <div class="graph-item-content">
-                                <div class="graph-item-title">Persisted findings</div>
+                                <div class="graph-item-title">Persisted vulnerability records</div>
                                 <div class="graph-item-pills">
-                                    <span class="graph-item-pill danger">BOLA</span>
-                                    <span class="graph-item-pill danger">CORS misconfiguration</span>
+                                    <span class="graph-item-pill danger">[confirmed/high] BOLA</span>
+                                    <span class="graph-item-pill danger">[confirmed/med] Mass Assignment</span>
+                                    <span class="graph-item-pill" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3);">[informational] Security Headers</span>
                                 </div>
                             </div>
                         </div>
@@ -229,7 +237,7 @@
             <div class="section-header">
                 <span class="section-tag">Built-in Coverage</span>
                 <h2 class="section-title">Broad default technique set</h2>
-                <p class="section-subtitle">The repository ships with a large set of built-in modules across reconnaissance, analysis, exploitation, and post-exploitation workflows.</p>
+                <p class="section-subtitle">The repository ships with a large set of built-in Go modules across reconnaissance, analysis, exploitation, and post-exploitation workflows.</p>
             </div>
 
             <div class="coverage-layout">
@@ -239,30 +247,30 @@
                         <ul>
                             <li>BOLA, BFLA, and IDOR validation paths</li>
                             <li>Mass assignment and business-logic bypass checks</li>
-                            <li>Rate-limit and access-boundary probing</li>
+                            <li>Rate-limit probing & assessment confidence modules</li>
                         </ul>
                     </div>
                     <div class="coverage-card">
                         <h4>Web and API input abuse</h4>
                         <ul>
                             <li>SQL, NoSQL, XPath, LDAP, and command injection modules</li>
-                            <li>GraphQL introspection and advanced GraphQL checks</li>
+                            <li>GraphQL introspection and schema security checks</li>
                             <li>HTTP verb tampering, smuggling, and parameter pollution</li>
                         </ul>
                     </div>
                     <div class="coverage-card">
-                        <h4>Session and browser security</h4>
+                        <h4>Session, JWT & header security</h4>
                         <ul>
-                            <li>JWT, OAuth, SAML, CSRF, and session-fixation testing</li>
-                            <li>CORS, security headers, and cookie handling analysis</li>
-                            <li>XSS and DOM-based XSS coverage</li>
+                            <li>JWT audit (alg: none, key confusion, kid header manipulation)</li>
+                            <li>Cookie Jar session management & auth token propagation</li>
+                            <li>CORS, security headers, and cookie attribute analysis</li>
                         </ul>
                     </div>
                     <div class="coverage-card">
                         <h4>Discovery and infrastructure</h4>
                         <ul>
                             <li>Google dorking, subdomain enumeration, and takeover analysis</li>
-                            <li>Port scanning and route discovery helpers</li>
+                            <li>Port scanning, component version analysis, and route discovery</li>
                             <li>Local privilege escalation and SSH pivot modules</li>
                         </ul>
                     </div>
@@ -273,32 +281,52 @@
         <section id="reports">
             <div class="section-header">
                 <span class="section-tag">Local Outputs</span>
-                <h2 class="section-title">Readable reports and durable findings</h2>
+                <h2 class="section-title">Readable reports and durable SQLite findings</h2>
                 <p class="section-subtitle">Fire Starter keeps the final narrative report separate from structured evidence, giving you a markdown handoff and SQLite-backed persistence for review workflows.</p>
             </div>
 
-            <div class="report-demo-preview">
+            <div class="reports-grid">
                 <div class="report-card">
                     <div class="report-card-title">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>
                         <span>fire_starter_report.md</span>
                     </div>
                     <div class="report-markdown">
-<pre style="background: transparent; border: none; padding: 0; color: #f8fafc;"><code style="color: #61afef;"># Final Report
+<pre style="background: transparent; border: none; padding: 0; color: #f8fafc;"><code style="color: #61afef;"><span style="color: #e06c75;"># Final Security Assessment Report</span>
 
-## Executive Summary
-- Authorized target coverage completed for high-value assets.
-- Multiple findings were persisted for follow-up validation.
+<span style="color: #c678dd;">## Executive Summary</span>
+- Authorized target coverage completed.
+- Verified findings categorized by severity.
 
-## Findings Overview
-- Target: api.internal
-  - Broken Object-Level Authorization
-  - CORS misconfiguration
+<span style="color: #c678dd;">## Confirmed Vulnerabilities</span>
+- <span style="color: #e5c07b;">**[HIGH]**</span> BOLA on <code style="color: #98c379;">api.internal/v1/users</code>
+- <span style="color: #e5c07b;">**[MEDIUM]**</span> Mass Assignment on <code style="color: #98c379;">app.internal/update</code>
 
-## Knowledge Graph Dump
-{
-  "targets": ["api.internal", "app.internal"],
-  "vulnerability_count": 2
-}</code></pre>
+<span style="color: #c678dd;">## Informational Findings</span>
+- <span style="color: #56b6c2;">**[INFO]**</span> Missing CSP & X-Frame-Options
+
+<span style="color: #c678dd;">## Knowledge Graph Dump</span>
+{ <span style="color: #98c379;">"confirmed"</span>: 2, <span style="color: #98c379;">"informational"</span>: 1 }</code></pre>
+                    </div>
+                </div>
+
+                <div class="report-card db-card">
+                    <div class="report-card-title">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>
+                        <span>fire_starter.db (SQLite Backend)</span>
+                    </div>
+                    <div class="report-markdown">
+<pre style="background: transparent; border: none; padding: 0; color: #f8fafc;"><code style="color: #61afef;"><span style="color: #7f848e;">-- Vulnerabilities Table Schema & Records</span>
+<span style="color: #c678dd;">SELECT</span> domain, finding, status, severity 
+<span style="color: #c678dd;">FROM</span> vulnerability_records;
+
+<span style="color: #98c379;">api.internal</span> | BOLA            | <span style="color: #98c379;">confirmed</span>     | <span style="color: #e5c07b;">high</span>
+<span style="color: #98c379;">app.internal</span> | Mass Assignment | <span style="color: #98c379;">confirmed</span>     | <span style="color: #e5c07b;">medium</span>
+<span style="color: #98c379;">app.internal</span> | Headers Missing | <span style="color: #56b6c2;">informational</span> | <span style="color: #56b6c2;">info</span>
+<span style="color: #98c379;">app.internal</span> | JWT Key Confus. | <span style="color: #e06c75;">disproven</span>     | <span style="color: #7f848e;">none</span>
+
+<span style="color: #7f848e;">-- Execution Log Audit Trail</span>
+<span style="color: #c678dd;">SELECT</span> timestamp, category, text <span style="color: #c678dd;">FROM</span> execution_logs;</code></pre>
                     </div>
                 </div>
             </div>
@@ -308,16 +336,32 @@
             <div class="section-header">
                 <span class="section-tag">Under the Hood</span>
                 <h2 class="section-title">Designed around registries and shared state</h2>
-                <p class="section-subtitle">The CLI entrypoint, orchestration workflow, module registry, executor, knowledge graph, and TUI are cleanly separated so contributors can change one layer without rewriting the rest.</p>
+                <p class="section-subtitle">The CLI entrypoint, orchestration workflow, module registry, executor, knowledge graph, SQLite persistence, and TUI are cleanly separated so contributors can extend one layer effortlessly.</p>
             </div>
 
-            <div class="tech-architecture">
+            <div class="tech-code-container" style="max-width: 960px; margin: 2.5rem auto 3rem;">
+                <div class="tech-code-title">Factory registration pattern</div>
+                <pre style="background: transparent; border: none; padding: 0;"><code style="color: #61afef;"><span style="color: #c678dd;">func</span> init() {
+    RegisterModule(<span style="color: #98c379;">"my_module"</span>, <span style="color: #c678dd;">func</span>(payload <span style="color: #c678dd;">map</span>[<span style="color: #d19a66;">string</span>]any, onLog <span style="color: #c678dd;">func</span>(<span style="color: #d19a66;">string</span>)) (ExecutableModule, <span style="color: #d19a66;">error</span>) {
+        target := PayloadString(payload, <span style="color: #98c379;">"url"</span>, <span style="color: #98c379;">"http://127.0.0.1"</span>)
+        module := &amp;MyModule{Target: target}
+        <span style="color: #c678dd;">return</span> ModuleWrapper{
+            Module: module,
+            ExecuteFunc: <span style="color: #c678dd;">func</span>(ctx context.Context) (any, <span style="color: #d19a66;">error</span>) {
+                <span style="color: #c678dd;">return</span> module.Execute(ctx)
+            },
+        }, <span style="color: #d19a66;">nil</span>
+    })
+}</code></pre>
+            </div>
+
+            <div class="tech-architecture" style="grid-template-columns: 1fr;">
                 <div class="tech-details">
                     <h3>Architecture overview</h3>
-                    <p>Flags and config are loaded in `cmd/fire_starter/main.go`. The agent workflow in `src/agent/workflow.go` initializes the provider, scores tools, and manages target progression. The executor in `src/matrix/real_executor.go` resolves techniques to registered module factories under `src/modules/core`, while `src/matrix/knowledge_graph.go` and `src/matrix/db.go` retain evidence.</p>
+                    <p>Flags and config are loaded in <code>cmd/fire_starter/main.go</code>. The agent workflow in <code>src/agent/workflow.go</code> initializes the provider, scores tools, manages target progression, and drives helper sub-agents. The executor in <code>src/matrix/real_executor.go</code> resolves techniques to registered module factories under <code>src/modules/core</code>, while <code>src/matrix/knowledge_graph.go</code> and <code>src/matrix/db.go</code> retain evidence and manage vulnerability lifecycles in <code>fire_starter.db</code>.</p>
                     
                     <h4 class="tech-steps-title">Adding a new built-in check</h4>
-                    <p class="tech-steps-intro">Current runtime support is centered on the built-in registry in `src/modules/core`.</p>
+                    <p class="tech-steps-intro">Current runtime support is centered on the built-in registry in <code>src/modules/core</code>.</p>
                     
                     <div class="workflow-steps">
                         <div class="workflow-step">
@@ -338,26 +382,10 @@
                             <div class="step-badge">3</div>
                             <div class="step-body">
                                 <span class="step-title">Register and test</span>
-                                <span class="step-desc">Register it with <code class="code-highlight">RegisterModule</code> and add `_test.go` coverage.</span>
+                                <span class="step-desc">Register it with <code class="code-highlight">RegisterModule</code> and add <code>_test.go</code> coverage.</span>
                             </div>
                         </div>
                     </div>
-                </div>
-
-                <div class="tech-code-container">
-                    <div class="tech-code-title">Factory registration pattern</div>
-                    <pre style="background: transparent; border: none; padding: 0;"><code style="color: #61afef;"><span style="color: #c678dd;">func</span> init() {
-    RegisterModule(<span style="color: #98c379;">"my_module"</span>, <span style="color: #c678dd;">func</span>(payload <span style="color: #c678dd;">map</span>[<span style="color: #d19a66;">string</span>]any, onLog <span style="color: #c678dd;">func</span>(<span style="color: #d19a66;">string</span>)) (ExecutableModule, <span style="color: #d19a66;">error</span>) {
-        target := PayloadString(payload, <span style="color: #98c379;">"url"</span>, <span style="color: #98c379;">"http://127.0.0.1"</span>)
-        module := &amp;MyModule{Target: target}
-        <span style="color: #c678dd;">return</span> ModuleWrapper{
-            Module: module,
-            ExecuteFunc: <span style="color: #c678dd;">func</span>(ctx context.Context) (any, <span style="color: #d19a66;">error</span>) {
-                <span style="color: #c678dd;">return</span> module.Execute(ctx)
-            },
-        }, <span style="color: #d19a66;">nil</span>
-    })
-}</code></pre>
                 </div>
             </div>
         </section>

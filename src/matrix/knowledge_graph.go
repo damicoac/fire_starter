@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -155,6 +156,7 @@ type Target struct {
 	TestCases       []TestCase       `json:"test_cases,omitempty"`
 	HTTPRequestGate map[string]bool  `json:"http_request_gate,omitempty"`
 	urlSignals      map[string]bool
+	SiteMap         *SiteMap `json:"site_map,omitempty"`
 }
 
 type KnowledgeGraph struct {
@@ -163,7 +165,7 @@ type KnowledgeGraph struct {
 	TargetDomains  []string `json:"target_domains"`
 	allowedIPs     map[string]bool
 	ConfigTarget   string                    `json:"config_target"`
-	Targets        map[string]*Target        `json:"targets"`
+	targets        map[string]*Target        `json:"targets"`
 	SessionCookies map[string][]*http.Cookie `json:"session_cookies"`
 	Context        map[string]any            `json:"context"`
 	Memory         *EpisodicMemory           `json:"-"`
@@ -183,7 +185,7 @@ type KnowledgeSnapshot struct {
 
 func NewKnowledgeGraph() *KnowledgeGraph {
 	kg := &KnowledgeGraph{
-		Targets:        make(map[string]*Target),
+		targets:        make(map[string]*Target),
 		SessionCookies: make(map[string][]*http.Cookie),
 		Context:        make(map[string]any),
 		TargetDomains:  make([]string, 0),
@@ -212,13 +214,12 @@ func (kg *KnowledgeGraph) Close() {
 
 func (kg *KnowledgeGraph) triggerUpdate() {
 	kg.RLock()
-	ch := kg.updateChan
-	kg.RUnlock()
-	if ch == nil {
+	defer kg.RUnlock()
+	if kg.updateChan == nil {
 		return
 	}
 	select {
-	case ch <- struct{}{}:
+	case kg.updateChan <- struct{}{}:
 	default:
 	}
 }
@@ -261,12 +262,16 @@ func (kg *KnowledgeGraph) getOrCreateTarget(value string, targetType string) *Ta
 	if IsZeroTarget(value) {
 		return nil
 	}
-	if kg.Targets[value] == nil {
+	if kg.targets[value] == nil {
 		score := 0
 		if kg.ConfigTarget != "" && NormalizeURL(kg.ConfigTarget) == value {
 			score = 25
 		}
-		kg.Targets[value] = &Target{
+		var sm *SiteMap
+		if targetType == "url" || strings.Contains(value, ".") {
+			sm = NewSiteMap(value)
+		}
+		kg.targets[value] = &Target{
 			Value:           value,
 			Type:            targetType,
 			Score:           score,
@@ -279,10 +284,154 @@ func (kg *KnowledgeGraph) getOrCreateTarget(value string, targetType string) *Ta
 			TestCases:       make([]TestCase, 0),
 			HTTPRequestGate: make(map[string]bool),
 			urlSignals:      make(map[string]bool),
+			SiteMap:         sm,
 		}
 	}
-	return kg.Targets[value]
+	return kg.targets[value]
 }
+
+// Clone creates a deep copy of a Target including slices, maps, and the SiteMap.
+func (t *Target) Clone() *Target {
+	if t == nil {
+		return nil
+	}
+	tCopy := *t
+	tCopy.ExecutedTools = append([]string(nil), t.ExecutedTools...)
+	tCopy.OpenPorts = append([]int(nil), t.OpenPorts...)
+	tCopy.Tokens = append([]string(nil), t.Tokens...)
+	tCopy.Vulnerabilities = append([]string(nil), t.Vulnerabilities...)
+	tCopy.Credentials = append([]CredentialInfo(nil), t.Credentials...)
+	tCopy.TestCases = append([]TestCase(nil), t.TestCases...)
+	if t.HTTPRequestGate != nil {
+		tCopy.HTTPRequestGate = make(map[string]bool, len(t.HTTPRequestGate))
+		for k, v := range t.HTTPRequestGate {
+			tCopy.HTTPRequestGate[k] = v
+		}
+	}
+	if t.SiteMap != nil {
+		tCopy.SiteMap = t.SiteMap.Clone()
+	}
+	return &tCopy
+}
+
+// GetTarget returns a thread-safe cloned copy of the target for the given value.
+func (kg *KnowledgeGraph) GetTarget(value string) (*Target, bool) {
+	kg.mu.RLock()
+	defer kg.mu.RUnlock()
+	normalized := NormalizeURL(value)
+	t, ok := kg.targets[normalized]
+	if !ok {
+		t, ok = kg.targets[value]
+		if !ok {
+			return nil, false
+		}
+	}
+	return t.Clone(), true
+}
+
+// GetTargetsSnapshot returns a thread-safe map of cloned targets.
+func (kg *KnowledgeGraph) GetTargetsSnapshot() map[string]*Target {
+	kg.mu.RLock()
+	defer kg.mu.RUnlock()
+	result := make(map[string]*Target, len(kg.targets))
+	for k, v := range kg.targets {
+		result[k] = v.Clone()
+	}
+	return result
+}
+
+// HasTargetKey returns true if the exact key exists in the internal targets map.
+func (kg *KnowledgeGraph) HasTargetKey(key string) bool {
+	kg.mu.RLock()
+	defer kg.mu.RUnlock()
+	_, ok := kg.targets[key]
+	return ok
+}
+
+// GetTargetValues returns all target keys under a read lock.
+func (kg *KnowledgeGraph) GetTargetValues() []string {
+	kg.mu.RLock()
+	defer kg.mu.RUnlock()
+	keys := make([]string, 0, len(kg.targets))
+	for k := range kg.targets {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// GetPendingTargets returns targets that have not yet been marked as processed.
+func (kg *KnowledgeGraph) GetPendingTargets(processed map[string]bool) []string {
+	kg.mu.RLock()
+	defer kg.mu.RUnlock()
+	var pending []string
+	for k := range kg.targets {
+		if !processed[k] {
+			pending = append(pending, k)
+		}
+	}
+	sort.Strings(pending)
+	return pending
+}
+
+// GetIPTargets returns all discovered IP targets under a read lock.
+func (kg *KnowledgeGraph) GetIPTargets() []string {
+	kg.mu.RLock()
+	defer kg.mu.RUnlock()
+	var ips []string
+	for _, t := range kg.targets {
+		if t.Type == "ip" {
+			ips = append(ips, t.Value)
+		}
+	}
+	sort.Strings(ips)
+	return ips
+}
+
+// GetURLTargets returns all discovered URL targets under a read lock.
+func (kg *KnowledgeGraph) GetURLTargets() []string {
+	kg.mu.RLock()
+	defer kg.mu.RUnlock()
+	var urls []string
+	for _, t := range kg.targets {
+		if t.Type == "url" {
+			urls = append(urls, t.Value)
+		}
+	}
+	sort.Strings(urls)
+	return urls
+}
+
+// GetTargetPorts returns open ports keyed by target value under a read lock.
+func (kg *KnowledgeGraph) GetTargetPorts() map[string][]int {
+	kg.mu.RLock()
+	defer kg.mu.RUnlock()
+	ports := make(map[string][]int)
+	for _, t := range kg.targets {
+		if len(t.OpenPorts) > 0 {
+			ports[t.Value] = append([]int(nil), t.OpenPorts...)
+		}
+	}
+	return ports
+}
+
+// MutateTarget executes a locked mutation function on a specific target.
+func (kg *KnowledgeGraph) MutateTarget(value string, fn func(t *Target)) bool {
+	defer kg.triggerUpdate()
+	kg.mu.Lock()
+	defer kg.mu.Unlock()
+	normalized := NormalizeURL(value)
+	t, ok := kg.targets[normalized]
+	if !ok {
+		t, ok = kg.targets[value]
+		if !ok {
+			return false
+		}
+	}
+	fn(t)
+	return true
+}
+
 
 type ExtractedToken struct {
 	SessionID string `json:"session_id"`
@@ -621,33 +770,16 @@ func (kg *KnowledgeGraph) regexExtract(toolName, target string, payload map[stri
 	ipRegex := regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
 	urlRegex := regexp.MustCompile(`(?i)(?:https?://|www\.)[^\s"'<>]+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/[^\s"'<>]*)?|/(?:[a-z0-9._~!$&'()*+,;=:@%-]+/?)+`)
 
-	ips := ipRegex.FindAllString(resultData, -1)
-	for _, ip := range ips {
+	rawIPs := ipRegex.FindAllString(resultData, -1)
+	rawURLs := urlRegex.FindAllString(resultData, -1)
+	allowedIPs, allowedURLs := kg.filterCandidatesByScope(rawIPs, rawURLs)
+
+	for _, ip := range allowedIPs {
 		kg.AddIP(ip)
 	}
 
-	urls := urlRegex.FindAllString(resultData, -1)
-	for _, u := range urls {
+	for _, u := range allowedURLs {
 		kg.AddURL(u, target)
-	}
-
-	if strings.Contains(strings.ToLower(resultData), "vulnerability") || strings.Contains(strings.ToLower(resultData), "exploited") {
-		vulnDesc := "Generic Vulnerability Detected"
-		kg.AddVulnerability(target, vulnDesc)
-
-		payloadBytes, _ := json.Marshal(payload)
-		truncatedResult := resultData
-		if len(truncatedResult) > 30000 {
-			truncatedResult = truncatedResult[:30000] + "... [TRUNCATED]"
-		}
-		kg.AddTestCase(TestCase{
-			ToolName:    toolName,
-			Target:      target,
-			Payload:     string(payloadBytes),
-			ResultData:  truncatedResult,
-			Description: vulnDesc,
-			PoCs:        pocs,
-		})
 	}
 }
 func registrableDomain(host string) string {
@@ -771,12 +903,12 @@ func (kg *KnowledgeGraph) ToJSON(target string) ([]byte, error) {
 	defer kg.mu.RUnlock()
 
 	targetsCopy := make(map[string]*Target)
-	for k, v := range kg.Targets {
-		tCopy := *v
+	for k, v := range kg.targets {
+		tCopy := v.Clone()
 		if target != "" && NormalizeURL(k) != NormalizeURL(target) {
 			tCopy.Tokens = nil // Omit tokens and cookies for other targets
 		}
-		targetsCopy[k] = &tCopy
+		targetsCopy[k] = tCopy
 	}
 
 	vulnerabilityRecords, _ := GetVulnerabilities()
@@ -920,6 +1052,7 @@ func (kg *KnowledgeGraph) AddURL(u string, baseCtx string) {
 		score += 5
 	}
 
+	rawDiscoveredURL := u
 	u = ResolveAndNormalizeURL(u, baseCtx)
 	if u == "" {
 		return
@@ -973,6 +1106,23 @@ func (kg *KnowledgeGraph) AddURL(u string, baseCtx string) {
 	if t == nil {
 		return
 	}
+	if t.SiteMap == nil {
+		t.SiteMap = NewSiteMap(t.Value)
+	}
+	_ = t.SiteMap.AddURL(rawDiscoveredURL, "", 0, "", nil)
+	_ = t.SiteMap.AddURL(u, "", 0, "", nil)
+
+	if baseCtx != "" {
+		normalizedBase := NormalizeURL(baseCtx)
+		if baseTarget := kg.targets[normalizedBase]; baseTarget != nil {
+			if baseTarget.SiteMap == nil {
+				baseTarget.SiteMap = NewSiteMap(baseTarget.Value)
+			}
+			_ = baseTarget.SiteMap.AddURL(rawDiscoveredURL, "", 0, "", nil)
+			_ = baseTarget.SiteMap.AddURL(u, "", 0, "", nil)
+		}
+	}
+
 	if t.urlSignals == nil {
 		t.urlSignals = make(map[string]bool)
 	}
@@ -1147,12 +1297,23 @@ func (kg *KnowledgeGraph) AddCredential(targetValue string, username string, pas
 	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=known_credentials target=%s username=%s", targetValue, username)
 }
 
-func (kg *KnowledgeGraph) GetCredentials() []CredentialInfo {
+func (kg *KnowledgeGraph) GetCredentials(targetValue ...string) []CredentialInfo {
 	kg.mu.RLock()
 	defer kg.mu.RUnlock()
 
+	if len(targetValue) > 0 && targetValue[0] != "" {
+		normalized := NormalizeURL(targetValue[0])
+		if t, ok := kg.targets[normalized]; ok {
+			return append([]CredentialInfo(nil), t.Credentials...)
+		}
+		if t, ok := kg.targets[targetValue[0]]; ok {
+			return append([]CredentialInfo(nil), t.Credentials...)
+		}
+		return nil
+	}
+
 	var credentials []CredentialInfo
-	for _, t := range kg.Targets {
+	for _, t := range kg.targets {
 		credentials = append(credentials, t.Credentials...)
 	}
 	return credentials
@@ -1169,7 +1330,7 @@ func (kg *KnowledgeGraph) SetContextValue(key string, value any) {
 func (kg *KnowledgeGraph) GetTargetPhase(targetValue string) Phase {
 	kg.mu.RLock()
 	defer kg.mu.RUnlock()
-	t, ok := kg.Targets[targetValue]
+	t, ok := kg.targets[targetValue]
 	if !ok {
 		return PhaseReconnaissance
 	}
@@ -1180,7 +1341,7 @@ func (kg *KnowledgeGraph) AdvanceTargetPhase(targetValue string) Phase {
 	defer kg.triggerUpdate()
 	kg.mu.Lock()
 	defer kg.mu.Unlock()
-	t, ok := kg.Targets[targetValue]
+	t, ok := kg.targets[targetValue]
 	if !ok {
 		return PhaseReconnaissance
 	}
@@ -1194,7 +1355,7 @@ func (kg *KnowledgeGraph) SetTargetPhase(targetValue string, phase Phase) {
 	defer kg.triggerUpdate()
 	kg.mu.Lock()
 	defer kg.mu.Unlock()
-	t, ok := kg.Targets[targetValue]
+	t, ok := kg.targets[targetValue]
 	if !ok {
 		return
 	}
@@ -1208,7 +1369,7 @@ func (kg *KnowledgeGraph) GetTokens() []string {
 	defer kg.mu.RUnlock()
 
 	var tokens []string
-	for _, t := range kg.Targets {
+	for _, t := range kg.targets {
 		tokens = append(tokens, t.Tokens...)
 	}
 	return tokens
@@ -1249,7 +1410,7 @@ func (kg *KnowledgeGraph) Snapshot() KnowledgeSnapshot {
 	var allPorts []int
 	targetPhases := make(map[string]Phase)
 
-	for _, t := range kg.Targets {
+	for _, t := range kg.targets {
 		if t.Type == "ip" {
 			ipCount++
 		} else {
