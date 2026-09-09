@@ -6,7 +6,6 @@ import (
 	"net"
 	"sort"
 	"sync"
-	"time"
 )
 
 // SubdomainEnumerator performs subdomain enumeration via brute-force and DNS queries
@@ -208,53 +207,4 @@ func getDefaultWordlist() []string {
 		"gcp", "office365", "sharepoint",
 		"teams", "zendesk", "salesforce", "hubspot",
 	}
-}
-
-// EnumerateWithPorts performs enumeration and scans common HTTP/S ports on discovered subdomains
-func (se *SubdomainEnumerator) EnumerateWithPorts(ctx context.Context) ([]SubdomainResult, error) {
-	se.results = make([]SubdomainResult, 0)
-	baseResults, err := se.Enumerate(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	const httpPorts = 80
-	const httpsPort = 443
-
-	var extendedResults []SubdomainResult
-	for _, r := range baseResults {
-		if len(r.IPs) == 0 {
-			extendedResults = append(extendedResults, r)
-			continue
-		}
-
-		for _, ip := range r.IPs {
-			var openPorts []string
-
-			conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, httpPorts), 2*time.Second)
-			if err == nil {
-				openPorts = append(openPorts, fmt.Sprintf("%d", httpPorts))
-				conn.Close()
-			}
-
-			conn, err = net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, httpsPort), 2*time.Second)
-			if err == nil {
-				p := fmt.Sprintf("%d", httpsPort)
-				openPorts = append(openPorts, p)
-				conn.Close()
-			}
-
-			n := SubdomainResult{
-				Subdomain: r.Subdomain,
-				IPs:       append(openPorts, ip),
-			}
-			extendedResults = append(extendedResults, n)
-		}
-	}
-
-	sort.Slice(extendedResults, func(i, j int) bool {
-		return extendedResults[i].Subdomain < extendedResults[j].Subdomain
-	})
-
-	return extendedResults, nil
 }

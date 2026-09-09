@@ -316,15 +316,6 @@ func MarkVulnerabilityDisproven(vulnID string) error {
 	return err
 }
 
-// DeleteVulnerability removes a vulnerability from the database
-func DeleteVulnerability(vulnID string) error {
-	if dbInstance == nil {
-		return fmt.Errorf("database not initialized")
-	}
-
-	_, err := dbInstance.Exec("DELETE FROM vuln WHERE vuln_id = ?", vulnID)
-	return err
-}
 
 // GetVulnerabilities retrieves all vulnerability findings from the database
 func GetVulnerabilities() ([]VulnInfo, error) {

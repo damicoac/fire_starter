@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 
 	modules "fire_starter/src/modules/core"
@@ -33,25 +32,6 @@ func payloadString(payload map[string]any, key, fallback string) string {
 	}
 	return s
 }
-
-func payloadInt(payload map[string]any, key string, fallback int) int {
-	v, ok := payload[key]
-	if !ok || v == nil {
-		return fallback
-	}
-	switch val := v.(type) {
-	case int:
-		return val
-	case float64:
-		return int(val)
-	case string:
-		if i, err := strconv.Atoi(val); err == nil {
-			return i
-		}
-	}
-	return fallback
-}
-
 func NewRealExecutor(decisions []Decision) (*RealExecutor, error) {
 	registry := NewToolRegistry(decisions)
 	toolByName := make(map[string]ToolDefinition, len(decisions))
@@ -71,15 +51,6 @@ func (e *RealExecutor) Execute(ctx context.Context, decision Decision) (string, 
 		payload = make(map[string]any)
 	}
 	return e.executeDecision(ctx, decision, payload, func(string) {})
-}
-
-func (e *RealExecutor) ExecuteByIdentifier(ctx context.Context, identifier string, payload map[string]any, onLog func(string)) (string, error) {
-	tool, ok := e.registry.ToolForIdentifier(identifier)
-	if !ok {
-		return "", fmt.Errorf("tool for identifier %s not found", identifier)
-	}
-	decision := Decision{Identifier: tool.Identifier, Technique: tool.Technique}
-	return e.executeDecision(ctx, decision, payload, onLog)
 }
 
 func (e *RealExecutor) ExecuteByToolName(ctx context.Context, toolName string, payload map[string]any, onLog func(string)) (string, error) {
@@ -157,12 +128,12 @@ func (e *RealExecutor) executeDecision(ctx context.Context, decision Decision, p
 		}
 
 		injectCookies(module.GetUnderlying())
-		
+
 		results, err := module.Execute(ctx)
 		if err != nil {
 			return fmt.Sprintf("%s failed: %v", technique, err), err
 		}
-		resultOutput[technique + "_results"] = results
+		resultOutput[technique+"_results"] = results
 
 		if hasBaseModule, ok := module.GetUnderlying().(interface{ GetBaseModule() *modules.BaseModule }); ok {
 			base := hasBaseModule.GetBaseModule()
