@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	modules "fire_starter/src/modules/core"
@@ -13,9 +14,9 @@ import (
 
 func TestRealExecutor_OSCommandInjection(t *testing.T) {
 	// Start a mock server
-	requestCount := 0
+	var requestCount int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestCount++
+		atomic.AddInt32(&requestCount, 1)
 		// Just return success for reflection detection if needed
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintln(w, "uid=1000(test) gid=1000(test) groups=1000(test)")
@@ -50,7 +51,7 @@ func TestRealExecutor_OSCommandInjection(t *testing.T) {
 		t.Errorf("Output does not contain os_command_injection_results: %s", output)
 	}
 
-	if requestCount == 0 {
+	if atomic.LoadInt32(&requestCount) == 0 {
 		t.Error("Mock server did not receive any requests")
 	}
 }

@@ -334,12 +334,6 @@ func snapshotDelta(before, after matrix.KnowledgeSnapshot) string {
 	return strings.Join(changes, ",")
 }
 
-func recommendedNextAction(canCompleteNow bool, reason string) string {
-	if canCompleteNow {
-		return "target_completed (" + reason + ")"
-	}
-	return "continue_execution"
-}
 
 func normalizeBaseURL(provider string, baseURL string) string {
 	if baseURL == "" {

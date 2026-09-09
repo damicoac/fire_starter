@@ -165,7 +165,7 @@ type KnowledgeGraph struct {
 	TargetDomains  []string `json:"target_domains"`
 	allowedIPs     map[string]bool
 	ConfigTarget   string                    `json:"config_target"`
-	targets        map[string]*Target        `json:"targets"`
+	targets        map[string]*Target
 	SessionCookies map[string][]*http.Cookie `json:"session_cookies"`
 	Context        map[string]any            `json:"context"`
 	Memory         *EpisodicMemory           `json:"-"`
@@ -193,13 +193,13 @@ func NewKnowledgeGraph() *KnowledgeGraph {
 		Memory:         NewEpisodicMemory(),
 		updateChan:     make(chan struct{}, 1),
 	}
-	go func() {
-		for range kg.updateChan {
+	go func(ch <-chan struct{}) {
+		for range ch {
 			if kg.OnUpdate != nil {
 				kg.OnUpdate(kg)
 			}
 		}
-	}()
+	}(kg.updateChan)
 	return kg
 }
 
@@ -1432,24 +1432,6 @@ func (kg *KnowledgeGraph) Snapshot() KnowledgeSnapshot {
 		TargetPhases:        targetPhases,
 		OpenPorts:           allPorts,
 	}
-}
-
-func getHostOfNormalizedTarget(target string) string {
-	target = strings.TrimSpace(target)
-	if idx := strings.Index(target, "/"); idx != -1 {
-		return target[:idx]
-	}
-	return target
-}
-
-func getHostnameOfNormalizedTarget(target string) string {
-	host := getHostOfNormalizedTarget(target)
-	if strings.Contains(host, ":") {
-		if h, _, err := net.SplitHostPort(host); err == nil {
-			return h
-		}
-	}
-	return host
 }
 
 func isDomainOrSubdomain(host, parentDomain string) bool {

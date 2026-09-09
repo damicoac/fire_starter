@@ -156,12 +156,3 @@ func (ps *PortScanner) ScanCommonPorts(ctx context.Context) ([]portResult, error
 	return ps.Scan(ctx)
 }
 
-// ScanPortRange scans a range of ports (inclusive)
-func (ps *PortScanner) ScanPortRange(start, end int) ([]portResult, error) {
-	ports := make([]int, end-start+1)
-	for i := start; i <= end; i++ {
-		ports[i-start] = i
-	}
-	ps.Ports = ports
-	return ps.Scan(context.Background())
-}
