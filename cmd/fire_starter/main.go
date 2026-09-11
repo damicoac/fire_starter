@@ -65,7 +65,7 @@ func main() {
 	if *baseURL != "" {
 		cfg.BaseURL = *baseURL
 	}
-	if *maxIters > 0 && *configPath == "" {
+	if *maxIters > 0 {
 		cfg.MaxIters = *maxIters
 	}
 	if *verbose {
@@ -106,7 +106,7 @@ func main() {
 		log.Infof("Starting Fire Starter Agent. Target: %s, Provider: %s, Model: %s", cfg.Target, cfg.Provider, cfg.Model)
 
 		onKGUpdate := func(kg *matrix.KnowledgeGraph) {
-			b, err := kg.ToJSON("")
+			b, err := kg.ToJSONWithoutTestCases("")
 			if err == nil {
 				p.Send(tui.KGUpdateMsg{Data: b})
 			}
