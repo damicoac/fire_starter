@@ -45,8 +45,6 @@ func (m *SubdomainEnumeration) SetThreads(count int) {
 	m.MaxThreads = count
 }
 
-
-
 func (m *SubdomainEnumeration) Execute(ctx context.Context) ([]SubdomainEnumerationResult, error) {
 	m.results = make([]SubdomainEnumerationResult, 0)
 	wordlist := getDefaultWordlist()
@@ -71,7 +69,7 @@ func (m *SubdomainEnumeration) Execute(ctx context.Context) ([]SubdomainEnumerat
 					var err error
 					maxRetries := 3
 					baseDelay := 100 * time.Millisecond
-					
+
 					for attempt := 0; attempt < maxRetries; attempt++ {
 						ips, err = net.LookupHost(job)
 						if err == nil {

@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -170,6 +169,7 @@ type KnowledgeGraph struct {
 	Context        map[string]any            `json:"context"`
 	Memory         *EpisodicMemory           `json:"-"`
 	OnUpdate       func(*KnowledgeGraph)     `json:"-"`
+	chanMu         sync.Mutex                `json:"-"`
 	updateChan     chan struct{}             `json:"-"`
 }
 
@@ -194,9 +194,27 @@ func NewKnowledgeGraph() *KnowledgeGraph {
 		updateChan:     make(chan struct{}, 1),
 	}
 	go func(ch <-chan struct{}) {
-		for range ch {
-			if kg.OnUpdate != nil {
-				kg.OnUpdate(kg)
+		var timer *time.Timer
+		var timerCh <-chan time.Time
+		for {
+			select {
+			case _, ok := <-ch:
+				if !ok {
+					if timer != nil {
+						timer.Stop()
+					}
+					return
+				}
+				if timer == nil {
+					timer = time.NewTimer(100 * time.Millisecond)
+					timerCh = timer.C
+				}
+			case <-timerCh:
+				timer = nil
+				timerCh = nil
+				if kg.OnUpdate != nil {
+					kg.OnUpdate(kg)
+				}
 			}
 		}
 	}(kg.updateChan)
@@ -204,8 +222,8 @@ func NewKnowledgeGraph() *KnowledgeGraph {
 }
 
 func (kg *KnowledgeGraph) Close() {
-	kg.Lock()
-	defer kg.Unlock()
+	kg.chanMu.Lock()
+	defer kg.chanMu.Unlock()
 	if kg.updateChan != nil {
 		close(kg.updateChan)
 		kg.updateChan = nil
@@ -213,8 +231,8 @@ func (kg *KnowledgeGraph) Close() {
 }
 
 func (kg *KnowledgeGraph) triggerUpdate() {
-	kg.RLock()
-	defer kg.RUnlock()
+	kg.chanMu.Lock()
+	defer kg.chanMu.Unlock()
 	if kg.updateChan == nil {
 		return
 	}
@@ -575,8 +593,8 @@ Respond STRICTLY in the following JSON format:
 
 func (kg *KnowledgeGraph) ExtractIntelligence(ctx context.Context, model fantasy.LanguageModel, toolName, target string, payload map[string]any, resultData string) (string, string, error) {
 	if model == nil {
-		kg.regexExtract(toolName, target, payload, resultData)
-		return "Regex extraction complete.", "{}", nil
+		kg.structuralExtract(toolName, target, payload, resultData)
+		return "Structural extraction complete.", "{}", nil
 	}
 
 	truncatedResult := resultData
@@ -641,7 +659,7 @@ Output:
 		}
 	}
 
-	allowedIPs, allowedURLs := kg.evaluateScopeWithLLM(ctx, model, extracted.DiscoveredIPs, extracted.DiscoveredURLs)
+	allowedIPs, allowedURLs := kg.filterCandidatesByScope(extracted.DiscoveredIPs, extracted.DiscoveredURLs)
 
 	for _, ip := range allowedIPs {
 		kg.AddIP(ip)
@@ -695,7 +713,82 @@ Output:
 	return summary, rawText, nil
 }
 
-func (kg *KnowledgeGraph) regexExtract(toolName, target string, payload map[string]any, resultData string) {
+func extractCandidateIPsAndURLs(text string) ([]string, []string) {
+	if text == "" {
+		return nil, nil
+	}
+
+	isDelim := func(r rune) bool {
+		return r <= ' ' || r == '"' || r == '\'' || r == '`' || r == '<' || r == '>' ||
+			r == '(' || r == ')' || r == '[' || r == ']' || r == '{' || r == '}' ||
+			r == ',' || r == ';'
+	}
+
+	tokens := strings.FieldsFunc(text, isDelim)
+	ipSeen := make(map[string]bool)
+	urlSeen := make(map[string]bool)
+	var rawIPs []string
+	var rawURLs []string
+
+	for _, token := range tokens {
+		token = strings.Trim(token, ".,!?:;\"'()[]{}<>`")
+		if token == "" {
+			continue
+		}
+
+		// Check for IP (IPv4 or IPv6)
+		if ip := net.ParseIP(token); ip != nil {
+			s := ip.String()
+			if s != "0.0.0.0" && s != "::" && !ip.IsLoopback() && !ipSeen[s] {
+				ipSeen[s] = true
+				rawIPs = append(rawIPs, s)
+			}
+			continue
+		}
+
+		// Check for URL prefixes
+		lower := strings.ToLower(token)
+		if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "www.") {
+			if !urlSeen[token] {
+				urlSeen[token] = true
+				rawURLs = append(rawURLs, token)
+			}
+			continue
+		}
+
+		// Check for domain or domain/path candidate
+		if strings.Contains(token, ".") && !strings.HasPrefix(token, ".") && !strings.HasSuffix(token, ".") {
+			hostCandidate := token
+			if slashIdx := strings.Index(token, "/"); slashIdx != -1 {
+				hostCandidate = token[:slashIdx]
+			}
+			if colonIdx := strings.Index(hostCandidate, ":"); colonIdx != -1 {
+				hostCandidate = hostCandidate[:colonIdx]
+			}
+			if hostCandidate != "" && strings.Contains(hostCandidate, ".") {
+				if _, err := publicsuffix.EffectiveTLDPlusOne(strings.ToLower(hostCandidate)); err == nil {
+					if !urlSeen[token] {
+						urlSeen[token] = true
+						rawURLs = append(rawURLs, token)
+					}
+					continue
+				}
+			}
+		}
+
+		// Check for relative path candidate
+		if strings.HasPrefix(token, "/") && len(token) > 1 && !strings.HasPrefix(token, "//") {
+			if !urlSeen[token] {
+				urlSeen[token] = true
+				rawURLs = append(rawURLs, token)
+			}
+		}
+	}
+
+	return rawIPs, rawURLs
+}
+
+func (kg *KnowledgeGraph) structuralExtract(toolName, target string, payload map[string]any, resultData string) {
 	var parsed any
 	var pocs []ProofOfConcept
 	if err := json.Unmarshal([]byte(resultData), &parsed); err == nil {
@@ -767,12 +860,8 @@ func (kg *KnowledgeGraph) regexExtract(toolName, target string, payload map[stri
 		inspect(parsed)
 	}
 
-	ipRegex := regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
-	urlRegex := regexp.MustCompile(`(?i)(?:https?://|www\.)[^\s"'<>]+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/[^\s"'<>]*)?|/(?:[a-z0-9._~!$&'()*+,;=:@%-]+/?)+`)
-
-	rawIPs := ipRegex.FindAllString(resultData, -1)
-	rawURLs := urlRegex.FindAllString(resultData, -1)
-	allowedIPs, allowedURLs := kg.filterCandidatesByScope(rawIPs, rawURLs)
+	rawIPs, rawURLs := extractCandidateIPsAndURLs(resultData)
+	allowedIPs, allowedURLs := kg.filterCandidatesByScopeWithContext(rawIPs, rawURLs, target)
 
 	for _, ip := range allowedIPs {
 		kg.AddIP(ip)
@@ -781,6 +870,14 @@ func (kg *KnowledgeGraph) regexExtract(toolName, target string, payload map[stri
 	for _, u := range allowedURLs {
 		kg.AddURL(u, target)
 	}
+}
+
+func (kg *KnowledgeGraph) StructuralExtract(toolName, target string, payload map[string]any, resultData string) {
+	kg.structuralExtract(toolName, target, payload, resultData)
+}
+
+func (kg *KnowledgeGraph) regexExtract(toolName, target string, payload map[string]any, resultData string) {
+	kg.structuralExtract(toolName, target, payload, resultData)
 }
 func registrableDomain(host string) string {
 	host = strings.ToLower(strings.TrimSpace(host))
@@ -827,12 +924,14 @@ func MatchDomainOrIP(input string, pattern string) bool {
 	return input == pattern
 }
 
-func (kg *KnowledgeGraph) filterCandidatesByScope(ips []string, urls []string) ([]string, []string) {
+func (kg *KnowledgeGraph) filterCandidatesByScopeWithContext(ips []string, urls []string, baseCtx string) ([]string, []string) {
 	kg.mu.RLock()
 	defer kg.mu.RUnlock()
 
-	domains := kg.TargetDomains
-	if len(domains) == 0 && kg.BaseDomain != "" {
+	var domains []string
+	if len(kg.TargetDomains) > 0 {
+		domains = append([]string(nil), kg.TargetDomains...)
+	} else if kg.BaseDomain != "" {
 		domains = []string{kg.BaseDomain}
 	}
 
@@ -851,12 +950,16 @@ func (kg *KnowledgeGraph) filterCandidatesByScope(ips []string, urls []string) (
 
 	allowedURLs := make([]string, 0, len(urls))
 	for _, candidateURL := range urls {
-		if kg.urlAllowedByScopeLocked(candidateURL, domains) {
+		if kg.urlAllowedByScopeLocked(candidateURL, baseCtx, domains) {
 			allowedURLs = append(allowedURLs, candidateURL)
 		}
 	}
 
 	return allowedIPs, allowedURLs
+}
+
+func (kg *KnowledgeGraph) filterCandidatesByScope(ips []string, urls []string) ([]string, []string) {
+	return kg.filterCandidatesByScopeWithContext(ips, urls, "")
 }
 
 func (kg *KnowledgeGraph) ipAllowedByScopeLocked(ip string, domains []string) bool {
@@ -868,14 +971,17 @@ func (kg *KnowledgeGraph) ipAllowedByScopeLocked(ip string, domains []string) bo
 	return kg.allowedIPs != nil && kg.allowedIPs[ip]
 }
 
-func (kg *KnowledgeGraph) urlAllowedByScopeLocked(candidateURL string, domains []string) bool {
-	normalized := ResolveAndNormalizeURL(candidateURL, "")
+func (kg *KnowledgeGraph) urlAllowedByScopeLocked(candidateURL string, baseCtx string, domains []string) bool {
+	normalized := ResolveAndNormalizeURL(candidateURL, baseCtx)
 	if normalized == "" {
 		return false
 	}
 
 	parsed, err := url.Parse("https://" + normalized)
 	if err != nil || parsed.Hostname() == "" {
+		if strings.HasPrefix(candidateURL, "/") && !strings.HasPrefix(candidateURL, "//") {
+			return true
+		}
 		return false
 	}
 
@@ -899,19 +1005,30 @@ func (kg *KnowledgeGraph) AddAllowedIP(ip string) {
 }
 
 func (kg *KnowledgeGraph) ToJSON(target string) ([]byte, error) {
+	return kg.toJSONInternal(target, true)
+}
+
+func (kg *KnowledgeGraph) ToJSONWithoutTestCases(target string) ([]byte, error) {
+	return kg.toJSONInternal(target, false)
+}
+
+func (kg *KnowledgeGraph) toJSONInternal(target string, includeTestCases bool) ([]byte, error) {
+	vulnerabilityRecords, _ := GetVulnerabilities()
+
 	kg.mu.RLock()
 	defer kg.mu.RUnlock()
 
-	targetsCopy := make(map[string]*Target)
+	targetsCopy := make(map[string]*Target, len(kg.targets))
 	for k, v := range kg.targets {
 		tCopy := v.Clone()
+		if !includeTestCases {
+			tCopy.TestCases = nil
+		}
 		if target != "" && NormalizeURL(k) != NormalizeURL(target) {
 			tCopy.Tokens = nil // Omit tokens and cookies for other targets
 		}
 		targetsCopy[k] = tCopy
 	}
-
-	vulnerabilityRecords, _ := GetVulnerabilities()
 
 	type KGWrapper struct {
 		BaseDomain           string                    `json:"base_domain"`
@@ -1042,10 +1159,6 @@ func isStaticAssetPath(path string) bool {
 }
 
 func (kg *KnowledgeGraph) AddURL(u string, baseCtx string) {
-	defer kg.triggerUpdate()
-	kg.mu.Lock()
-	defer kg.mu.Unlock()
-
 	hasQuerySignal := strings.Contains(u, "?") || strings.Contains(u, "=")
 	score := 1
 	if hasQuerySignal {
@@ -1067,12 +1180,17 @@ func (kg *KnowledgeGraph) AddURL(u string, baseCtx string) {
 		return
 	}
 
-	domains := kg.TargetDomains
-	if len(domains) == 0 && kg.BaseDomain != "" {
+	kg.mu.RLock()
+	var domains []string
+	if len(kg.TargetDomains) > 0 {
+		domains = append([]string(nil), kg.TargetDomains...)
+	} else if kg.BaseDomain != "" {
 		domains = []string{kg.BaseDomain}
 	}
+	kg.mu.RUnlock()
 
 	host := strings.ToLower(parsed.Hostname())
+	var resolvedAllowedIPs []string
 	if len(domains) > 0 {
 		matched := false
 		for _, pattern := range domains {
@@ -1088,18 +1206,27 @@ func (kg *KnowledgeGraph) AddURL(u string, baseCtx string) {
 		if ips, err := net.LookupIP(host); err == nil && len(ips) > 0 {
 			allPlaceholder := true
 			for _, ip := range ips {
-				if ip.String() != "0.0.0.0" && ip.String() != "::" && !ip.IsLoopback() {
+				s := ip.String()
+				if s != "0.0.0.0" && s != "::" && !ip.IsLoopback() {
 					allPlaceholder = false
-					if kg.allowedIPs == nil {
-						kg.allowedIPs = make(map[string]bool)
-					}
-					kg.allowedIPs[ip.String()] = true
+					resolvedAllowedIPs = append(resolvedAllowedIPs, s)
 				}
 			}
 			if allPlaceholder {
 				return
 			}
 		}
+	}
+
+	defer kg.triggerUpdate()
+	kg.mu.Lock()
+	defer kg.mu.Unlock()
+
+	for _, ipStr := range resolvedAllowedIPs {
+		if kg.allowedIPs == nil {
+			kg.allowedIPs = make(map[string]bool)
+		}
+		kg.allowedIPs[ipStr] = true
 	}
 
 	t := kg.getOrCreateTarget(u, "url")

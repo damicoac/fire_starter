@@ -204,12 +204,31 @@ func (m *Model) rebuildLogsViewport(stickBottom bool) {
 	case 2:
 		m.logsViewport.SetContent(buildTargetCardsView(m.kgTargets, m.dashboardCursor, m.activePane == 0, m.logsViewport.Width))
 	default:
-		m.visibleLogs = filterLogs(m.allLogs, m.activeLogFilter, m.collapsedSummaries)
-		m.logsViewport.SetContent(wordwrap.String(strings.Join(m.visibleLogs, "\n"), m.logsViewport.Width))
+		raw := filterLogs(m.allLogs, m.activeLogFilter, m.collapsedSummaries)
+		if len(raw) == 0 {
+			m.visibleLogs = []string{mutedStyle.Render("No log entries for the current filter yet.")}
+		} else {
+			m.visibleLogs = make([]string, len(raw))
+			for i, line := range raw {
+				m.visibleLogs[i] = wordwrap.String(line, m.logsViewport.Width)
+			}
+		}
+		m.logsViewport.SetContent(strings.Join(m.visibleLogs, "\n"))
 		if stickBottom {
 			m.logsViewport.GotoBottom()
 		}
 	}
+}
+
+func formatLogText(entry LogEntry, collapsed bool) string {
+	text := entry.Text
+	if collapsed && entry.Category == LogCategoryTools && strings.Contains(text, "TOOL_EXECUTION_SUMMARY") {
+		lines := strings.Split(text, "\n")
+		if len(lines) > 1 {
+			text = lines[0]
+		}
+	}
+	return text
 }
 
 func filterLogs(entries []LogEntry, filter LogCategory, collapsed bool) []string {
@@ -218,17 +237,7 @@ func filterLogs(entries []LogEntry, filter LogCategory, collapsed bool) []string
 		if filter != LogCategoryGeneral && entry.Category != filter {
 			continue
 		}
-		text := entry.Text
-		if collapsed && entry.Category == LogCategoryTools && strings.Contains(text, "TOOL_EXECUTION_SUMMARY") {
-			lines := strings.Split(text, "\n")
-			if len(lines) > 1 {
-				text = lines[0]
-			}
-		}
-		filtered = append(filtered, text)
-	}
-	if len(filtered) == 0 {
-		filtered = append(filtered, mutedStyle.Render("No log entries for the current filter yet."))
+		filtered = append(filtered, formatLogText(entry, collapsed))
 	}
 	return filtered
 }
@@ -695,15 +704,49 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateKGViewport()
 
 	case LogMsg:
-		m.allLogs = append(m.allLogs, msg.Entry)
-		m.rebuildLogsViewport(true)
+		const maxLogs = 2000
+		if len(m.allLogs) >= maxLogs {
+			copy(m.allLogs, m.allLogs[1:])
+			m.allLogs[len(m.allLogs)-1] = msg.Entry
+		} else {
+			m.allLogs = append(m.allLogs, msg.Entry)
+		}
+
+		if m.activeTab != 0 {
+			// Do not re-render site map or target cards on incoming log entries
+			return m, nil
+		}
+		if m.activeLogFilter != LogCategoryGeneral && msg.Entry.Category != m.activeLogFilter {
+			// Do not re-render if the new log doesn't match active filter
+			return m, nil
+		}
+		if !m.ready {
+			return m, nil
+		}
+
+		// Incremental append: wrap only the new entry rather than re-wrapping all historical logs
+		if len(m.visibleLogs) == 1 && m.visibleLogs[0] == mutedStyle.Render("No log entries for the current filter yet.") {
+			m.visibleLogs = nil
+		}
+		formatted := formatLogText(msg.Entry, m.collapsedSummaries)
+		wrapped := wordwrap.String(formatted, m.logsViewport.Width)
+		if len(m.visibleLogs) >= maxLogs {
+			copy(m.visibleLogs, m.visibleLogs[1:])
+			m.visibleLogs[len(m.visibleLogs)-1] = wrapped
+		} else {
+			m.visibleLogs = append(m.visibleLogs, wrapped)
+		}
+		m.logsViewport.SetContent(strings.Join(m.visibleLogs, "\n"))
+		m.logsViewport.GotoBottom()
 
 	case KGUpdateMsg:
 		m.kgTargets = parseKG(msg.Data, m.kgTargets)
 		if m.dashboardCursor >= len(m.kgTargets) {
 			m.dashboardCursor = max(0, len(m.kgTargets)-1)
 		}
-		m.rebuildLogsViewport(false)
+		if m.activeTab != 0 {
+			m.rebuildLogsViewport(false)
+		}
 		m.updateKGViewport()
 
 	case AgentFinishedMsg:

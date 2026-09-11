@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -53,7 +52,7 @@ func (m *BrokenObjectLevelAuthorizationBola) getBaselineLength(ctx context.Conte
 		return 0
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	return len(body)
 }
 
@@ -114,7 +113,7 @@ func (m *BrokenObjectLevelAuthorizationBola) testID(ctx context.Context, id stri
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	respLen := len(bodyBytes)
 
 	// If we can read arbitrary users without auth, ensure it differs from baseline

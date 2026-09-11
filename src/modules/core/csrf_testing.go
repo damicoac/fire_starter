@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -108,14 +107,14 @@ func (m *CSRFTesting) testEndpoint(ctx context.Context, targetURL string) {
 	}
 	defer getResp.Body.Close()
 
-	getBodyBytes, _ := io.ReadAll(getResp.Body)
+	getBodyBytes, _ := ReadBoundedBody(getResp.Body, MaxResponseBodyBytes)
 	getBodyStr := strings.ToLower(string(getBodyBytes))
 
 	if !strings.Contains(getBodyStr, "<form") {
 		// Not a form endpoint, skip blind POST to reduce false positives
 		return
 	}
-	
+
 	// Check if the form is actually a POST form
 	if !strings.Contains(getBodyStr, "method=\"post\"") && !strings.Contains(getBodyStr, "method='post'") && !strings.Contains(getBodyStr, "method=post") {
 		// Only GET forms exist, which don't need CSRF protection
@@ -137,12 +136,12 @@ func (m *CSRFTesting) testEndpoint(ctx context.Context, targetURL string) {
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	bodyStr := string(bodyBytes)
-	
+
 	// Check for response similarity to prevent scanner-induced false positives
-	// If the server returns the same status code and the body length is within 5% 
-	// of the original GET request, it almost certainly just ignored the POST data 
+	// If the server returns the same status code and the body length is within 5%
+	// of the original GET request, it almost certainly just ignored the POST data
 	// and re-rendered the GET view (e.g. invalid POST to a GET-only endpoint).
 	getLen := len(getBodyBytes)
 	postLen := len(bodyBytes)
@@ -150,7 +149,7 @@ func (m *CSRFTesting) testEndpoint(ctx context.Context, targetURL string) {
 	if diff < 0 {
 		diff = -diff
 	}
-	
+
 	if resp.StatusCode == getResp.StatusCode && float64(diff) <= float64(getLen)*0.05 {
 		// Response is substantially identical; state likely didn't change
 		return

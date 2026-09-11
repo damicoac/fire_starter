@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -69,7 +68,7 @@ func (m *NosqlInjectionTesting) getBaselineAuthBypass(ctx context.Context) bool 
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	respStr := strings.ToLower(string(respBody))
 
 	return resp.StatusCode >= 200 && resp.StatusCode < 300 && (strings.Contains(respStr, "\"token\":") || strings.Contains(respStr, "\"access_token\":"))
@@ -138,7 +137,7 @@ func (m *NosqlInjectionTesting) testPayload(ctx context.Context, payload map[str
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	respStr := strings.ToLower(string(respBody))
 
 	// Some common indicators of NoSQLi success: DB errors or auth bypass

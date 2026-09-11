@@ -344,3 +344,31 @@ func TestBuildRequestWithVector_UnknownType(t *testing.T) {
 		t.Error("Expected nil request on error")
 	}
 }
+
+func TestReadBoundedBody(t *testing.T) {
+	// Nil reader returns nil, nil
+	data, err := ReadBoundedBody(nil, 100)
+	if err != nil || data != nil {
+		t.Fatalf("expected nil data on nil reader, got %v, %v", data, err)
+	}
+
+	// Normal bounded read
+	input := strings.Repeat("a", 100)
+	data, err = ReadBoundedBody(strings.NewReader(input), 50)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(data) != 50 {
+		t.Fatalf("expected 50 bytes, got %d", len(data))
+	}
+
+	// Default fallback to MaxResponseBodyBytes
+	smallInput := "hello world"
+	data, err = ReadBoundedBody(strings.NewReader(smallInput), 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(data) != smallInput {
+		t.Fatalf("expected %q, got %q", smallInput, string(data))
+	}
+}

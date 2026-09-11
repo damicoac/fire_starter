@@ -4,7 +4,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -93,7 +92,7 @@ func (m *ComponentVersionAnalyzer) passiveScan(ctx context.Context, targetURL st
 		m.addResult("Found X-AspNet-Version header: " + aspNet)
 	}
 
-	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	bodyBytes, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	if err == nil {
 		bodyStr := string(bodyBytes)
 
@@ -127,7 +126,7 @@ func (m *ComponentVersionAnalyzer) activeScan(ctx context.Context, base *url.URL
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
-		bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+		bodyBytes, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 		if err == nil {
 			bodyStr := string(bodyBytes)
 			matched := false

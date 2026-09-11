@@ -58,10 +58,10 @@ func (m *ThreatMonitoringTesting) Execute(ctx context.Context) ([]ThreatMonitori
 
 	// Aggressive Burst
 	var (
-		wg                 sync.WaitGroup
-		mu                 sync.Mutex
-		blockedCount       int
-		errorCount         int
+		wg           sync.WaitGroup
+		mu           sync.Mutex
+		blockedCount int
+		errorCount   int
 	)
 	sem := make(chan struct{}, 50) // Max 50 concurrent requests
 	payloads := []string{
@@ -140,7 +140,7 @@ func (m *ThreatMonitoringTesting) Execute(ctx context.Context) ([]ThreatMonitori
 				Detail: "Verification request timed out (context deadline exceeded).",
 			}), nil
 		}
-		
+
 		// Connection dropped or timeout, indicating potential blocking
 		// Only consider it a block if we had some errors during the burst
 		if errorCount >= explicitBlockThreshold {
@@ -150,7 +150,7 @@ func (m *ThreatMonitoringTesting) Execute(ctx context.Context) ([]ThreatMonitori
 				Detail: "Active blocking detected. Connection failed after aggressive burst.",
 			}), nil
 		}
-		
+
 		return append(results, ThreatMonitoringResult{
 			Target: m.Target,
 			Status: "vulnerable",

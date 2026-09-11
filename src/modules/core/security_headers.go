@@ -100,7 +100,7 @@ func (m *SecurityHeaders) testHeaders(ctx context.Context, endpoint string) {
 
 	if len(missing) > 0 {
 		detailStr := fmt.Sprintf("Missing headers: %s", strings.Join(missing, ", "))
-		
+
 		dedupKey := testURL + "|" + detailStr
 		if _, loaded := securityHeadersSeen.LoadOrStore(dedupKey, true); loaded {
 			return

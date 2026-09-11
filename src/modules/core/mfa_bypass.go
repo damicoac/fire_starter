@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -94,7 +93,7 @@ func (m *MFABypass) testMFA(ctx context.Context, endpoint, payload string) {
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	bodyStr := strings.ToLower(string(bodyBytes))
 
 	// Simple heuristic: if it returns 200/201 and implies success/token grant when we passed null/empty

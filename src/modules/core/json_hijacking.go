@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -55,7 +54,7 @@ func (m *JsonHijackingTest) Execute(ctx context.Context) ([]JsonHijackingTestRes
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	if err != nil {
 		return m.results, err
 	}

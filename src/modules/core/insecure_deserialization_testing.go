@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -110,7 +109,7 @@ func (m *InsecureDeserializationTesting) testPayload(ctx context.Context, p dese
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	bodyStr := string(bodyBytes)
 
 	// Check for deserialization stack traces or errors

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -72,7 +71,7 @@ func (m *GraphQLAdvanced) testBatching(ctx context.Context, endpoint string) {
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	bodyStr := string(bodyBytes)
 
 	// If it returns an array of results, batching is enabled
@@ -106,7 +105,7 @@ func (m *GraphQLAdvanced) testDeepQuery(ctx context.Context, endpoint string) {
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	bodyStr := string(bodyBytes)
 
 	if resp.StatusCode == http.StatusOK && strings.Contains(bodyStr, "a5") {

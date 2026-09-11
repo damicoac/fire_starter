@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -161,7 +160,7 @@ func (m *CrossSiteScriptingInjection) testContextPayload(ctx context.Context, u 
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	if err != nil {
 		return
 	}

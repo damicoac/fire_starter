@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -316,7 +315,7 @@ func (m *MassAssignmentInjection) sendVerificationRead(ctx context.Context, mark
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	return resp.StatusCode, string(respBody), nil
 }
 
@@ -338,7 +337,7 @@ func (m *MassAssignmentInjection) sendJSON(ctx context.Context, payload map[stri
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	return resp.StatusCode, string(respBody), nil
 }
 

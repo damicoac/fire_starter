@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -53,7 +52,7 @@ func (m *IDORManipulation) getBaselineLength(ctx context.Context, u *url.URL) in
 		return 0
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	return len(body)
 }
 
@@ -134,7 +133,7 @@ func (m *IDORManipulation) testPayload(ctx context.Context, u *url.URL, payload 
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	respLen := len(bodyBytes)
 
 	if resp.StatusCode == http.StatusOK {

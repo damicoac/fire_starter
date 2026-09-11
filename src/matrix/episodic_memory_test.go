@@ -44,3 +44,19 @@ func TestEpisodicMemory_StoreAndQuery(t *testing.T) {
 		t.Errorf("expected top result to be relevant SQL entry, got %s", results[0].Entry.ID)
 	}
 }
+
+func TestEpisodicMemory_CapBound(t *testing.T) {
+	mem := matrix.NewEpisodicMemory()
+
+	for i := 0; i < 600; i++ {
+		mem.Store(matrix.MemoryEntry{
+			ID:      "mem",
+			Content: "event log",
+		})
+	}
+
+	if count := mem.Count(); count != 500 {
+		t.Fatalf("expected memory count to be capped at 500, got %d", count)
+	}
+}
+

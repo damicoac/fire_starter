@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -121,7 +120,7 @@ func (m *JWTSecurityAudit) probeNoToken(ctx context.Context) jwtProbeOutcome {
 		return jwtProbeOutcome{name: "no_token", err: err}
 	}
 	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	return jwtProbeOutcome{name: "no_token", statusCode: resp.StatusCode, body: strings.ToLower(string(respBody))}
 }
 
@@ -137,7 +136,7 @@ func (m *JWTSecurityAudit) probeToken(ctx context.Context, name string, token st
 		return jwtProbeOutcome{name: name, token: token, err: err}
 	}
 	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 
 	return jwtProbeOutcome{name: name, token: token, statusCode: resp.StatusCode, body: strings.ToLower(string(respBody))}
 }

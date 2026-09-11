@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -99,7 +98,7 @@ func (m *PathTraversalAttack) getBaseline(ctx context.Context, u *url.URL, vecto
 			continue
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 		resp.Body.Close()
 		if err != nil {
 			continue
@@ -207,7 +206,7 @@ func (m *PathTraversalAttack) testVector(ctx context.Context, u *url.URL, vector
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	if err != nil {
 		return nil
 	}

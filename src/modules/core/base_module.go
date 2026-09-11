@@ -50,6 +50,19 @@ type ProofOfConcept struct {
 	Request     string `json:"request"`
 }
 
+const MaxResponseBodyBytes = 2 * 1024 * 1024 // 2 MB maximum bound to prevent memory exhaustion
+
+// ReadBoundedBody reads up to maxBytes from r to prevent OOM memory exhaustion on unbounded streams or huge payloads.
+func ReadBoundedBody(r io.Reader, maxBytes int64) ([]byte, error) {
+	if r == nil {
+		return nil, nil
+	}
+	if maxBytes <= 0 {
+		maxBytes = MaxResponseBodyBytes
+	}
+	return io.ReadAll(io.LimitReader(r, maxBytes))
+}
+
 type BaseModule struct {
 	Client          *http.Client
 	MaxThreads      int
@@ -159,7 +172,7 @@ func (b *BaseModule) DiscoverVectors(u *url.URL, body io.Reader, contentType str
 
 	if body != nil {
 		var err error
-		bodyBytes, err = io.ReadAll(body)
+		bodyBytes, err = ReadBoundedBody(body, MaxResponseBodyBytes)
 		if err != nil {
 			// Since we can't return an error, we proceed with whatever was read
 			fmt.Printf("Warning: failed to fully read request body: %v\n", err)
@@ -448,7 +461,7 @@ func (b *BaseModule) DiscoverReflection(ctx context.Context, u *url.URL, vector 
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	if err != nil {
 		return nil
 	}
@@ -530,7 +543,7 @@ func GenerateCurlCommand(req *http.Request, bodyBytes []byte) string {
 	// Try to get body from request if not provided
 	if len(bodyBytes) == 0 && req.GetBody != nil {
 		if bodyReadCloser, err := req.GetBody(); err == nil {
-			if b, err := io.ReadAll(bodyReadCloser); err == nil {
+			if b, err := ReadBoundedBody(bodyReadCloser, MaxResponseBodyBytes); err == nil {
 				bodyBytes = b
 			}
 			bodyReadCloser.Close()

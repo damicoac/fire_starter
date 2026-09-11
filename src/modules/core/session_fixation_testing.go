@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -57,7 +56,7 @@ func (m *SessionFixationTesting) Execute(ctx context.Context) ([]SessionFixation
 	}
 	defer getResp.Body.Close()
 
-	getBodyBytes, _ := io.ReadAll(getResp.Body)
+	getBodyBytes, _ := ReadBoundedBody(getResp.Body, MaxResponseBodyBytes)
 	getBodyStr := strings.ToLower(string(getBodyBytes))
 
 	if !strings.Contains(getBodyStr, "type=\"password\"") && !strings.Contains(getBodyStr, "type='password'") {

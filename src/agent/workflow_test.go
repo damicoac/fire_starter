@@ -2,11 +2,13 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"charm.land/fantasy"
 	"fire_starter/src/matrix"
 )
 
@@ -426,5 +428,93 @@ func TestScoreTool_ExcludesStubbedModules(t *testing.T) {
 		if scored.Score >= 0 {
 			t.Errorf("expected stubbed module %s to have negative score, got %d", tech, scored.Score)
 		}
+	}
+}
+
+func TestCompactHistory(t *testing.T) {
+	history := []fantasy.Message{
+		{Role: "system", Content: []fantasy.MessagePart{fantasy.TextPart{Text: "System prompt"}}},
+		fantasy.NewUserMessage("User assignment"),
+	}
+
+	for i := 1; i <= 5; i++ {
+		history = append(history, fantasy.Message{
+			Role: "assistant",
+			Content: []fantasy.MessagePart{
+				fantasy.ToolCallPart{
+					ToolCallID: fmt.Sprintf("call-%d", i),
+					ToolName:   "test_tool",
+					Input:      "{}",
+				},
+			},
+		})
+		history = append(history, fantasy.Message{
+			Role: "tool",
+			Content: []fantasy.MessagePart{
+				fantasy.ToolResultPart{
+					ToolCallID: fmt.Sprintf("call-%d", i),
+					Output:     fantasy.ToolResultOutputContentText{Text: strings.Repeat("Extremely verbose tool result data ", 20)},
+				},
+			},
+		})
+	}
+
+	compacted := compactHistory(history, 4)
+	if len(compacted) != 12 {
+		t.Fatalf("expected 12 messages, got %d", len(compacted))
+	}
+
+	if compacted[0].Role != "system" || compacted[1].Role != "user" {
+		t.Fatalf("expected header system/user messages preserved")
+	}
+
+	foundCondensed := false
+	for _, msg := range compacted[:6] {
+		if msg.Role == "tool" {
+			for _, p := range msg.Content {
+				if trp, ok := p.(fantasy.ToolResultPart); ok {
+					if tc, ok := trp.Output.(fantasy.ToolResultOutputContentText); ok {
+						if strings.Contains(tc.Text, "[Historical execution condensed]") {
+							foundCondensed = true
+						}
+					}
+				}
+			}
+		}
+	}
+	if !foundCondensed {
+		t.Errorf("expected older tool output to be condensed")
+	}
+}
+
+type testRetryModel struct {
+	fantasy.LanguageModel
+	attempts  int
+	failUntil int
+}
+
+func (m *testRetryModel) Generate(ctx context.Context, call fantasy.Call) (*fantasy.Response, error) {
+	m.attempts++
+	if m.attempts <= m.failUntil {
+		return nil, fmt.Errorf("temporary provider throttle 429")
+	}
+	return &fantasy.Response{
+		Content: fantasy.ResponseContent{
+			fantasy.TextContent{Text: "success"},
+		},
+	}, nil
+}
+
+func TestGenerateWithRetry(t *testing.T) {
+	m := &testRetryModel{failUntil: 2}
+	resp, err := generateWithRetry(context.Background(), m, fantasy.Call{}, 3)
+	if err != nil {
+		t.Fatalf("expected retry to eventually succeed, got err: %v", err)
+	}
+	if m.attempts != 3 {
+		t.Fatalf("expected 3 attempts, got %d", m.attempts)
+	}
+	if len(resp.Content) == 0 {
+		t.Fatalf("expected content in response")
 	}
 }

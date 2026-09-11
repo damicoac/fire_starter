@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -124,7 +123,7 @@ func (m *SubdomainTakeoverAnalysis) testSubdomain(ctx context.Context, sub strin
 			}
 			defer resp.Body.Close()
 
-			bodyBytes, _ := io.ReadAll(resp.Body)
+			bodyBytes, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 			bodyStr := string(bodyBytes)
 
 			if strings.Contains(bodyStr, errorSig) {
