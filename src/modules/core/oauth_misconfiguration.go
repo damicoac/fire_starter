@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -115,11 +114,11 @@ func (m *OAuthMisconfiguration) testOAuth(ctx context.Context, endpoint, payload
 	defer resp.Body.Close()
 
 	loc := resp.Header.Get("Location")
-	
+
 	if !isXSS {
 		if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 			isVulnerable := false
-			
+
 			// Parse the location to check the actual host it redirects to
 			if parsedLoc, err := url.Parse(loc); err == nil && parsedLoc.Hostname() != "" {
 				if strings.Contains(parsedLoc.Hostname(), match) {
@@ -128,11 +127,11 @@ func (m *OAuthMisconfiguration) testOAuth(ctx context.Context, endpoint, payload
 			} else {
 				// Fallback for cases where url.Parse fails or doesn't extract hostname correctly
 				locLower := strings.ToLower(loc)
-				if strings.HasPrefix(locLower, "http://"+match) || 
-				   strings.HasPrefix(locLower, "https://"+match) ||
-				   strings.HasPrefix(locLower, "//"+match) ||
-				   strings.HasPrefix(locLower, "\\\\"+match) ||
-				   strings.HasPrefix(locLower, "/\\"+match) {
+				if strings.HasPrefix(locLower, "http://"+match) ||
+					strings.HasPrefix(locLower, "https://"+match) ||
+					strings.HasPrefix(locLower, "//"+match) ||
+					strings.HasPrefix(locLower, "\\\\"+match) ||
+					strings.HasPrefix(locLower, "/\\"+match) {
 					isVulnerable = true
 				}
 			}
@@ -149,7 +148,7 @@ func (m *OAuthMisconfiguration) testOAuth(ctx context.Context, endpoint, payload
 			}
 		} else if resp.StatusCode == http.StatusOK {
 			// Check for potential client-side redirects (e.g. meta refresh or window.location)
-			body, _ := io.ReadAll(resp.Body)
+			body, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 			bodyStr := strings.ToLower(string(body))
 			if strings.Contains(bodyStr, "http://"+match) || strings.Contains(bodyStr, "https://"+match) {
 				if strings.Contains(bodyStr, "url=http") || strings.Contains(bodyStr, "window.location") {
@@ -178,7 +177,7 @@ func (m *OAuthMisconfiguration) testOAuth(ctx context.Context, endpoint, payload
 				m.Mu.Unlock()
 			}
 		} else if resp.StatusCode == http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
+			body, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 			if strings.Contains(string(body), match) {
 				m.Mu.Lock()
 				m.RecordPoC(req, nil, fmt.Sprintf("OAuth redirect_uri XSS reflected in body at: %s", testURL))

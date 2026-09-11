@@ -60,6 +60,9 @@ func (ps *PortScanner) Scan(ctx context.Context) ([]portResult, error) {
 		go func() {
 			defer wg.Done()
 			for port := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
 				result := ps.scanPort(ctx, port)
 				ps.mu.Lock()
 				ps.results[port] = result
@@ -85,6 +88,7 @@ func (ps *PortScanner) Scan(ctx context.Context) ([]portResult, error) {
 	case <-done:
 		return ps.sortAndReturnResults(), nil
 	case <-ctx.Done():
+		<-done
 		return ps.getPartialResults(), ctx.Err()
 	}
 }
@@ -93,15 +97,16 @@ func (ps *PortScanner) Scan(ctx context.Context) ([]portResult, error) {
 func (ps *PortScanner) scanPort(ctx context.Context, port int) portResult {
 	addr := net.JoinHostPort(ps.Target, fmt.Sprintf("%d", port))
 
-	var conn net.Conn
-	var err error
-
 	if ctx.Err() != nil {
 		return portResult{Port: port, State: "closed", Banner: "context cancelled"}
 	}
 
-	conn, err = net.DialTimeout("tcp", addr, ps.Timeout)
+	dialer := net.Dialer{Timeout: ps.Timeout}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
+		if ctx.Err() != nil {
+			return portResult{Port: port, State: "closed", Banner: "context cancelled"}
+		}
 		return portResult{Port: port, State: "filtered"}
 	}
 	defer conn.Close()
@@ -127,7 +132,7 @@ func (ps *PortScanner) scanPort(ctx context.Context, port int) portResult {
 func (ps *PortScanner) sortAndReturnResults() []portResult {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
-	
+
 	sorted := make([]int, 0, len(ps.results))
 	for port := range ps.results {
 		sorted = append(sorted, port)
@@ -155,4 +160,3 @@ func (ps *PortScanner) ScanCommonPorts(ctx context.Context) ([]portResult, error
 	ps.Ports = commonPorts
 	return ps.Scan(ctx)
 }
-

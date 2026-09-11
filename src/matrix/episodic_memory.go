@@ -36,12 +36,18 @@ func NewEpisodicMemory() *EpisodicMemory {
 	}
 }
 
+const maxEpisodicMemoryEntries = 500
+
 // Store adds a new entry to the memory repository
 func (em *EpisodicMemory) Store(entry MemoryEntry) {
 	em.mu.Lock()
 	defer em.mu.Unlock()
 	if entry.Timestamp.IsZero() {
 		entry.Timestamp = time.Now()
+	}
+	if len(em.entries) >= maxEpisodicMemoryEntries {
+		em.entries[0] = MemoryEntry{}
+		em.entries = em.entries[1:]
 	}
 	em.entries = append(em.entries, entry)
 }

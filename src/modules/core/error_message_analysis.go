@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -90,7 +89,7 @@ func (m *ErrorMessageAnalysis) Execute(ctx context.Context) ([]ErrorMessageAnaly
 						continue
 					}
 
-					bodyBytes, err := io.ReadAll(resp.Body)
+					bodyBytes, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 					resp.Body.Close()
 					if err != nil {
 						continue

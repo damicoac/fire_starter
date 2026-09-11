@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/charmbracelet/log"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -32,6 +33,18 @@ func InitDB(dbPath string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
+
+	if _, err := db.Exec("PRAGMA journal_mode=WAL;"); err != nil {
+		log.Warnf("SQLite PRAGMA journal_mode=WAL failed: %v", err)
+	}
+	if _, err := db.Exec("PRAGMA busy_timeout=5000;"); err != nil {
+		log.Warnf("SQLite PRAGMA busy_timeout=5000 failed: %v", err)
+	}
+	if _, err := db.Exec("PRAGMA synchronous=NORMAL;"); err != nil {
+		log.Warnf("SQLite PRAGMA synchronous=NORMAL failed: %v", err)
+	}
+	db.SetMaxOpenConns(5)
+	db.SetMaxIdleConns(5)
 
 	// Create execution_log table
 	_, err = db.Exec(`

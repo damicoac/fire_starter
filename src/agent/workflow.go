@@ -47,6 +47,108 @@ func initializeModel(ctx context.Context, cfg Config) (fantasy.LanguageModel, er
 	return provider.LanguageModel(ctx, cfg.Model)
 }
 
+func generateWithRetry(ctx context.Context, model fantasy.LanguageModel, call fantasy.Call, maxRetries int) (*fantasy.Response, error) {
+	var resp *fantasy.Response
+	var err error
+	backoff := 500 * time.Millisecond
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		resp, err = model.Generate(ctx, call)
+		if err == nil {
+			return resp, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if attempt < maxRetries {
+			log.Warnf("LLM generation error (attempt %d/%d): %v. Retrying in %v...", attempt+1, maxRetries, err, backoff)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+				backoff *= 2
+				if backoff > 4*time.Second {
+					backoff = 4 * time.Second
+				}
+			}
+		}
+	}
+	return nil, err
+}
+
+func compactHistory(history []fantasy.Message, maxRecentMessages int) []fantasy.Message {
+	if len(history) <= 6 {
+		return history
+	}
+
+	var header []fantasy.Message
+	var intermediate []fantasy.Message
+
+	if len(history) > 0 && history[0].Role == "system" {
+		header = append(header, history[0])
+		if len(history) > 1 && history[1].Role == "user" {
+			header = append(header, history[1])
+			intermediate = history[2:]
+		} else {
+			intermediate = history[1:]
+		}
+	} else {
+		intermediate = history
+	}
+
+	if len(intermediate) <= maxRecentMessages {
+		result := make([]fantasy.Message, 0, len(header)+len(intermediate))
+		result = append(result, header...)
+		result = append(result, intermediate...)
+		return result
+	}
+
+	cutoff := len(intermediate) - maxRecentMessages
+	older := intermediate[:cutoff]
+	recent := intermediate[cutoff:]
+
+	const maxOlderMessages = 16
+	if len(older) > maxOlderMessages {
+		older = older[len(older)-maxOlderMessages:]
+	}
+
+	condensedOlder := make([]fantasy.Message, 0, len(older))
+	for _, msg := range older {
+		if msg.Role == "tool" {
+			var condensedParts []fantasy.MessagePart
+			for _, part := range msg.Content {
+				if trp, ok := part.(fantasy.ToolResultPart); ok {
+					condensedOutput := trp.Output
+					if tc, isText := trp.Output.(fantasy.ToolResultOutputContentText); isText {
+						text := tc.Text
+						if len(text) > 150 {
+							text = text[:150] + "... [Historical execution condensed]"
+						}
+						condensedOutput = fantasy.ToolResultOutputContentText{Text: text}
+					}
+					condensedParts = append(condensedParts, fantasy.ToolResultPart{
+						ToolCallID: trp.ToolCallID,
+						Output:     condensedOutput,
+					})
+				} else {
+					condensedParts = append(condensedParts, part)
+				}
+			}
+			condensedOlder = append(condensedOlder, fantasy.Message{
+				Role:    "tool",
+				Content: condensedParts,
+			})
+		} else {
+			condensedOlder = append(condensedOlder, msg)
+		}
+	}
+
+	result := make([]fantasy.Message, 0, len(header)+len(condensedOlder)+len(recent))
+	result = append(result, header...)
+	result = append(result, condensedOlder...)
+	result = append(result, recent...)
+	return result
+}
+
 type scoredTool struct {
 	Definition matrix.ToolDefinition
 	Score      int
@@ -256,9 +358,10 @@ func scoreTool(def matrix.ToolDefinition, target *matrix.Target, snapshot matrix
 		score += 3
 		reasons = append(reasons, "ssh port 22 is open")
 	}
-	if (strings.Contains(name, "sql") || strings.Contains(name, "database") || strings.Contains(name, "db")) && (hasPort(target.OpenPorts, 3306) || hasPort(target.OpenPorts, 5432)) {
+	hasWebPort := hasPort(target.OpenPorts, 80) || hasPort(target.OpenPorts, 443) || hasPort(target.OpenPorts, 8080) || hasPort(target.OpenPorts, 8443) || strings.HasPrefix(target.Value, "http://") || strings.HasPrefix(target.Value, "https://")
+	if (strings.Contains(name, "sql") || strings.Contains(name, "database") || strings.Contains(name, "db")) && (hasWebPort || hasPort(target.OpenPorts, 3306) || hasPort(target.OpenPorts, 5432)) {
 		score += 3
-		reasons = append(reasons, "database port is open")
+		reasons = append(reasons, "database or web interface is available")
 	}
 	if strings.Contains(name, "ftp") && hasPort(target.OpenPorts, 21) {
 		score += 3
@@ -661,27 +764,12 @@ func runVulnerabilityHelperSubAgent(
 	initialTarget string,
 	allowlist map[string]bool,
 	toolStageByName map[string]matrix.Phase,
+	globalIters *int,
+	maxIters int,
 ) string {
 	var rawGraph []byte
-	if rawBytes, err := kg.ToJSON(currentTarget); err == nil {
-		var data map[string]any
-		if err := json.Unmarshal(rawBytes, &data); err == nil {
-			// Strip test cases from targets to reduce prompt bloat
-			if targets, ok := data["targets"].(map[string]any); ok {
-				for _, tgt := range targets {
-					if tgtMap, ok := tgt.(map[string]any); ok {
-						delete(tgtMap, "test_cases")
-					}
-				}
-			}
-			if b, err := json.Marshal(data); err == nil {
-				rawGraph = b
-			} else {
-				rawGraph = rawBytes
-			}
-		} else {
-			rawGraph = rawBytes
-		}
+	if rawBytes, err := kg.ToJSONWithoutTestCases(currentTarget); err == nil {
+		rawGraph = rawBytes
 	}
 	prompt := fmt.Sprintf("You are a vulnerability helper sub-agent. Focus only on target '%s' and finding '%s' (vuln_id: %s). Use the available tools to validate exploitability and refine proof-of-concept evidence. DO NOT write your own custom tools or scripts; you must use the provided tools for testing. If this is a confirmed security vulnerability, call log_vulnerability with status='confirmed', severity='critical'|'high'|'medium'|'low'|'unknown', vuln_id, target, finding, exploitable yes/no and concise test_code. If this is a confirmed informational observation rather than a vulnerability, call log_vulnerability with status='informational' and severity='informational'. Make sure the 'finding' parameter contains a detailed description of how the issue works and step-by-step instructions to recreate it. For exposed credentials (e.g. .env leaks), do not set exploitable='yes' unless you successfully authenticate using the leaked credentials and include that evidence in test_code. If not enough evidence, do not log it as confirmed or informational.", currentTarget, finding, origVulnID)
 
@@ -695,10 +783,21 @@ func runVulnerabilityHelperSubAgent(
 	executedPayloads := make(map[string]bool)
 
 	for turn := 0; turn < 5; turn++ {
-		resp, err := model.Generate(ctx, fantasy.Call{
+		if ctx.Err() != nil {
+			break
+		}
+		if globalIters != nil && maxIters > 0 && *globalIters >= maxIters {
+			log.Warnf("Helper sub-agent reached global MaxIters (%d). Stopping.", maxIters)
+			break
+		}
+		if globalIters != nil {
+			*globalIters++
+		}
+		history = compactHistory(history, 6)
+		resp, err := generateWithRetry(ctx, model, fantasy.Call{
 			Prompt: history,
 			Tools:  activeTools,
-		})
+		}, 3)
 		if err != nil {
 			log.Errorf("Helper LLM error: %v", err)
 			break
@@ -837,23 +936,9 @@ func runVulnerabilityHelperSubAgent(
 						resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
 					}
 				default:
-					rawBytes, _ := kg.ToJSON(currentTarget)
-					var data map[string]any
-					if err := json.Unmarshal(rawBytes, &data); err == nil {
-						// Strip test cases from targets to reduce prompt bloat
-						if targets, ok := data["targets"].(map[string]any); ok {
-							for _, tgt := range targets {
-								if tgtMap, ok := tgt.(map[string]any); ok {
-									delete(tgtMap, "test_cases")
-								}
-							}
-						}
-						resBytes, err = json.Marshal(data)
-						if err != nil {
-							resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
-						}
-					} else {
-						resBytes = rawBytes
+					resBytes, err = kg.ToJSONWithoutTestCases(currentTarget)
+					if err != nil {
+						resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
 					}
 				}
 
@@ -1006,8 +1091,9 @@ func runVulnerabilityHelperSubAgent(
 
 					summary, _, extractErr := kg.ExtractIntelligence(ctx, model, tc.ToolName, targetUsed, iterPayload, resultData)
 					if extractErr != nil {
-						log.Warnf("Helper intelligence extraction failed: %v", extractErr)
-						summary = fmt.Sprintf("Tool executed successfully but intelligence extraction failed: %v", extractErr)
+						log.Warnf("Helper intelligence extraction failed: %v. Running deterministic structural extraction fallback.", extractErr)
+						kg.StructuralExtract(tc.ToolName, targetUsed, iterPayload, resultData)
+						summary = fmt.Sprintf("Tool executed successfully; LLM extraction failed (%v), structural intelligence extracted.", extractErr)
 					}
 
 					if err := matrix.LogExecution(initialTarget, resultData); err != nil {
@@ -1209,7 +1295,7 @@ func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*m
 			for _, v := range preVulns {
 				if v.Status == matrix.VulnerabilityStatusCandidate {
 					log.Infof("Processing remaining candidate finding: target=%s vuln_id=%s finding=%q", v.TargetDomain, v.VulnID, v.Finding)
-					_ = runVulnerabilityHelperSubAgent(ctx, model, v.TargetDomain, v.Finding, v.VulnID, activeTools, kg, executor, target, allowlist, toolStageByName)
+					_ = runVulnerabilityHelperSubAgent(ctx, model, v.TargetDomain, v.Finding, v.VulnID, activeTools, kg, executor, target, allowlist, toolStageByName, &globalIters, cfg.MaxIters)
 				}
 			}
 		}
@@ -1333,6 +1419,7 @@ IP whitelist policy:
 		httpRequestState.lastAuthFingerprint = httpRequestAuthFingerprint(existingTarget)
 	}
 
+	consecutiveLLMErrors := 0
 	for {
 		if *globalIters >= cfg.MaxIters {
 			break
@@ -1519,7 +1606,7 @@ IP whitelist policy:
 				}
 				spawnedHelpers[key] = true
 
-				helperOutput := runVulnerabilityHelperSubAgent(ctx, model, currentTarget, v.Finding, v.VulnID, activeTools, kg, executor, initialTarget, allowlist, toolStageByName)
+				helperOutput := runVulnerabilityHelperSubAgent(ctx, model, currentTarget, v.Finding, v.VulnID, activeTools, kg, executor, initialTarget, allowlist, toolStageByName, globalIters, cfg.MaxIters)
 				if strings.TrimSpace(helperOutput) != "" {
 					history = append(history, fantasy.Message{
 						Role:    "system",
@@ -1529,14 +1616,28 @@ IP whitelist policy:
 			}
 		}
 
-		resp, err := model.Generate(ctx, fantasy.Call{
+		history = compactHistory(history, 8)
+		resp, err := generateWithRetry(ctx, model, fantasy.Call{
 			Prompt: history,
 			Tools:  activeTools,
-		})
+		}, 3)
 		if err != nil {
-			log.Errorf("LLM error: %v. Retrying...", err)
+			consecutiveLLMErrors++
+			log.Errorf("LLM error after retries (consecutive %d): %v. Pausing before retry...", consecutiveLLMErrors, err)
+			if consecutiveLLMErrors >= 5 {
+				return fmt.Errorf("exceeded maximum consecutive LLM errors (5): %w", err)
+			}
+			if globalIters != nil {
+				*globalIters--
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(1 * time.Second):
+			}
 			continue
 		}
+		consecutiveLLMErrors = 0
 
 		assistantMsg := fantasy.Message{Role: "assistant"}
 		for _, c := range resp.Content {
@@ -1727,23 +1828,9 @@ IP whitelist policy:
 						resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
 					}
 				default:
-					rawBytes, _ := kg.ToJSON(currentTarget)
-					var data map[string]any
-					if err := json.Unmarshal(rawBytes, &data); err == nil {
-						// Strip test cases from targets to reduce prompt bloat
-						if targets, ok := data["targets"].(map[string]any); ok {
-							for _, tgt := range targets {
-								if tgtMap, ok := tgt.(map[string]any); ok {
-									delete(tgtMap, "test_cases")
-								}
-							}
-						}
-						resBytes, err = json.Marshal(data)
-						if err != nil {
-							resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
-						}
-					} else {
-						resBytes = rawBytes
+					resBytes, err = kg.ToJSONWithoutTestCases(currentTarget)
+					if err != nil {
+						resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
 					}
 				}
 
@@ -1868,8 +1955,9 @@ IP whitelist policy:
 					beforeGraph := kg.Snapshot()
 					summary, _, extractErr := kg.ExtractIntelligence(ctx, model, tc.ToolName, targetUsed, iterPayload, resultData)
 					if extractErr != nil {
-						log.Warnf("Intelligence extraction failed: %v", extractErr)
-						summary = fmt.Sprintf("Tool executed successfully but intelligence extraction failed: %v", extractErr)
+						log.Warnf("Intelligence extraction failed: %v. Running deterministic structural extraction fallback.", extractErr)
+						kg.StructuralExtract(tc.ToolName, targetUsed, iterPayload, resultData)
+						summary = fmt.Sprintf("Tool executed successfully; LLM extraction failed (%v), structural intelligence extracted.", extractErr)
 					}
 
 					if err := matrix.LogExecution(initialTarget, resultData); err != nil {

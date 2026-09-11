@@ -53,7 +53,7 @@ func (m *HttpVerbTampering) SetThreads(count int) {
 var verbsToTest = []string{
 	"OPTIONS", "HEAD", "CONNECT", "PUT", "DELETE", "TRACE", "TRACK", "PATCH",
 	"GeT", "POst", "pUT", // case variations
-	"BOGUSVERB",          // arbitrary verb
+	"BOGUSVERB", // arbitrary verb
 }
 
 func (m *HttpVerbTampering) runBaseline(ctx context.Context) {
@@ -80,7 +80,7 @@ func (m *HttpVerbTampering) fetchBaseline(ctx context.Context, verb string) Resp
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	return ResponseBaseline{
 		StatusCode: resp.StatusCode,
 		Length:     int64(len(body)),
@@ -165,7 +165,7 @@ func (m *HttpVerbTampering) testVerb(ctx context.Context, verb string) {
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	respLength := int64(len(respBody))
 
 	// Analysis

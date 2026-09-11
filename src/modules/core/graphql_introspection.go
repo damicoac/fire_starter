@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -76,7 +75,7 @@ func (m *GraphqlIntrospection) Execute(ctx context.Context) ([]GraphqlIntrospect
 			defer resp.Body.Close()
 
 			if resp.StatusCode == 200 {
-				bodyBytes, _ := io.ReadAll(resp.Body)
+				bodyBytes, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 				bodyStr := string(bodyBytes)
 				if strings.Contains(bodyStr, "__schema") || strings.Contains(bodyStr, "queryType") {
 					m.Mu.Lock()

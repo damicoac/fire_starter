@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"fire_starter/src/modules/core/generator"
+
 	"github.com/charmbracelet/log"
 )
 
@@ -241,7 +241,7 @@ func (m *SQLInjectionTesting) getBaseResponse(ctx context.Context, u *url.URL, v
 	defer resp.Body.Close()
 
 	duration := time.Since(start)
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	return string(body), duration, nil
 }
 
@@ -313,7 +313,7 @@ func (m *SQLInjectionTesting) testVector(ctx context.Context, u *url.URL, vector
 	defer resp.Body.Close()
 
 	duration := time.Since(start)
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	body := string(bodyBytes)
 
 	if validator.IsVulnerable(resp, body, payload, duration, baseBody) {
@@ -331,7 +331,7 @@ func (m *SQLInjectionTesting) testVector(ctx context.Context, u *url.URL, vector
 				return
 			}
 			defer respVerify.Body.Close()
-			bodyVerifyBytes, _ := io.ReadAll(respVerify.Body)
+			bodyVerifyBytes, _ := ReadBoundedBody(respVerify.Body, MaxResponseBodyBytes)
 			bodyVerify := string(bodyVerifyBytes)
 
 			// True payload produces a different response than False payload (VerifyValue)

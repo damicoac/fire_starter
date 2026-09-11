@@ -423,3 +423,75 @@ func TestAddTestCase_PhaseFiltering(t *testing.T) {
 		t.Errorf("Expected vulnerability count to remain 1 during post-exploit phase, got %d", count)
 	}
 }
+
+func TestExtractCandidateIPsAndURLs(t *testing.T) {
+	sampleText := `Found host 192.168.1.50 and endpoint https://example.com/api/v1/auth.
+Also tested http://sub.example.com:8080/test?param=val and www.target.org/dashboard.
+Internal path /v2/tokens was returned in error response.
+Loopback 127.0.0.1 and 0.0.0.0 should be excluded.`
+
+	ips, urls := extractCandidateIPsAndURLs(sampleText)
+
+	contains := func(slice []string, val string) bool {
+		for _, s := range slice {
+			if s == val {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !contains(ips, "192.168.1.50") {
+		t.Errorf("expected 192.168.1.50 in ips, got %v", ips)
+	}
+	if contains(ips, "127.0.0.1") || contains(ips, "0.0.0.0") {
+		t.Errorf("expected loopback and zero IPs to be excluded, got %v", ips)
+	}
+
+	if !contains(urls, "https://example.com/api/v1/auth") {
+		t.Errorf("expected https://example.com/api/v1/auth in urls, got %v", urls)
+	}
+	if !contains(urls, "/v2/tokens") {
+		t.Errorf("expected /v2/tokens in urls, got %v", urls)
+	}
+}
+
+func TestKnowledgeGraph_StructuralExtractScopeEnforcement(t *testing.T) {
+	kg := NewKnowledgeGraph()
+	defer kg.Close()
+	kg.TargetDomains = []string{"*.example.com"}
+
+	resultData := `Discovered endpoint /admin/dashboard and external link https://evil.com/leak and in-scope https://api.example.com/status`
+
+	kg.StructuralExtract("test_tool", "https://app.example.com", nil, resultData)
+
+	if _, ok := kg.GetTarget("evil.com/leak"); ok {
+		t.Errorf("expected evil.com to be excluded by scope")
+	}
+
+	if _, ok := kg.GetTarget("api.example.com/status"); !ok {
+		t.Errorf("expected api.example.com/status to be in scope")
+	}
+
+	if _, ok := kg.GetTarget("app.example.com/admin/dashboard"); !ok {
+		t.Errorf("expected relative path /admin/dashboard to resolve against target and be in scope")
+	}
+}
+
+func TestKnowledgeGraph_ConcurrentAddURLAndToJSON(t *testing.T) {
+	kg := NewKnowledgeGraph()
+	defer kg.Close()
+	kg.TargetDomains = []string{"*.example.com"}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			kg.AddURL("https://sub.example.com/page", "https://example.com")
+			_, _ = kg.ToJSON("example.com")
+		}(i)
+	}
+	wg.Wait()
+}
+

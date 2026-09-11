@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -62,7 +61,7 @@ func (m *PasswordSpraying) getBaselineAuthBypass(ctx context.Context) (bool, int
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 
 	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusFound || resp.StatusCode == http.StatusSeeOther {
 		location := resp.Header.Get("Location")
@@ -154,7 +153,7 @@ func (m *PasswordSpraying) testUsername(ctx context.Context, username string, ba
 			isLikelyError = true
 		}
 
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 		bodyStr := strings.ToLower(string(bodyBytes))
 
 		if resp.StatusCode == http.StatusOK {

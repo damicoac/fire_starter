@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"mime/multipart"
 	"net/http"
 	"sync"
@@ -111,7 +110,7 @@ func (m *UnrestrictedFileUpload) testUpload(ctx context.Context, endpoint, filen
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 
 	// Simple heuristic: if it returns 200/201 and doesn't complain about the file type
 	if (resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated) &&

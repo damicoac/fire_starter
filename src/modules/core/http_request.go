@@ -58,7 +58,7 @@ func (m *HTTPRequestModule) Execute(ctx context.Context) (map[string]any, error)
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 
 	respHeaders := make(map[string]string)
 	for k, v := range resp.Header {

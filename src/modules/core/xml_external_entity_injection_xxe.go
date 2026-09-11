@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -103,7 +102,7 @@ func (m *XMLExternalEntityInjectionXxe) testPayload(ctx context.Context, payload
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	bodyStr := string(bodyBytes)
 
 	// Signatures for successful LFI or SSRF via XXE

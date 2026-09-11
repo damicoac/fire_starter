@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -61,7 +60,7 @@ func (m *BrokenFunctionLevelAuthorizationBfla) getBaselineLength(ctx context.Con
 		return 0
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	return len(body)
 }
 
@@ -120,8 +119,7 @@ func (m *BrokenFunctionLevelAuthorizationBfla) testPath(ctx context.Context, pat
 		return
 	}
 	defer resp.Body.Close()
-
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	respLen := len(bodyBytes)
 
 	// If we get a 200 OK on an admin endpoint, ensure it's not a false positive

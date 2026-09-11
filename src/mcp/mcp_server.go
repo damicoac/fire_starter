@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"sync"
 
 	"fire_starter/src/matrix"
 )
@@ -240,7 +241,12 @@ func (s *MCPServer) registerBuiltinTools() {
 
 // ServeSTDIO reads JSON-RPC requests from reader and writes responses to writer
 func (s *MCPServer) ServeSTDIO(reader io.Reader, writer io.Writer) error {
+	var writerMu sync.Mutex
 	scanner := bufio.NewScanner(reader)
+	// Allow up to 10MB JSON-RPC message payloads instead of default 64KB
+	const maxMessageSize = 10 * 1024 * 1024
+	scanner.Buffer(make([]byte, 64*1024), maxMessageSize)
+
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
@@ -256,13 +262,17 @@ func (s *MCPServer) ServeSTDIO(reader io.Reader, writer io.Writer) error {
 					Message: "Parse error",
 				},
 			})
+			writerMu.Lock()
 			_, _ = writer.Write(append(respBytes, '\n'))
+			writerMu.Unlock()
 			continue
 		}
 
 		resp := s.handleRequest(context.Background(), req)
 		respBytes, _ := json.Marshal(resp)
+		writerMu.Lock()
 		_, _ = writer.Write(append(respBytes, '\n'))
+		writerMu.Unlock()
 	}
 	return scanner.Err()
 }

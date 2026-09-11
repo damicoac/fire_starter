@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -43,17 +44,23 @@ func (c *WebCrawler) Crawl(ctx context.Context) ([]string, error) {
 	}
 
 	visited := make(map[string]bool)
+	resultSet := make(map[string]bool)
 	var mu sync.Mutex
 	var results []string
 
+	const maxCrawledPages = 150
+
 	var crawlNode func(currentURL string, depth int)
 	crawlNode = func(currentURL string, depth int) {
+		if ctx.Err() != nil {
+			return
+		}
 		if depth > c.MaxDepth {
 			return
 		}
 
 		mu.Lock()
-		if visited[currentURL] {
+		if visited[currentURL] || len(results) >= maxCrawledPages {
 			mu.Unlock()
 			return
 		}
@@ -81,14 +88,8 @@ func (c *WebCrawler) Crawl(ctx context.Context) ([]string, error) {
 
 		// Ensure we record the successful page hit in the results
 		mu.Lock()
-		found := false
-		for _, r := range results {
-			if r == currentURL {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !resultSet[currentURL] {
+			resultSet[currentURL] = true
 			results = append(results, currentURL)
 		}
 		mu.Unlock()
@@ -122,9 +123,18 @@ func (c *WebCrawler) Crawl(ctx context.Context) ([]string, error) {
 						parsedLink.Fragment = ""
 						resolved := parsedLink.String()
 
-						// Check scope
+						// Check scope and do not crawl binary media assets as HTML
 						if parsedLink.Host == baseURL.Host {
-							newLinks = append(newLinks, resolved)
+							if isStaticAsset(resolved) {
+								mu.Lock()
+								if !resultSet[resolved] {
+									resultSet[resolved] = true
+									results = append(results, resolved)
+								}
+								mu.Unlock()
+							} else {
+								newLinks = append(newLinks, resolved)
+							}
 						}
 					}
 				}
@@ -141,6 +151,26 @@ func (c *WebCrawler) Crawl(ctx context.Context) ([]string, error) {
 	}
 
 	return results, nil
+}
+
+func isStaticAsset(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	path := strings.ToLower(parsed.Path)
+	staticExts := []string{
+		".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico",
+		".css", ".woff", ".woff2", ".ttf", ".eot",
+		".mp4", ".mp3", ".avi", ".mov", ".webm",
+		".pdf", ".zip", ".tar", ".gz", ".7z", ".rar",
+	}
+	for _, ext := range staticExts {
+		if strings.HasSuffix(path, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 // ScanCommonPages scans a minimal set of highly common web endpoints

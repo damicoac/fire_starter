@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -316,7 +315,7 @@ func (m *OSCommandInjection) sendPayload(ctx context.Context, u *url.URL, vector
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	bodyStr := string(bodyBytes)
 
 	return duration, bodyStr, resp, nil

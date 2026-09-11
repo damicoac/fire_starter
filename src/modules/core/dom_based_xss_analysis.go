@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -75,7 +74,7 @@ func (m *DOMBasedXSSAnalysis) Execute(ctx context.Context) ([]DOMBasedXSSAnalysi
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read target body: %w", err)
 	}
@@ -173,7 +172,7 @@ func (m *DOMBasedXSSAnalysis) fetchAndAnalyzeScript(ctx context.Context, scriptU
 		return
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	if err != nil {
 		return
 	}

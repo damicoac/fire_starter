@@ -74,8 +74,12 @@ func (e *RealExecutor) executeDecision(ctx context.Context, decision Decision, p
 		payload = make(map[string]any)
 	}
 
+	targetStr := payloadString(payload, "target", "")
 	ipStr := payloadString(payload, "ip", "")
 	urlStr := payloadString(payload, "url", "")
+	if urlStr == "" && targetStr != "" {
+		urlStr = targetStr
+	}
 	if urlStr != "" {
 		urlStr = modules.EnsureHTTPPrefix(urlStr)
 		payload["url"] = urlStr

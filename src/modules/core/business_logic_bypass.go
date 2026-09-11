@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -83,7 +82,7 @@ func (m *BusinessLogicBypass) testLogicBypass(ctx context.Context, endpoint stri
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	bodyStr := strings.ToLower(string(bodyBytes))
 
 	// If the server doesn't reject us immediately with a 401/403 or logic error

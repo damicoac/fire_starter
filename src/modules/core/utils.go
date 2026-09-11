@@ -14,7 +14,18 @@ import (
 
 // NewHTTPClient returns a configured *http.Client with reasonable timeouts, insecure skip verify, and an independent CookieJar.
 var DefaultTransport http.RoundTripper = &http.Transport{
-	TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	Proxy: http.ProxyFromEnvironment,
+	DialContext: (&net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}).DialContext,
+	ForceAttemptHTTP2:     true,
+	MaxIdleConns:          100,
+	MaxIdleConnsPerHost:   25,
+	IdleConnTimeout:       90 * time.Second,
+	TLSHandshakeTimeout:   10 * time.Second,
+	ExpectContinueTimeout: 1 * time.Second,
+	TLSClientConfig:       &tls.Config{InsecureSkipVerify: true},
 }
 
 func NewHTTPClient(timeout time.Duration) *http.Client {
