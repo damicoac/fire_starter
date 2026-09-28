@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"charm.land/fantasy"
@@ -171,6 +172,8 @@ type KnowledgeGraph struct {
 	OnUpdate       func(*KnowledgeGraph)     `json:"-"`
 	chanMu         sync.Mutex                `json:"-"`
 	updateChan     chan struct{}             `json:"-"`
+	version        atomic.Uint64
+	lastSentVer    atomic.Uint64
 }
 
 type KnowledgeSnapshot struct {
@@ -181,6 +184,26 @@ type KnowledgeSnapshot struct {
 	VulnerabilityCount  int
 	TargetPhases        map[string]Phase
 	OpenPorts           []int
+}
+
+func (kg *KnowledgeGraph) Version() uint64 {
+	return kg.version.Load()
+}
+
+func (kg *KnowledgeGraph) IsDirty() bool {
+	return kg.version.Load() > kg.lastSentVer.Load()
+}
+
+func (kg *KnowledgeGraph) MarkClean(ver uint64) {
+	for {
+		current := kg.lastSentVer.Load()
+		if ver <= current {
+			break
+		}
+		if kg.lastSentVer.CompareAndSwap(current, ver) {
+			break
+		}
+	}
 }
 
 func NewKnowledgeGraph() *KnowledgeGraph {
@@ -212,7 +235,9 @@ func NewKnowledgeGraph() *KnowledgeGraph {
 			case <-timerCh:
 				timer = nil
 				timerCh = nil
-				if kg.OnUpdate != nil {
+				currentVer := kg.version.Load()
+				if kg.OnUpdate != nil && currentVer > kg.lastSentVer.Load() {
+					kg.MarkClean(currentVer)
 					kg.OnUpdate(kg)
 				}
 			}
@@ -231,6 +256,7 @@ func (kg *KnowledgeGraph) Close() {
 }
 
 func (kg *KnowledgeGraph) triggerUpdate() {
+	kg.version.Add(1)
 	kg.chanMu.Lock()
 	defer kg.chanMu.Unlock()
 	if kg.updateChan == nil {
@@ -324,6 +350,12 @@ func (t *Target) Clone() *Target {
 		tCopy.HTTPRequestGate = make(map[string]bool, len(t.HTTPRequestGate))
 		for k, v := range t.HTTPRequestGate {
 			tCopy.HTTPRequestGate[k] = v
+		}
+	}
+	if t.urlSignals != nil {
+		tCopy.urlSignals = make(map[string]bool, len(t.urlSignals))
+		for k, v := range t.urlSignals {
+			tCopy.urlSignals[k] = v
 		}
 	}
 	if t.SiteMap != nil {
@@ -876,9 +908,6 @@ func (kg *KnowledgeGraph) StructuralExtract(toolName, target string, payload map
 	kg.structuralExtract(toolName, target, payload, resultData)
 }
 
-func (kg *KnowledgeGraph) regexExtract(toolName, target string, payload map[string]any, resultData string) {
-	kg.structuralExtract(toolName, target, payload, resultData)
-}
 func registrableDomain(host string) string {
 	host = strings.ToLower(strings.TrimSpace(host))
 	if host == "" || net.ParseIP(host) != nil {
@@ -1457,9 +1486,13 @@ func (kg *KnowledgeGraph) SetContextValue(key string, value any) {
 func (kg *KnowledgeGraph) GetTargetPhase(targetValue string) Phase {
 	kg.mu.RLock()
 	defer kg.mu.RUnlock()
-	t, ok := kg.targets[targetValue]
+	normalized := NormalizeURL(targetValue)
+	t, ok := kg.targets[normalized]
 	if !ok {
-		return PhaseReconnaissance
+		t, ok = kg.targets[targetValue]
+		if !ok {
+			return PhaseReconnaissance
+		}
 	}
 	return t.CurrentPhase
 }
@@ -1468,12 +1501,17 @@ func (kg *KnowledgeGraph) AdvanceTargetPhase(targetValue string) Phase {
 	defer kg.triggerUpdate()
 	kg.mu.Lock()
 	defer kg.mu.Unlock()
-	t, ok := kg.targets[targetValue]
+	normalized := NormalizeURL(targetValue)
+	t, ok := kg.targets[normalized]
 	if !ok {
-		return PhaseReconnaissance
+		t, ok = kg.targets[targetValue]
+		if !ok {
+			return PhaseReconnaissance
+		}
 	}
 	previous := t.CurrentPhase
 	t.CurrentPhase = NextPhase(t.CurrentPhase)
+	_ = SaveTargetState(t.Value, t.Type, string(t.CurrentPhase), t.Score, t.OpenPorts, t.Tokens)
 	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=target_phase target=%s from=%s to=%s", targetValue, previous, t.CurrentPhase)
 	return t.CurrentPhase
 }
@@ -1482,12 +1520,17 @@ func (kg *KnowledgeGraph) SetTargetPhase(targetValue string, phase Phase) {
 	defer kg.triggerUpdate()
 	kg.mu.Lock()
 	defer kg.mu.Unlock()
-	t, ok := kg.targets[targetValue]
+	normalized := NormalizeURL(targetValue)
+	t, ok := kg.targets[normalized]
 	if !ok {
-		return
+		t, ok = kg.targets[targetValue]
+		if !ok {
+			return
+		}
 	}
 	previous := t.CurrentPhase
 	t.CurrentPhase = phase
+	_ = SaveTargetState(t.Value, t.Type, string(t.CurrentPhase), t.Score, t.OpenPorts, t.Tokens)
 	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=target_phase target=%s from=%s to=%s", targetValue, previous, t.CurrentPhase)
 }
 

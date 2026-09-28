@@ -100,7 +100,6 @@ type Model struct {
 	visibleLogs        []string
 	kgTargets          []KGTarget
 	dashboardCursor    int
-	inspectorMode      bool
 	ready              bool
 	finished           bool
 	finalReport        string
@@ -907,7 +906,7 @@ func (m Model) View() string {
 	kgTitle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).Render(titleStr)
 
 	var kgScrollStr string
-	if m.activeTab == 2 || m.inspectorMode {
+	if m.activeTab == 2 {
 		kgScrollStr = fmt.Sprintf(" %3.0f%% ", m.kgViewport.ScrollPercent()*100)
 		if m.kgViewport.TotalLineCount() <= m.kgViewport.Height {
 			kgScrollStr = " 100% "

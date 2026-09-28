@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -371,4 +372,27 @@ func TestReadBoundedBody(t *testing.T) {
 	if string(data) != smallInput {
 		t.Fatalf("expected %q, got %q", smallInput, string(data))
 	}
+}
+
+func TestBaseModule_ConcurrentVectorAndBuildRequest(t *testing.T) {
+	b := &BaseModule{}
+	targetURL, _ := url.Parse("http://example.com/api?id=1")
+	var wg sync.WaitGroup
+
+	for i := 0; i < 20; i++ {
+		wg.Add(2)
+		go func(val int) {
+			defer wg.Done()
+			body := strings.NewReader(fmt.Sprintf(`{"field": %d}`, val))
+			headers := http.Header{"X-Trace": []string{fmt.Sprintf("trace-%d", val)}}
+			_, _ = b.DiscoverVectors(targetURL, body, "application/json", headers)
+		}(i)
+
+		go func(val int) {
+			defer wg.Done()
+			vec := InputVector{Type: VectorQueryParam, Key: "id", Value: "1"}
+			_, _ = b.BuildRequestWithVector(context.Background(), "GET", targetURL, vec, fmt.Sprintf("val-%d", val))
+		}(i)
+	}
+	wg.Wait()
 }

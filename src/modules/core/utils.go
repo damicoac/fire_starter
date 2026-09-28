@@ -70,3 +70,24 @@ func ExtractHostname(target string) string {
 	}
 	return host
 }
+
+// ExtractTargetHost extracts the hostname from a URL or target string, supporting both domains and IP addresses.
+func ExtractTargetHost(target string) string {
+	trimmed := strings.TrimSpace(target)
+	if trimmed == "" {
+		return ""
+	}
+
+	candidate := trimmed
+	if !strings.Contains(candidate, "://") {
+		candidate = EnsureHTTPPrefix(candidate)
+	}
+
+	parsed, err := url.Parse(candidate)
+	if err != nil {
+		return ""
+	}
+
+	return strings.TrimSpace(parsed.Hostname())
+}
+

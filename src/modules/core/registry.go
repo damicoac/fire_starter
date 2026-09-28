@@ -13,6 +13,21 @@ type ExecutableModule interface {
 	GetUnderlying() any
 }
 
+// SessionAware indicates a module that accepts authenticated session cookies
+type SessionAware interface {
+	SetCookies(cookies string)
+}
+
+// PoCProvider indicates a module that collects Proof of Concept reproduction steps
+type PoCProvider interface {
+	GetPoCs() []ProofOfConcept
+}
+
+// ThreadConfigurable allows runtime adjustment of worker concurrency
+type ThreadConfigurable interface {
+	SetThreads(count int)
+}
+
 type ModuleWrapper struct {
 	Module      any
 	ExecuteFunc func(ctx context.Context) (any, error)

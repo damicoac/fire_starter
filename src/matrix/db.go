@@ -2,6 +2,7 @@ package matrix
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -12,7 +13,7 @@ import (
 
 var (
 	dbInstance *sql.DB
-	dbMu       sync.Mutex
+	dbMu       sync.RWMutex
 )
 
 // InitDB initializes the SQLite database connection and creates tables if they don't exist.
@@ -43,8 +44,8 @@ func InitDB(dbPath string) (*sql.DB, error) {
 	if _, err := db.Exec("PRAGMA synchronous=NORMAL;"); err != nil {
 		log.Warnf("SQLite PRAGMA synchronous=NORMAL failed: %v", err)
 	}
-	db.SetMaxOpenConns(5)
-	db.SetMaxIdleConns(5)
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 
 	// Create execution_log table
 	_, err = db.Exec(`
@@ -58,6 +59,37 @@ func InitDB(dbPath string) (*sql.DB, error) {
 	if err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("failed to create execution_log table: %w", err)
+	}
+
+	// Create target_state table
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS target_state (
+			target_domain TEXT PRIMARY KEY,
+			type TEXT NOT NULL,
+			current_phase TEXT NOT NULL,
+			score INTEGER NOT NULL DEFAULT 0,
+			open_ports TEXT NOT NULL DEFAULT '',
+			tokens TEXT NOT NULL DEFAULT '',
+			last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+	`)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to create target_state table: %w", err)
+	}
+
+	// Create executed_payloads table
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS executed_payloads (
+			payload_hash TEXT PRIMARY KEY,
+			tool_name TEXT NOT NULL,
+			target TEXT NOT NULL,
+			executed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+	`)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to create executed_payloads table: %w", err)
 	}
 
 	// Create vuln table
@@ -108,8 +140,33 @@ func InitDB(dbPath string) (*sql.DB, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("failed to create unique index on vuln_id: %w", err)
 	}
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_vuln_target ON vuln(target_domain);`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_vuln_status ON vuln(status);`)
 
 	dbInstance = db
+	return dbInstance, nil
+}
+
+// CloseDB closes the SQLite database connection if one is open.
+func CloseDB() error {
+	dbMu.Lock()
+	defer dbMu.Unlock()
+
+	if dbInstance != nil {
+		err := dbInstance.Close()
+		dbInstance = nil
+		return err
+	}
+	return nil
+}
+
+func getDB() (*sql.DB, error) {
+	dbMu.RLock()
+	defer dbMu.RUnlock()
+
+	if dbInstance == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
 	return dbInstance, nil
 }
 
@@ -213,11 +270,12 @@ func ensureVulnColumn(db *sql.DB, columnName string, columnDef string) error {
 
 // LogExecution writes an execution output to the SQLite database
 func LogExecution(targetDomain string, jsonOutput string) error {
-	if dbInstance == nil {
-		return fmt.Errorf("database not initialized")
+	db, err := getDB()
+	if err != nil {
+		return err
 	}
 
-	_, err := dbInstance.Exec(
+	_, err = db.Exec(
 		"INSERT INTO execution_log (date_time, target_domain, json_output) VALUES (?, ?, ?)",
 		time.Now().UTC(), targetDomain, jsonOutput,
 	)
@@ -294,8 +352,9 @@ func LogVulnerability(vulnID string, targetDomain string, finding string, testCo
 }
 
 func LogVulnerabilityWithStatus(vulnID string, targetDomain string, finding string, testCode string, exploitable string, status string, severity string) error {
-	if dbInstance == nil {
-		return fmt.Errorf("database not initialized")
+	db, err := getDB()
+	if err != nil {
+		return err
 	}
 	if !IsValidVulnerabilityStatus(status) {
 		return fmt.Errorf("invalid vulnerability status: %s", status)
@@ -304,7 +363,7 @@ func LogVulnerabilityWithStatus(vulnID string, targetDomain string, finding stri
 		return fmt.Errorf("invalid vulnerability severity: %s", severity)
 	}
 
-	_, err := dbInstance.Exec(
+	_, err = db.Exec(
 		`INSERT INTO vuln (vuln_id, date_time, target_domain, finding, test_code, exploitable, status, severity) 
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(vuln_id) DO UPDATE SET 
@@ -321,27 +380,17 @@ func LogVulnerabilityWithStatus(vulnID string, targetDomain string, finding stri
 }
 
 func MarkVulnerabilityDisproven(vulnID string) error {
-	if dbInstance == nil {
-		return fmt.Errorf("database not initialized")
+	db, err := getDB()
+	if err != nil {
+		return err
 	}
 
-	_, err := dbInstance.Exec("UPDATE vuln SET status = 'disproven', severity = 'unknown' WHERE vuln_id = ?", vulnID)
+	_, err = db.Exec("UPDATE vuln SET status = 'disproven', severity = 'unknown' WHERE vuln_id = ?", vulnID)
 	return err
 }
 
 
-// GetVulnerabilities retrieves all vulnerability findings from the database
-func GetVulnerabilities() ([]VulnInfo, error) {
-	if dbInstance == nil {
-		return nil, fmt.Errorf("database not initialized")
-	}
-
-	rows, err := dbInstance.Query("SELECT id, vuln_id, date_time, target_domain, finding, test_code, exploitable, status, severity FROM vuln")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
+func scanVulnRows(rows *sql.Rows) ([]VulnInfo, error) {
 	var vulns []VulnInfo
 	for rows.Next() {
 		var v VulnInfo
@@ -369,5 +418,159 @@ func GetVulnerabilities() ([]VulnInfo, error) {
 
 		vulns = append(vulns, v)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return vulns, nil
+}
+
+// GetVulnerabilities retrieves all vulnerability findings from the database
+func GetVulnerabilities() ([]VulnInfo, error) {
+	db, err := getDB()
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := db.Query("SELECT id, vuln_id, date_time, target_domain, finding, test_code, exploitable, status, severity FROM vuln")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanVulnRows(rows)
+}
+
+// GetVulnerabilitiesByTarget retrieves vulnerability findings filtered by a specific target domain
+func GetVulnerabilitiesByTarget(targetDomain string) ([]VulnInfo, error) {
+	db, err := getDB()
+	if err != nil {
+		return nil, err
+	}
+	normalized := NormalizeURL(targetDomain)
+	rows, err := db.Query(
+		"SELECT id, vuln_id, date_time, target_domain, finding, test_code, exploitable, status, severity FROM vuln WHERE target_domain = ? OR target_domain = ?",
+		normalized, targetDomain,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanVulnRows(rows)
+}
+
+// GetVulnerabilitiesPaginated retrieves vulnerability findings with limit and offset
+func GetVulnerabilitiesPaginated(limit, offset int) ([]VulnInfo, error) {
+	db, err := getDB()
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := db.Query(
+		"SELECT id, vuln_id, date_time, target_domain, finding, test_code, exploitable, status, severity FROM vuln ORDER BY id ASC LIMIT ? OFFSET ?",
+		limit, offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanVulnRows(rows)
+}
+
+// IsPayloadExecuted checks if a specific tool payload hash was already executed
+func IsPayloadExecuted(payloadHash string) (bool, error) {
+	db, err := getDB()
+	if err != nil {
+		return false, nil
+	}
+	var count int
+	err = db.QueryRow("SELECT COUNT(1) FROM executed_payloads WHERE payload_hash = ?", payloadHash).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// RecordPayloadExecuted records a tool execution hash in the database
+func RecordPayloadExecuted(payloadHash, toolName, target string) error {
+	db, err := getDB()
+	if err != nil {
+		return nil
+	}
+	_, err = db.Exec(
+		`INSERT OR IGNORE INTO executed_payloads (payload_hash, tool_name, target, executed_at) VALUES (?, ?, ?, ?)`,
+		payloadHash, toolName, target, time.Now().UTC(),
+	)
+	return err
+}
+
+type StoredTargetState struct {
+	TargetDomain string
+	Type         string
+	CurrentPhase string
+	Score        int
+	OpenPorts    []int
+	Tokens       []string
+}
+
+// SaveTargetState persists target metadata and lifecycle phase to SQLite
+func SaveTargetState(targetDomain, targetType, currentPhase string, score int, openPorts []int, tokens []string) error {
+	db, err := getDB()
+	if err != nil {
+		return err
+	}
+	portsBytes, _ := json.Marshal(openPorts)
+	tokensBytes, _ := json.Marshal(tokens)
+	_, err = db.Exec(
+		`INSERT INTO target_state (target_domain, type, current_phase, score, open_ports, tokens, last_updated)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(target_domain) DO UPDATE SET
+			type = excluded.type,
+			current_phase = excluded.current_phase,
+			score = excluded.score,
+			open_ports = excluded.open_ports,
+			tokens = excluded.tokens,
+			last_updated = excluded.last_updated`,
+		targetDomain, targetType, currentPhase, score, string(portsBytes), string(tokensBytes), time.Now().UTC(),
+	)
+	return err
+}
+
+// LoadTargetStates loads all persisted target states from SQLite
+func LoadTargetStates() ([]StoredTargetState, error) {
+	db, err := getDB()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.Query("SELECT target_domain, type, current_phase, score, open_ports, tokens FROM target_state")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var states []StoredTargetState
+	for rows.Next() {
+		var s StoredTargetState
+		var portsStr, tokensStr string
+		if err := rows.Scan(&s.TargetDomain, &s.Type, &s.CurrentPhase, &s.Score, &portsStr, &tokensStr); err != nil {
+			return nil, err
+		}
+		if portsStr != "" {
+			_ = json.Unmarshal([]byte(portsStr), &s.OpenPorts)
+		}
+		if tokensStr != "" {
+			_ = json.Unmarshal([]byte(tokensStr), &s.Tokens)
+		}
+		states = append(states, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return states, nil
 }

@@ -60,14 +60,23 @@ func generateWithRetry(ctx context.Context, model fantasy.LanguageModel, call fa
 			return nil, ctx.Err()
 		}
 		if attempt < maxRetries {
+			errLower := strings.ToLower(err.Error())
+			isRateLimit := strings.Contains(errLower, "429") || strings.Contains(errLower, "rate limit") || strings.Contains(errLower, "quota") || strings.Contains(errLower, "resource_exhausted")
+			maxWait := 6 * time.Second
+			if isRateLimit {
+				maxWait = 30 * time.Second
+				if backoff < 2*time.Second {
+					backoff = 2 * time.Second
+				}
+			}
 			log.Warnf("LLM generation error (attempt %d/%d): %v. Retrying in %v...", attempt+1, maxRetries, err, backoff)
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			case <-time.After(backoff):
 				backoff *= 2
-				if backoff > 4*time.Second {
-					backoff = 4 * time.Second
+				if backoff > maxWait {
+					backoff = maxWait
 				}
 			}
 		}
@@ -1019,7 +1028,8 @@ func runVulnerabilityHelperSubAgent(
 				log.Errorf("Failed to marshal payload: %v", err)
 			}
 			payloadHash := fmt.Sprintf("%s|%s", tc.ToolName, string(payloadBytes))
-			if executedPayloads[payloadHash] {
+			isExec, _ := matrix.IsPayloadExecuted(payloadHash)
+			if executedPayloads[payloadHash] || isExec {
 				toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
 					ToolCallID: tc.ToolCallID,
 					Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: You have already successfully executed this tool with this exact payload in this helper run. Choose different parameters or another tool."},
@@ -1041,7 +1051,12 @@ func runVulnerabilityHelperSubAgent(
 			if hasSession && sessionID != "" {
 				sessionsToTest = []string{sessionID}
 			} else {
-				sessionsToTest = []string{"unauthenticated", "default"}
+				hasAuthContext := kg.GetCookiesForRequest("default", targetUsed) != "" || len(kg.GetCredentials()) > 0
+				if hasAuthContext && executor.IsSessionAware(tc.ToolName) {
+					sessionsToTest = []string{"unauthenticated", "default"}
+				} else {
+					sessionsToTest = []string{"unauthenticated"}
+				}
 			}
 
 			var allSummaries []string
@@ -1079,6 +1094,7 @@ func runVulnerabilityHelperSubAgent(
 					log.Debugf("Helper tool execution failed: tool=%s session=%s error=%s", tc.ToolName, sess, errStr)
 				} else {
 					executedPayloads[payloadHash] = true
+					_ = matrix.RecordPayloadExecuted(payloadHash, tc.ToolName, targetUsed)
 					if t, ok := iterPayload["target"].(string); ok && strings.TrimSpace(t) != "" {
 						kg.MarkToolExecuted(strings.TrimSpace(t), tc.ToolName)
 					}
@@ -1162,6 +1178,26 @@ func RunAgent(ctx context.Context, target string, cfg Config, onKGUpdate func(*m
 
 	if _, err := matrix.InitDB("fire_starter.db"); err != nil {
 		log.Warnf("Failed to init SQLite database: %v", err)
+	} else {
+		if storedStates, err := matrix.LoadTargetStates(); err == nil && len(storedStates) > 0 {
+			for _, st := range storedStates {
+				if st.Type == "ip" {
+					kg.AddIP(st.TargetDomain)
+				} else {
+					kg.AddURL(st.TargetDomain, st.TargetDomain)
+				}
+				for _, port := range st.OpenPorts {
+					kg.AddPort(st.TargetDomain, port)
+				}
+				for _, tok := range st.Tokens {
+					kg.AddToken(st.TargetDomain, "default", tok)
+				}
+				if st.CurrentPhase != "" {
+					kg.SetTargetPhase(st.TargetDomain, matrix.Phase(st.CurrentPhase))
+				}
+			}
+			log.Infof("Restored %d target state(s) from persistent storage.", len(storedStates))
+		}
 	}
 
 	// Populate TargetDomains whitelist from config
@@ -1583,8 +1619,9 @@ IP whitelist policy:
 					"test_code":   map[string]any{"type": "string"},
 					"exploitable": map[string]any{"type": "string", "enum": []string{"yes", "no"}},
 					"status":      map[string]any{"type": "string", "enum": []string{"confirmed", "informational"}},
+					"severity":    map[string]any{"type": "string", "enum": []string{"critical", "high", "medium", "low", "informational", "unknown"}},
 				},
-				"required": []string{"vuln_id", "target", "finding", "test_code", "exploitable", "status"},
+				"required": []string{"vuln_id", "target", "finding", "test_code", "exploitable", "status", "severity"},
 			},
 		})
 
@@ -1878,7 +1915,8 @@ IP whitelist policy:
 				log.Errorf("Failed to marshal payload: %v", err)
 			}
 			payloadHash := fmt.Sprintf("%s|%s", tc.ToolName, string(payloadBytes))
-			if executedPayloads[payloadHash] {
+			isExec, _ := matrix.IsPayloadExecuted(payloadHash)
+			if executedPayloads[payloadHash] || isExec {
 				toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
 					ToolCallID: tc.ToolCallID,
 					Output:     fantasy.ToolResultOutputContentText{Text: "TOOL_ERROR: You have already successfully executed this tool with this exact payload. Please choose a different target, a different tool, different parameters, or advance the phase."},
@@ -1902,7 +1940,12 @@ IP whitelist policy:
 			if hasSession && sessionID != "" {
 				sessionsToTest = []string{sessionID}
 			} else {
-				sessionsToTest = []string{"unauthenticated", "default"}
+				hasAuthContext := kg.GetCookiesForRequest("default", targetUsed) != "" || len(kg.GetCredentials()) > 0
+				if hasAuthContext && executor.IsSessionAware(tc.ToolName) {
+					sessionsToTest = []string{"unauthenticated", "default"}
+				} else {
+					sessionsToTest = []string{"unauthenticated"}
+				}
 			}
 
 			var allSummaries []string
@@ -1941,6 +1984,7 @@ IP whitelist policy:
 					log.Debugf("TOOL_RESULT tool=%s session=%s status=error result=%s", tc.ToolName, sess, errStr)
 				} else {
 					executedPayloads[payloadHash] = true
+					_ = matrix.RecordPayloadExecuted(payloadHash, tc.ToolName, targetUsed)
 
 					if t, ok := iterPayload["target"].(string); ok && strings.TrimSpace(t) != "" {
 						kg.MarkToolExecuted(strings.TrimSpace(t), tc.ToolName)

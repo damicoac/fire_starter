@@ -102,7 +102,7 @@ body::after {
     content: '';
     position: absolute;
     bottom: 20%;
-    right: -10%;
+    right: 0;
     width: 60%;
     height: 60%;
     background: radial-gradient(circle, rgba(99, 102, 241, 0.06) 0%, rgba(0, 0, 0, 0) 70%);
@@ -300,6 +300,34 @@ html[data-theme="light"] .hero-pill {
     align-items: center;
 }
 
+.hero-info { min-width: 0; max-width: 100%; }
+.product-note, .setup-note {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    line-height: 1.65;
+    margin: 1.25rem 0;
+}
+.setup-note { margin-top: 0; }
+.assessment-journey {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 2rem;
+}
+.assessment-journey article {
+    border-top: 2px solid var(--accent-orange);
+    padding-top: 1.25rem;
+}
+.assessment-journey h2, #example h3 {
+    color: var(--text-primary);
+    font-family: var(--font-display);
+    font-size: 1.35rem;
+    margin-bottom: 0.75rem;
+}
+.assessment-journey p, #example .coverage-card p { color: var(--text-secondary); }
+@media (max-width: 768px) {
+    .assessment-journey { grid-template-columns: 1fr; }
+}
+
 .hero-content h1 {
     font-family: var(--font-display);
     font-size: 4.5rem;
@@ -320,7 +348,7 @@ html[data-theme="light"] .hero-pill {
 
 .hero-content .subtitle {
     font-size: 1.25rem;
-    color: var(--text-muted);
+    color: var(--text-secondary);
     margin-bottom: 2rem;
     max-width: 650px;
     margin-left: auto;
@@ -331,6 +359,7 @@ html[data-theme="light"] .hero-pill {
     display: flex;
     gap: 1.25rem;
     justify-content: center;
+    flex-wrap: wrap;
 }
 
 /* Button UI */
@@ -383,6 +412,7 @@ html[data-theme="light"] .btn-secondary:hover {
 
 /* Section Header */
 section {
+    scroll-margin-top: calc(var(--nav-height) + 1rem);
     padding: 3.5rem 2rem;
     max-width: 1300px;
     margin: 0 auto;
@@ -546,6 +576,7 @@ section {
 }
 
 .report-card {
+    min-width: 0;
     background: rgba(239, 68, 68, 0.04);
     border: 1px solid rgba(239, 68, 68, 0.15);
     border-radius: 14px;
@@ -567,6 +598,7 @@ html[data-theme="light"] .report-card.db-card {
 }
 
 .report-card-title {
+    flex-wrap: wrap;
     display: flex;
     align-items: center;
     gap: 0.5rem;
@@ -742,6 +774,7 @@ html[data-theme="light"] .terminal-header {
     display: flex;
     align-items: center;
     flex-grow: 1;
+    min-width: 0;
     overflow-x: auto;
     white-space: nowrap;
     scrollbar-width: none; /* Firefox */
@@ -771,7 +804,7 @@ html[data-theme="light"] .terminal-header {
 .btn-copy-command {
     background: rgba(255, 255, 255, 0.05);
     border: 1px solid var(--border-color);
-    color: var(--text-secondary);
+    color: #cbd5e1;
     width: 32px;
     height: 32px;
     border-radius: 6px;
@@ -783,7 +816,7 @@ html[data-theme="light"] .terminal-header {
 }
 
 .btn-copy-command:hover {
-    color: var(--text-primary);
+    color: #ffffff;
     border-color: var(--border-focus);
     background: rgba(255, 255, 255, 0.1);
 }
@@ -870,6 +903,8 @@ html[data-theme="light"] footer {
 .footer-links {
     display: flex;
     gap: 2rem;
+    flex-wrap: wrap;
+    justify-content: center;
 }
 
 .footer-links a {
@@ -1305,7 +1340,7 @@ html[data-theme="light"] .workflow-step:hover .step-body {
 @media (min-width: 1024px) {
     .hero-content {
         display: grid;
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 3.5rem;
         align-items: center;
         max-width: 1300px;

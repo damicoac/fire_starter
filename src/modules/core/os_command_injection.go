@@ -96,7 +96,7 @@ func NewOSCommandInjection(target string) *OSCommandInjection {
 
 // SetCookies sets the Cookie header value for the requests.
 func (m *OSCommandInjection) SetCookies(cookies string) {
-	m.BaseModule.Cookies = cookies
+	m.BaseModule.SetCookies(cookies)
 }
 
 func (m *OSCommandInjection) SetThreads(count int) {
@@ -151,8 +151,8 @@ func (m *OSCommandInjection) Execute(ctx context.Context) ([]OSCommandInjectionR
 	}
 
 	headers := http.Header{}
-	if m.BaseModule.Cookies != "" {
-		headers.Set("Cookie", m.BaseModule.Cookies)
+	if cookies := m.BaseModule.GetCookies(); cookies != "" {
+		headers.Set("Cookie", cookies)
 	}
 
 	// Discover vectors
@@ -302,8 +302,8 @@ func (m *OSCommandInjection) sendPayload(ctx context.Context, u *url.URL, vector
 		return 0, "", nil, err
 	}
 
-	if m.BaseModule.Cookies != "" {
-		req.Header.Set("Cookie", m.BaseModule.Cookies)
+	if cookies := m.BaseModule.GetCookies(); cookies != "" {
+		req.Header.Set("Cookie", cookies)
 	}
 
 	start := time.Now()
