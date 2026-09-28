@@ -43,6 +43,27 @@ func TestExtractHostname(t *testing.T) {
 	}
 }
 
+func TestExtractTargetHost(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"127.0.0.1", "127.0.0.1"},
+		{"http://192.168.1.1:8080/test", "192.168.1.1"},
+		{"https://8.8.8.8", "8.8.8.8"},
+		{"example.com", "example.com"},
+		{"https://sub.victim.com:8443/api/v1", "sub.victim.com"},
+		{"", ""},
+	}
+
+	for _, tt := range tests {
+		got := ExtractTargetHost(tt.input)
+		if got != tt.expected {
+			t.Errorf("ExtractTargetHost(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
 func TestNewHTTPClient_IndependentCookieJars(t *testing.T) {
 	client1 := NewHTTPClient(5 * time.Second)
 	client2 := NewHTTPClient(5 * time.Second)

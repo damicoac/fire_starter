@@ -61,7 +61,7 @@ func NewSQLInjectionTesting(target string) *SQLInjectionTesting {
 
 // SetCookies sets the Cookie header value for the requests.
 func (m *SQLInjectionTesting) SetCookies(cookies string) {
-	m.BaseModule.Cookies = cookies
+	m.BaseModule.SetCookies(cookies)
 }
 
 // SetThreads sets the maximum number of concurrent threads.
@@ -292,8 +292,8 @@ func (m *SQLInjectionTesting) createRequest(ctx context.Context, u *url.URL, vec
 		return nil, err
 	}
 
-	if m.BaseModule.Cookies != "" {
-		req.Header.Set("Cookie", m.BaseModule.Cookies)
+	if cookies := m.BaseModule.GetCookies(); cookies != "" {
+		req.Header.Set("Cookie", cookies)
 	}
 
 	return req, nil

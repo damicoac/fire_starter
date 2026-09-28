@@ -329,15 +329,11 @@ func TestKnowledgeGraph_EvaluateScopeWithLLMFallbackUsesScopeFilter(t *testing.T
 
 func TestAddTestCase_PhaseFiltering(t *testing.T) {
 	// Reset the singleton database instance for testing
-	if dbInstance != nil {
-		_ = dbInstance.Close()
-	}
-	dbInstance = nil
-	dbMu = sync.Mutex{}
+	_ = CloseDB()
 
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "test_add_testcase.db")
-	_, err := InitDB(dbPath)
+	db, err := InitDB(dbPath)
 	if err != nil {
 		t.Fatalf("InitDB failed: %v", err)
 	}
@@ -352,7 +348,7 @@ func TestAddTestCase_PhaseFiltering(t *testing.T) {
 	}
 
 	// Truncate table first to ensure a clean state
-	_, err = dbInstance.Exec("DELETE FROM vuln")
+	_, err = db.Exec("DELETE FROM vuln")
 	if err != nil {
 		t.Fatalf("failed to truncate vuln table: %v", err)
 	}

@@ -67,8 +67,8 @@ func (m *HttpVerbTampering) fetchBaseline(ctx context.Context, verb string) Resp
 		return ResponseBaseline{}
 	}
 
-	if m.Cookies != "" {
-		req.Header.Set("Cookie", m.Cookies)
+	if cookies := m.GetCookies(); cookies != "" {
+		req.Header.Set("Cookie", cookies)
 	}
 	for k, v := range m.OriginalHeaders {
 		req.Header[k] = v
@@ -152,8 +152,8 @@ func (m *HttpVerbTampering) testVerb(ctx context.Context, verb string) {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	if m.Cookies != "" {
-		req.Header.Set("Cookie", m.Cookies)
+	if cookies := m.GetCookies(); cookies != "" {
+		req.Header.Set("Cookie", cookies)
 	}
 	for k, v := range m.OriginalHeaders {
 		req.Header[k] = v

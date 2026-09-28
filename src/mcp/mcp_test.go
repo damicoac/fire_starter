@@ -133,3 +133,23 @@ func TestDualMCPClientAndServer(t *testing.T) {
 		t.Errorf("expected 'vulnerabilities' array in response")
 	}
 }
+
+func TestMCPClient_ConnectionClosed(t *testing.T) {
+	serverReader, clientWriter := io.Pipe()
+	clientReader, serverWriter := io.Pipe()
+
+	client := mcp.NewMCPClient(clientReader, clientWriter)
+
+	// Close the reader simulating abrupt server termination
+	_ = serverReader.Close()
+	_ = serverWriter.Close()
+	_ = clientReader.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	_, err := client.CallMethod(ctx, "test_method", nil)
+	if err == nil {
+		t.Fatal("expected error on closed connection, got nil")
+	}
+}

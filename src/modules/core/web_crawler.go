@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -49,105 +50,145 @@ func (c *WebCrawler) Crawl(ctx context.Context) ([]string, error) {
 	var results []string
 
 	const maxCrawledPages = 150
+	maxConcurrency := c.MaxThreads
+	if maxConcurrency <= 0 {
+		maxConcurrency = 5
+	}
 
-	var crawlNode func(currentURL string, depth int)
-	crawlNode = func(currentURL string, depth int) {
+	cookies := c.BaseModule.GetCookies()
+
+	currentLevel := make([]string, 0, len(c.TargetURLs))
+	for _, u := range c.TargetURLs {
+		if !visited[u] {
+			visited[u] = true
+			currentLevel = append(currentLevel, u)
+		}
+	}
+
+	for depth := 1; depth <= c.MaxDepth && len(currentLevel) > 0; depth++ {
 		if ctx.Err() != nil {
-			return
-		}
-		if depth > c.MaxDepth {
-			return
+			break
 		}
 
-		mu.Lock()
-		if visited[currentURL] || len(results) >= maxCrawledPages {
-			mu.Unlock()
-			return
-		}
-		visited[currentURL] = true
-		mu.Unlock()
+		var nextLevel []string
+		var nextLevelMu sync.Mutex
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, currentURL, nil)
-		if err != nil {
-			return
-		}
+		sem := make(chan struct{}, maxConcurrency)
+		var wg sync.WaitGroup
 
-		if c.BaseModule.Cookies != "" {
-			req.Header.Set("Cookie", c.BaseModule.Cookies)
-		}
-
-		resp, err := c.Client.Do(req)
-		if err != nil {
-			return
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			return
-		}
-
-		// Ensure we record the successful page hit in the results
-		mu.Lock()
-		if !resultSet[currentURL] {
-			resultSet[currentURL] = true
-			results = append(results, currentURL)
-		}
-		mu.Unlock()
-
-		tokenizer := html.NewTokenizer(resp.Body)
-		var newLinks []string
-
-		for {
-			tt := tokenizer.Next()
-			if tt == html.ErrorToken {
+	LevelLoop:
+		for _, currentURL := range currentLevel {
+			if ctx.Err() != nil {
 				break
 			}
+			mu.Lock()
+			if len(results) >= maxCrawledPages {
+				mu.Unlock()
+				break
+			}
+			mu.Unlock()
 
-			if tt == html.StartTagToken || tt == html.SelfClosingTagToken {
-				t := tokenizer.Token()
-				var link string
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				break LevelLoop
+			}
 
-				switch t.Data {
-				case "a", "link":
-					link = extractAttr(t.Attr, "href")
-				case "script", "img", "iframe":
-					link = extractAttr(t.Attr, "src")
-				case "form":
-					link = extractAttr(t.Attr, "action")
+			wg.Add(1)
+			go func(targetURL string) {
+				defer wg.Done()
+				defer func() { <-sem }()
+
+				req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+				if err != nil {
+					return
 				}
 
-				if link != "" {
-					parsedLink, err := baseURL.Parse(link)
-					if err == nil {
-						// Normalize by removing fragment
-						parsedLink.Fragment = ""
-						resolved := parsedLink.String()
+				if cookies != "" {
+					req.Header.Set("Cookie", cookies)
+				}
 
-						// Check scope and do not crawl binary media assets as HTML
-						if parsedLink.Host == baseURL.Host {
-							if isStaticAsset(resolved) {
-								mu.Lock()
-								if !resultSet[resolved] {
-									resultSet[resolved] = true
-									results = append(results, resolved)
+				client := c.Client
+				if client == nil {
+					client = http.DefaultClient
+				}
+
+				resp, err := client.Do(req)
+				if err != nil {
+					return
+				}
+				defer resp.Body.Close()
+
+				if resp.StatusCode != http.StatusOK {
+					return
+				}
+
+				mu.Lock()
+				if !resultSet[targetURL] {
+					resultSet[targetURL] = true
+					results = append(results, targetURL)
+				}
+				mu.Unlock()
+
+				if depth >= c.MaxDepth {
+					return
+				}
+
+				limitReader := io.LimitReader(resp.Body, 5*1024*1024)
+				tokenizer := html.NewTokenizer(limitReader)
+				for {
+					tt := tokenizer.Next()
+					if tt == html.ErrorToken {
+						break
+					}
+
+					if tt == html.StartTagToken || tt == html.SelfClosingTagToken {
+						t := tokenizer.Token()
+						var link string
+
+						switch t.Data {
+						case "a", "link":
+							link = extractAttr(t.Attr, "href")
+						case "script", "img", "iframe":
+							link = extractAttr(t.Attr, "src")
+						case "form":
+							link = extractAttr(t.Attr, "action")
+						}
+
+						if link != "" {
+							parsedLink, err := baseURL.Parse(link)
+							if err == nil {
+								parsedLink.Fragment = ""
+								resolved := parsedLink.String()
+
+								if parsedLink.Host == baseURL.Host {
+									if isStaticAsset(resolved) {
+										mu.Lock()
+										if !resultSet[resolved] {
+											resultSet[resolved] = true
+											results = append(results, resolved)
+										}
+										mu.Unlock()
+									} else {
+										mu.Lock()
+										if !visited[resolved] && len(results) < maxCrawledPages {
+											visited[resolved] = true
+											nextLevelMu.Lock()
+											nextLevel = append(nextLevel, resolved)
+											nextLevelMu.Unlock()
+										}
+										mu.Unlock()
+									}
 								}
-								mu.Unlock()
-							} else {
-								newLinks = append(newLinks, resolved)
 							}
 						}
 					}
 				}
-			}
+			}(currentURL)
 		}
 
-		for _, link := range newLinks {
-			crawlNode(link, depth+1)
-		}
-	}
-
-	for _, startURL := range c.TargetURLs {
-		crawlNode(startURL, 1)
+		wg.Wait()
+		currentLevel = nextLevel
 	}
 
 	return results, nil
@@ -236,7 +277,7 @@ func init() {
 		return ModuleWrapper{
 			Module: crawler,
 			ExecuteFunc: func(ctx context.Context) (any, error) {
-				if len(PayloadString(payload, "urls", "")) > 0 {
+				if len(customURLs) > 0 {
 					return crawler.Crawl(ctx)
 				}
 				return crawler.ScanCommonPages(ctx)

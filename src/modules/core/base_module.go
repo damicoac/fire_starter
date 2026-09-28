@@ -78,6 +78,37 @@ func (b *BaseModule) GetBaseModule() *BaseModule {
 	return b
 }
 
+func (b *BaseModule) SetCookies(cookies string) {
+	b.Mu.Lock()
+	defer b.Mu.Unlock()
+	b.Cookies = cookies
+}
+
+func (b *BaseModule) GetCookies() string {
+	b.Mu.Lock()
+	defer b.Mu.Unlock()
+	return b.Cookies
+}
+
+func (b *BaseModule) GetPoCs() []ProofOfConcept {
+	b.PocMu.Lock()
+	defer b.PocMu.Unlock()
+	if len(b.PoCs) == 0 {
+		return nil
+	}
+	result := make([]ProofOfConcept, len(b.PoCs))
+	copy(result, b.PoCs)
+	return result
+}
+
+func (b *BaseModule) SetThreads(count int) {
+	b.Mu.Lock()
+	defer b.Mu.Unlock()
+	if count > 0 {
+		b.MaxThreads = count
+	}
+}
+
 type OOBInteraction struct {
 	ID        string
 	Protocol  string // "http" or "dns"
@@ -164,12 +195,6 @@ func (b *BaseModule) DiscoverVectors(u *url.URL, body io.Reader, contentType str
 	var bodyBytes []byte
 	var newBody io.Reader
 
-	if headers != nil {
-		b.OriginalHeaders = headers.Clone()
-	} else {
-		b.OriginalHeaders = http.Header{}
-	}
-
 	if body != nil {
 		var err error
 		bodyBytes, err = ReadBoundedBody(body, MaxResponseBodyBytes)
@@ -177,10 +202,16 @@ func (b *BaseModule) DiscoverVectors(u *url.URL, body io.Reader, contentType str
 			// Since we can't return an error, we proceed with whatever was read
 			fmt.Printf("Warning: failed to fully read request body: %v\n", err)
 		}
-		b.OriginalBody = bodyBytes
-	} else {
-		b.OriginalBody = nil
 	}
+
+	b.Mu.Lock()
+	if headers != nil {
+		b.OriginalHeaders = headers.Clone()
+	} else {
+		b.OriginalHeaders = http.Header{}
+	}
+	b.OriginalBody = bodyBytes
+	b.Mu.Unlock()
 
 	// Handle Query Parameters
 	if u != nil {
@@ -331,9 +362,21 @@ func (b *BaseModule) setJSONValue(data any, path []string, value string) (any, e
 
 // BuildRequestWithVector constructs an HTTP request injecting the payload into the specified vector.
 func (b *BaseModule) BuildRequestWithVector(ctx context.Context, method string, u *url.URL, vector InputVector, payload string) (*http.Request, error) {
-	var body io.Reader
+	b.Mu.Lock()
+	var origBody []byte
 	if len(b.OriginalBody) > 0 {
-		body = bytes.NewReader(b.OriginalBody)
+		origBody = make([]byte, len(b.OriginalBody))
+		copy(origBody, b.OriginalBody)
+	}
+	var origHeaders http.Header
+	if b.OriginalHeaders != nil {
+		origHeaders = b.OriginalHeaders.Clone()
+	}
+	b.Mu.Unlock()
+
+	var body io.Reader
+	if len(origBody) > 0 {
+		body = bytes.NewReader(origBody)
 	}
 
 	var req *http.Request
@@ -349,8 +392,8 @@ func (b *BaseModule) BuildRequestWithVector(ctx context.Context, method string, 
 
 	case VectorFormBody:
 		var values url.Values
-		if len(b.OriginalBody) > 0 {
-			values, _ = url.ParseQuery(string(b.OriginalBody))
+		if len(origBody) > 0 {
+			values, _ = url.ParseQuery(string(origBody))
 		} else {
 			values = url.Values{}
 		}
@@ -359,8 +402,8 @@ func (b *BaseModule) BuildRequestWithVector(ctx context.Context, method string, 
 
 	case VectorJSONBody:
 		var newBodyBytes []byte
-		if len(b.OriginalBody) > 0 {
-			newBodyBytes, err = b.MutateJSON(b.OriginalBody, vector.JSONPath, payload)
+		if len(origBody) > 0 {
+			newBodyBytes, err = b.MutateJSON(origBody, vector.JSONPath, payload)
 			if err != nil {
 				// fallback if mutate fails
 				bodyMap := make(map[string]any)
@@ -398,8 +441,8 @@ func (b *BaseModule) BuildRequestWithVector(ctx context.Context, method string, 
 	}
 
 	// Copy original headers
-	if b.OriginalHeaders != nil {
-		req.Header = b.OriginalHeaders.Clone()
+	if origHeaders != nil {
+		req.Header = origHeaders.Clone()
 	} else {
 		req.Header = http.Header{}
 	}
@@ -452,8 +495,9 @@ func (b *BaseModule) DiscoverReflection(ctx context.Context, u *url.URL, vector 
 		client = http.DefaultClient
 	}
 
-	if b.Cookies != "" {
-		req.Header.Set("Cookie", b.Cookies)
+	cookies := b.GetCookies()
+	if cookies != "" {
+		req.Header.Set("Cookie", cookies)
 	}
 	resp, err := client.Do(req)
 	if err != nil {

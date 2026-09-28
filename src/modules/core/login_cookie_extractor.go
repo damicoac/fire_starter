@@ -40,8 +40,8 @@ func (e *LoginCookieExtractor) Execute(ctx context.Context) ([]map[string]any, e
 		return nil, fmt.Errorf("failed to create GET request: %w", err)
 	}
 
-	if e.BaseModule.Cookies != "" {
-		reqGet.Header.Set("Cookie", e.BaseModule.Cookies)
+	if cookies := e.BaseModule.GetCookies(); cookies != "" {
+		reqGet.Header.Set("Cookie", cookies)
 	}
 
 	respGet, err := client.Do(reqGet)
@@ -101,8 +101,8 @@ func (e *LoginCookieExtractor) Execute(ctx context.Context) ([]map[string]any, e
 	}
 	reqPost.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	if e.BaseModule.Cookies != "" {
-		reqPost.Header.Set("Cookie", e.BaseModule.Cookies)
+	if cookies := e.BaseModule.GetCookies(); cookies != "" {
+		reqPost.Header.Set("Cookie", cookies)
 	}
 
 	respPost, err := client.Do(reqPost)

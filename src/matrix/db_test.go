@@ -3,18 +3,13 @@ package matrix
 import (
 	"database/sql"
 	"path/filepath"
-	"sync"
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3"
 )
 
 func resetTestDB() {
-	if dbInstance != nil {
-		_ = dbInstance.Close()
-	}
-	dbInstance = nil
-	dbMu = sync.Mutex{}
+	_ = CloseDB()
 }
 
 func TestDatabaseOperations(t *testing.T) {
@@ -196,11 +191,147 @@ func TestInitDBMigratesLegacyVulnerabilityStatuses(t *testing.T) {
 		t.Fatalf("expected legacy rows to use unknown severity, got %#v", severities)
 	}
 
-	columns, err := vulnColumnNames(dbInstance)
+	db, err := getDB()
+	if err != nil {
+		t.Fatalf("getDB failed: %v", err)
+	}
+	columns, err := vulnColumnNames(db)
 	if err != nil {
 		t.Fatalf("vulnColumnNames failed: %v", err)
 	}
 	if columns["processed"] {
 		t.Fatalf("expected processed column to be removed during migration")
+	}
+}
+
+func TestGetVulnerabilitiesByTargetAndPaginated(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "test_target_vulns.db")
+
+	resetTestDB()
+	_, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+
+	_ = LogVulnerability("v1", "http://example.com/api", "Finding 1", "poc-1", "yes")
+	_ = LogVulnerability("v2", "http://example.com/admin", "Finding 2", "poc-2", "no")
+	_ = LogVulnerability("v3", "http://other.com", "Finding 3", "poc-3", "yes")
+
+	byTarget, err := GetVulnerabilitiesByTarget("example.com")
+	if err != nil {
+		t.Fatalf("GetVulnerabilitiesByTarget failed: %v", err)
+	}
+	if len(byTarget) != 0 { // Target was http://example.com/api which normalizes to example.com/api
+		t.Logf("byTarget count for exact domain: %d", len(byTarget))
+	}
+
+	byTargetAPI, err := GetVulnerabilitiesByTarget("http://example.com/api")
+	if err != nil {
+		t.Fatalf("GetVulnerabilitiesByTarget failed: %v", err)
+	}
+	if len(byTargetAPI) != 1 || byTargetAPI[0].VulnID != "v1" {
+		t.Fatalf("Expected 1 finding for example.com/api, got %#v", byTargetAPI)
+	}
+
+	paginated, err := GetVulnerabilitiesPaginated(2, 0)
+	if err != nil {
+		t.Fatalf("GetVulnerabilitiesPaginated failed: %v", err)
+	}
+	if len(paginated) != 2 {
+		t.Fatalf("Expected 2 paginated findings, got %d", len(paginated))
+	}
+
+	page2, err := GetVulnerabilitiesPaginated(2, 2)
+	if err != nil {
+		t.Fatalf("GetVulnerabilitiesPaginated offset failed: %v", err)
+	}
+	if len(page2) != 1 {
+		t.Fatalf("Expected 1 finding on page 2, got %d", len(page2))
+	}
+}
+
+func TestPayloadIdempotency(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "test_idempotency.db")
+
+	resetTestDB()
+	_, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+
+	executed, err := IsPayloadExecuted("hash-123")
+	if err != nil {
+		t.Fatalf("IsPayloadExecuted failed: %v", err)
+	}
+	if executed {
+		t.Fatalf("Expected payload to not be executed yet")
+	}
+
+	err = RecordPayloadExecuted("hash-123", "sql_injection", "http://target.com")
+	if err != nil {
+		t.Fatalf("RecordPayloadExecuted failed: %v", err)
+	}
+
+	executed, err = IsPayloadExecuted("hash-123")
+	if err != nil {
+		t.Fatalf("IsPayloadExecuted failed: %v", err)
+	}
+	if !executed {
+		t.Fatalf("Expected payload to be marked as executed")
+	}
+
+	// Repeated record should be ignored without error
+	err = RecordPayloadExecuted("hash-123", "sql_injection", "http://target.com")
+	if err != nil {
+		t.Fatalf("Duplicate RecordPayloadExecuted failed: %v", err)
+	}
+}
+
+func TestTargetStatePersistence(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "test_target_state.db")
+
+	resetTestDB()
+	_, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+
+	err = SaveTargetState("app.example.com", "url", "scanning-enumeration", 30, []int{80, 443}, []string{"token-1", "token-2"})
+	if err != nil {
+		t.Fatalf("SaveTargetState failed: %v", err)
+	}
+
+	states, err := LoadTargetStates()
+	if err != nil {
+		t.Fatalf("LoadTargetStates failed: %v", err)
+	}
+	if len(states) != 1 {
+		t.Fatalf("Expected 1 target state, got %d", len(states))
+	}
+	s := states[0]
+	if s.TargetDomain != "app.example.com" || s.CurrentPhase != "scanning-enumeration" || s.Score != 30 {
+		t.Fatalf("Unexpected target state values: %#v", s)
+	}
+	if len(s.OpenPorts) != 2 || s.OpenPorts[0] != 80 || s.OpenPorts[1] != 443 {
+		t.Fatalf("Unexpected open ports: %#v", s.OpenPorts)
+	}
+	if len(s.Tokens) != 2 || s.Tokens[0] != "token-1" {
+		t.Fatalf("Unexpected tokens: %#v", s.Tokens)
+	}
+
+	// Update existing state
+	err = SaveTargetState("app.example.com", "url", "exploitation", 40, []int{80, 443, 8080}, []string{"token-1"})
+	if err != nil {
+		t.Fatalf("SaveTargetState update failed: %v", err)
+	}
+	states2, err := LoadTargetStates()
+	if err != nil {
+		t.Fatalf("LoadTargetStates failed: %v", err)
+	}
+	if len(states2) != 1 || states2[0].CurrentPhase != "exploitation" || len(states2[0].OpenPorts) != 3 {
+		t.Fatalf("Updated state not reflected: %#v", states2)
 	}
 }

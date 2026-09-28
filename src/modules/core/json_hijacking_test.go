@@ -3,7 +3,6 @@ package core
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"net/http"
 	"testing"
@@ -72,21 +71,4 @@ func TestJsonHijackingTest__Execute_HTTPError(t *testing.T) {
 	module := NewJsonHijackingTest("http://example.com")
 	ctx := context.Background()
 	_, _ = module.Execute(ctx)
-}
-
-func init() {
-	RegisterModule("json_hijacking_test", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
-
-		target := PayloadString(payload, "url", "http://127.0.0.1")
-		onLog(fmt.Sprintf("Starting JsonHijackingTest on: %s", target))
-
-		tester := NewJsonHijackingTest(target)
-
-		return ModuleWrapper{
-			Module: tester,
-			ExecuteFunc: func(ctx context.Context) (any, error) {
-				return tester.Execute(ctx)
-			},
-		}, nil
-	})
 }

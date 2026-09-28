@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -72,4 +73,20 @@ func (m *JsonHijackingTest) Execute(ctx context.Context) ([]JsonHijackingTestRes
 	}
 
 	return m.results, nil
+}
+
+func init() {
+	RegisterModule("json_hijacking_test", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
+		target := PayloadString(payload, "url", "http://127.0.0.1")
+		onLog(fmt.Sprintf("Starting JsonHijackingTest on: %s", target))
+
+		tester := NewJsonHijackingTest(target)
+
+		return ModuleWrapper{
+			Module: tester,
+			ExecuteFunc: func(ctx context.Context) (any, error) {
+				return tester.Execute(ctx)
+			},
+		}, nil
+	})
 }

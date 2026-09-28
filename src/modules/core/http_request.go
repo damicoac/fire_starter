@@ -48,8 +48,8 @@ func (m *HTTPRequestModule) Execute(ctx context.Context) (map[string]any, error)
 		req.Header.Set(k, v)
 	}
 
-	if m.BaseModule.Cookies != "" {
-		req.Header.Set("Cookie", m.BaseModule.Cookies)
+	if cookies := m.BaseModule.GetCookies(); cookies != "" {
+		req.Header.Set("Cookie", cookies)
 	}
 
 	resp, err := m.BaseModule.Client.Do(req)

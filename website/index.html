@@ -3,8 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Fire Starter | Open Source Autonomous Security Assessment Agent</title>
-    <meta name="description" content="An open source Go-based autonomous security assessment agent with a live terminal UI, modular checks, SQLite-backed findings, and markdown reports.">
+    <title>Fire Starter | AI Pentesting, From Target to Findings</title>
+    <meta name="description" content="Fire Starter is an open-source AI pentesting agent. Discover attack surfaces, investigate vulnerabilities, and get findings with evidence—not more tool juggling.">
+    <meta property="og:title" content="Fire Starter | AI Pentesting, From Target to Findings">
+    <meta property="og:description" content="Give Fire Starter an authorized target. It chooses security checks, investigates potential weaknesses, and produces a findings report with stored technical evidence.">
+    <meta property="og:image" content="https://damicoac.github.io/fire_starter/dashboard-preview.png">
+    <meta name="twitter:card" content="summary_large_image">
     <link rel="stylesheet" href="style.css">
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -19,10 +23,10 @@
                 <span class="logo-fire">🔥 Fire Starter</span>
             </a>
             <ul class="nav-links">
-                <li><a href="#features">Features</a></li>
-                <li><a href="#loop">Workflow</a></li>
-                <li><a href="#coverage">Coverage</a></li>
-                <li><a href="#reports">Outputs</a></li>
+                <li><a href="#features">Why Fire Starter</a></li>
+                <li><a href="#loop">How It Works</a></li>
+                <li><a href="#coverage">What It Tests</a></li>
+                <li><a href="#reports">What You Get</a></li>
                 <li><a href="#architecture">Architecture</a></li>
             </ul>
             <div class="nav-actions">
@@ -49,12 +53,17 @@
         <section class="hero-section">
             <div class="hero-pill">
                 <span class="pulse-dot"></span>
-                <span>CLI-first Go security agent</span>
+                <span>Open-source AI penetration testing</span>
             </div>
             <div class="hero-content">
                 <div class="hero-info">
-                    <h1>Autonomous<br><span class="gradient-text">Security Assessment Agent.</span></h1>
-                    <p class="subtitle">Run authorized assessments from your terminal with a live Bubble Tea UI, session cookie jar tracking, vulnerability lifecycle management, modular Go checks, and local SQLite & markdown report artifacts you can inspect end to end.</p>
+                    <h1>AI pentesting.<br><span class="gradient-text">From target to findings.</span></h1>
+                    <p class="subtitle">Fire Starter is an AI pentesting agent for web apps, APIs, and exposed services. Give it an authorized target; it discovers the attack surface, chooses security checks, and investigates potential vulnerabilities. Get a findings report and supporting evidence—without coordinating every tool by hand.</p>
+                    <div class="hero-actions">
+                        <a href="https://github.com/damicoac/fire_starter/blob/main/docs/quick_start.md" class="btn btn-primary">Run your first assessment</a>
+                        <a href="#example" class="btn btn-secondary">See how it works</a>
+                    </div>
+                    <p class="product-note">For engineers and security teams testing their own systems. Free, MIT-licensed source. Bring a local model or a hosted provider.</p>
                     
                     <div class="terminal-container">
                         <div class="terminal-header">
@@ -77,11 +86,8 @@
                             </div>
                         </div>
                     </div>
+                    <p class="setup-note">After setup: configure your model provider and approved testing scope. Example command for a local test target.</p>
 
-                    <div class="hero-actions">
-                        <a href="#features" class="btn btn-primary">Features</a>
-                        <a href="https://github.com/damicoac/fire_starter/" target="_blank" class="btn btn-secondary">Clone on GitHub</a>
-                    </div>
                 </div>
 
                 <div class="hero-dashboard-preview">
@@ -92,22 +98,28 @@
                                 <span class="window-dot yellow"></span>
                                 <span class="window-dot green"></span>
                             </div>
-                            <span class="window-title">fire_starter — live target dashboard</span>
+                            <span class="window-title">Watch the investigation as it happens</span>
                             <div class="window-dots-spacer" style="width: 42px;"></div>
                         </div>
                         <div class="window-body">
-                            <img src="dashboard-preview.png" alt="Fire Starter Terminal Dashboard" class="dashboard-img">
+                            <img src="dashboard-preview.png" alt="Fire Starter terminal showing the agent choosing tools, discovered targets, and potential findings" class="dashboard-img">
                         </div>
                     </div>
                 </div>
             </div>
         </section>
 
+        <section class="assessment-journey" aria-label="From setup to security findings">
+            <article><span class="section-tag">01 / You define the engagement</span><h2>Set the target and scope.</h2><p>Choose your model provider, approved targets, iteration limit, and test credentials where needed.</p></article>
+            <article><span class="section-tag">02 / The agent investigates</span><h2>Let the tools work together.</h2><p>Fire Starter discovers routes and services, runs relevant checks, and sends candidate weaknesses to focused helper agents.</p></article>
+            <article><span class="section-tag">03 / You review and act</span><h2>Leave with findings, not loose logs.</h2><p>Review the report, inspect the stored evidence, and decide what needs fixing or further testing.</p></article>
+        </section>
+
         <section id="features">
             <div class="section-header">
-                <span class="section-tag">Platform Features</span>
-                <h2 class="section-title">Built for local, inspectable assessments</h2>
-                <p class="section-subtitle">Fire Starter keeps orchestration, session context, evidence, and persistence inside your environment so you can validate what happened and why.</p>
+                <span class="section-tag">Less orchestration. More investigation.</span>
+                <h2 class="section-title">Security testing is more than running a scanner.</h2>
+                <p class="section-subtitle">Discovering endpoints, choosing the next check, keeping a session alive, and assembling the results all take work. Fire Starter connects those steps in one autonomous assessment workflow.</p>
             </div>
 
             <div class="features-grid">
@@ -115,61 +127,80 @@
                     <div class="feature-icon-wrapper">
                         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
                     </div>
-                    <h3>Self-hosted runtime</h3>
-                    <p>Build and run the agent locally with Go. Use hosted model providers (OpenAI, Anthropic, Gemini) or point <code>-provider local</code> at an OpenAI-compatible endpoint while keeping scanning local.</p>
+                    <h3>Stop coordinating every tool by hand.</h3>
+                    <p>The agent chooses from built-in security tools using what it has learned about the target. Discovery results feed the next checks, so you spend less time moving context between separate tools.</p>
                 </div>
                 <div class="feature-card">
                     <div class="feature-icon-wrapper">
                         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
                     </div>
-                    <h3>Vulnerability Lifecycle & Confidence</h3>
-                    <p>Track findings through explicit lifecycle states (<code>candidate</code>, <code>confirmed</code>, <code>informational</code>, <code>disproven</code>) with separate severity scoring (<code>critical</code> to <code>low</code>) and confidence validation.</p>
+                    <h3>Investigate signals before calling them findings.</h3>
+                    <p>Focused helper agents follow up on candidate weaknesses. Confirmed vulnerabilities, informational observations, and disproven leads are tracked separately so you can judge the evidence—not just an alert label.</p>
                 </div>
                 <div class="feature-card">
                     <div class="feature-icon-wrapper">
                         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg>
                     </div>
-                    <h3>Session & Cookie Jar Management</h3>
-                    <p>Automatic cookie jar tracking and bearer token extraction allow seamless session propagation across main agent workflows and focused helper sub-agents with auth retry throttling.</p>
+                    <h3>Test what sits behind the login.</h3>
+                    <p>Shared cookies and bearer tokens carry authentication context across the workflow and helper agents, supporting checks on authenticated APIs and multi-step flows instead of only the public landing page.</p>
                 </div>
                 <div class="feature-card">
                     <div class="feature-icon-wrapper">
                         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
                     </div>
-                    <h3>Dual-Pane TUI & SQLite Persistence</h3>
-                    <p>Interactive Bubble Tea TUI with log category filters (All, Errors, Agent, Modules, System), knowledge graph inspector, and durable SQLite storage in <code>fire_starter.db</code>.</p>
+                    <h3>Know what ran—and what it found.</h3>
+                    <p>Watch tool execution and discovered targets in the terminal. A completed assessment leaves a readable report and a local evidence database, giving your team both the summary and the details behind it.</p>
                 </div>
             </div>
         </section>
 
+        <section id="example">
+            <div class="section-header">
+                <span class="section-tag">A question worth testing</span>
+                <h2 class="section-title">Can one customer read another customer's records?</h2>
+                <p class="section-subtitle">Your happy-path tests can prove that an order page works. An authorization test asks whether it works for the wrong account, too.</p>
+            </div>
+            <div class="coverage-grid">
+                <article class="coverage-card">
+                    <h3>From an endpoint to a security question</h3>
+                    <p>In this illustrative scenario, discovery finds <code>/api/orders/{id}</code>. With approved test accounts and session context, the agent can probe whether changing the object ID crosses an ownership boundary.</p>
+                </article>
+                <article class="coverage-card">
+                    <h3>From a suspicious response to evidence</h3>
+                    <p>A promising signal becomes a candidate for helper-agent investigation. A response alone is not the conclusion: the workflow evaluates the result, records its status, and retains technical evidence for review.</p>
+                </article>
+            </div>
+            <p class="product-note">Illustrative workflow, not a captured assessment. Outcomes depend on the target, credentials, model, and execution limits. Fire Starter assists security review; it does not certify an application as secure.</p>
+        </section>
+
         <section id="loop">
             <div class="section-header">
-                <span class="section-tag">Autonomous Workflow</span>
-                <h2 class="section-title">A phase-aware assessment loop</h2>
-                <p class="section-subtitle">The agent scores available tools per target, updates the knowledge graph after execution, and advances through the engagement based on verified evidence.</p>
+                <span class="section-tag">What the agent does for you</span>
+                <h2 class="section-title">One investigation, from discovery to report.</h2>
+                <p class="section-subtitle">You configure the engagement. Fire Starter selects tools, carries context between phases, and investigates what it finds while you follow progress in the terminal.</p>
             </div>
 
             <div class="pipeline-layout">
                 <div class="phases-timeline">
                     <div class="timeline-step active">
-                        <h4>1. Reconnaissance</h4>
-                        <p>Bootstraps target knowledge through discovery-oriented techniques such as search, subdomain work, and initial surface mapping.</p>
+                        <h4>1. Discover where to look</h4>
+                        <p>Identify exposed hosts and services to build a picture of the target rather than testing a URL in isolation.</p>
                     </div>
                     <div class="timeline-step">
-                        <h4>2. Scanning & Surface Mapping</h4>
-                        <p>Expands context with route checks, port discovery, component version analysis, and security header checks to identify reachable attack surfaces.</p>
+                        <h4>2. Map the reachable surface</h4>
+                        <p>Discover routes, open ports, component versions, and headers that help the agent choose relevant checks.</p>
                     </div>
                     <div class="timeline-step">
-                        <h4>3. Vulnerability Analysis & Candidate Scoring</h4>
-                        <p>Probes likely weaknesses (JWT, mass assignment, SQLi, BOLA), records initial signals as <code>candidate</code> findings, and enriches session state.</p>
+                        <h4>3. Probe for weaknesses</h4>
+                        <p>Run checks for issues such as injection, broken object-level authorization, token handling, and mass assignment. Initial signals remain candidates for investigation.</p>
                     </div>
                     <div class="timeline-step">
-                        <h4>4. Helper Verification & Exploitation</h4>
-                        <p>Spawns focused helper sub-agents to validate candidates, capturing proof-of-concept evidence and promoting findings to <code>confirmed</code> or <code>informational</code> status.</p>
+                        <h4>4. Follow up on promising leads</h4>
+                        <p>Focused helper agents use the available tools and session context to investigate exploitability and refine supporting evidence.</p>
                     </div>
                     <div class="timeline-step">
-                        <h4>5. Reporting & Knowledge Graph Dump</h4>
-                        <p>Generates <code>fire_starter_report.md</code> with confirmed findings and severity metrics while storing full execution records in <code>fire_starter.db</code>.</p>
+                        <h4>5. Give your team a reviewable handoff</h4>
+                        <p>Summarize confirmed findings and informational observations in Markdown. Preserve execution logs and technical finding records in SQLite for deeper review.</p>
                     </div>
                 </div>
 
@@ -235,9 +266,9 @@
 
         <section id="coverage" class="card-glass-wrapper">
             <div class="section-header">
-                <span class="section-tag">Built-in Coverage</span>
-                <h2 class="section-title">Broad default technique set</h2>
-                <p class="section-subtitle">The repository ships with a large set of built-in Go modules across reconnaissance, analysis, exploitation, and post-exploitation workflows.</p>
+                <span class="section-tag">What it tests</span>
+                <h2 class="section-title">Look beyond the bugs your functional tests catch.</h2>
+                <p class="section-subtitle">Challenge access controls, untrusted inputs, sessions, and exposed services with built-in security checks. The agent selects techniques based on the target and available context.</p>
             </div>
 
             <div class="coverage-layout">
@@ -280,9 +311,10 @@
 
         <section id="reports">
             <div class="section-header">
-                <span class="section-tag">Local Outputs</span>
-                <h2 class="section-title">Readable reports and durable SQLite findings</h2>
-                <p class="section-subtitle">Fire Starter keeps the final narrative report separate from structured evidence, giving you a markdown handoff and SQLite-backed persistence for review workflows.</p>
+                <span class="section-tag">What you take back to the team</span>
+                <h2 class="section-title">A report to share. Evidence to investigate.</h2>
+                <p class="section-subtitle">Share the Markdown summary to explain the findings. Use the local SQLite records to inspect execution history and technical evidence. You do not have to reconstruct the investigation from terminal scrollback.</p>
+                <p class="product-note">Illustrative output below; simplified sample data, not a captured assessment or database schema reference.</p>
             </div>
 
             <div class="reports-grid">
@@ -295,7 +327,7 @@
 <pre style="background: transparent; border: none; padding: 0; color: #f8fafc;"><code style="color: #61afef;"><span style="color: #e06c75;"># Final Security Assessment Report</span>
 
 <span style="color: #c678dd;">## Executive Summary</span>
-- Authorized target coverage completed.
+- Assessment scope and observed results summarized.
 - Verified findings categorized by severity.
 
 <span style="color: #c678dd;">## Confirmed Vulnerabilities</span>
@@ -334,9 +366,10 @@
 
         <section id="architecture">
             <div class="section-header">
-                <span class="section-tag">Under the Hood</span>
-                <h2 class="section-title">Designed around registries and shared state</h2>
-                <p class="section-subtitle">The CLI entrypoint, orchestration workflow, module registry, executor, knowledge graph, SQLite persistence, and TUI are cleanly separated so contributors can extend one layer effortlessly.</p>
+                <span class="section-tag">Open source, under your control</span>
+                <h2 class="section-title">Own the workflow—not another black box.</h2>
+                <p class="section-subtitle">Inspect the source, add checks for your environment, and choose your model provider. Go modules and a shared knowledge graph connect the investigation; local files keep the results available after the run.</p>
+                <p class="product-note">Local inference can stay inside your environment. Hosted providers receive prompt context that may include assessment data. MIT-licensed code is free; hosted model usage may incur charges.</p>
             </div>
 
             <div class="tech-code-container" style="max-width: 960px; margin: 2.5rem auto 3rem;">
@@ -392,13 +425,14 @@
 
         <section class="cta-banner">
             <div class="cta-card">
-                <h2>Build, inspect, and extend</h2>
-                <p>Clone the repository, run the CLI locally, review the docs, and extend the built-in registry when you need new assessment techniques.</p>
+                <h2>Make your next assessment about findings—not tool setup.</h2>
+                <p>Start with one authorized staging target. Configure a model provider, run Fire Starter, and review the investigation and its results with your team.</p>
                 <div class="hero-actions" style="margin-top: 2rem;">
-                    <a href="https://github.com/damicoac/fire_starter/" target="_blank" class="btn btn-primary">Star on GitHub</a>
-                    <a href="#architecture" class="btn btn-secondary">Module workflow</a>
+                    <a href="https://github.com/damicoac/fire_starter/blob/main/docs/quick_start.md" class="btn btn-primary">Run your first assessment</a>
+                    <a href="https://github.com/damicoac/fire_starter/" class="btn btn-secondary">Explore the source</a>
                 </div>
             </div>
+            <p class="product-note">Requires Go 1.26.2+, a configured model provider, and permission to test the target. Active testing can affect systems: define the approved scope before running.</p>
         </section>
     </main>
 

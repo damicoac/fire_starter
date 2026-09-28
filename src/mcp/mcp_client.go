@@ -63,6 +63,14 @@ func (c *MCPClient) listenLoop() {
 	for {
 		var resp JSONRPCResponse
 		if err := decoder.Decode(&resp); err != nil {
+			c.mu.Lock()
+			for id, ch := range c.pending {
+				if ch != nil {
+					close(ch)
+				}
+				delete(c.pending, id)
+			}
+			c.mu.Unlock()
 			return
 		}
 		c.mu.Lock()
@@ -98,21 +106,24 @@ func (c *MCPClient) CallMethod(ctx context.Context, method string, params interf
 		Params:  rawParams,
 	}
 
-	respChan := make(chan *JSONRPCResponse, 1)
-	c.mu.Lock()
-	c.pending[reqID] = respChan
-	c.mu.Unlock()
-
 	reqData, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
 	}
 	reqData = append(reqData, '\n')
 
+	respChan := make(chan *JSONRPCResponse, 1)
+	c.mu.Lock()
+	c.pending[reqID] = respChan
+	c.mu.Unlock()
+
 	c.mu.Lock()
 	_, err = c.writer.Write(reqData)
 	c.mu.Unlock()
 	if err != nil {
+		c.mu.Lock()
+		delete(c.pending, reqID)
+		c.mu.Unlock()
 		return nil, err
 	}
 
@@ -122,7 +133,10 @@ func (c *MCPClient) CallMethod(ctx context.Context, method string, params interf
 		delete(c.pending, reqID)
 		c.mu.Unlock()
 		return nil, ctx.Err()
-	case resp := <-respChan:
+	case resp, ok := <-respChan:
+		if !ok || resp == nil {
+			return nil, fmt.Errorf("mcp client connection closed")
+		}
 		if resp.Error != nil {
 			return nil, fmt.Errorf("mcp error (%d): %s", resp.Error.Code, resp.Error.Message)
 		}

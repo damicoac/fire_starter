@@ -37,7 +37,7 @@ func NewCrossSiteScriptingInjection(target string) *CrossSiteScriptingInjection 
 
 // SetCookies sets the Cookie header value for the requests.
 func (m *CrossSiteScriptingInjection) SetCookies(cookies string) {
-	m.BaseModule.Cookies = cookies
+	m.BaseModule.SetCookies(cookies)
 }
 
 func (m *CrossSiteScriptingInjection) SetThreads(count int) {
@@ -80,8 +80,8 @@ func (m *CrossSiteScriptingInjection) Execute(ctx context.Context) ([]CrossSiteS
 	}
 
 	headers := http.Header{}
-	if m.BaseModule.Cookies != "" {
-		headers.Set("Cookie", m.BaseModule.Cookies)
+	if cookies := m.BaseModule.GetCookies(); cookies != "" {
+		headers.Set("Cookie", cookies)
 	}
 
 	// 1. Discover all input vectors.
@@ -145,8 +145,8 @@ func (m *CrossSiteScriptingInjection) testContextPayload(ctx context.Context, u 
 		return
 	}
 
-	if m.BaseModule.Cookies != "" {
-		req.Header.Set("Cookie", m.BaseModule.Cookies)
+	if cookies := m.BaseModule.GetCookies(); cookies != "" {
+		req.Header.Set("Cookie", cookies)
 	}
 
 	client := m.Client

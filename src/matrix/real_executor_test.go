@@ -24,7 +24,9 @@ func TestRealExecutor_OSCommandInjection(t *testing.T) {
 	defer ts.Close()
 
 	oldTransport := modules.DefaultTransport
-	modules.DefaultTransport = ts.Client().Transport
+	if ts.Client().Transport != nil {
+		modules.DefaultTransport = ts.Client().Transport
+	}
 	defer func() { modules.DefaultTransport = oldTransport }()
 
 	executor, err := NewRealExecutor([]Decision{})
@@ -191,7 +193,9 @@ func TestRealExecutor_ServerSideTemplateInjectionSsti_OOB(t *testing.T) {
 	defer ts.Close()
 
 	oldTransport := modules.DefaultTransport
-	modules.DefaultTransport = ts.Client().Transport
+	if ts.Client().Transport != nil {
+		modules.DefaultTransport = ts.Client().Transport
+	}
 	defer func() { modules.DefaultTransport = oldTransport }()
 
 	executor, err := NewRealExecutor([]Decision{})

@@ -4,14 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	modules "fire_starter/src/modules/core"
 )
 
 type RealExecutor struct {
-	registry   *ToolRegistry
-	toolByName map[string]ToolDefinition
+	registry          *ToolRegistry
+	toolByName        map[string]ToolDefinition
+	sessionAwareTools map[string]bool
 }
 
 func payloadString(payload map[string]any, key, fallback string) string {
@@ -35,10 +37,39 @@ func payloadString(payload map[string]any, key, fallback string) string {
 func NewRealExecutor(decisions []Decision) (*RealExecutor, error) {
 	registry := NewToolRegistry(decisions)
 	toolByName := make(map[string]ToolDefinition, len(decisions))
+	sessionAwareTools := make(map[string]bool, len(decisions))
+	dummyPayload := map[string]any{"target": "http://127.0.0.1", "url": "http://127.0.0.1", "ip": "127.0.0.1"}
+
 	for _, tool := range registry.ListTools() {
 		toolByName[tool.Name] = tool
+		technique := strings.ToLower(strings.TrimSpace(tool.Technique))
+
+		// Reconnaissance tools should never be treated as session aware
+		if technique == "port_scanning" || technique == "google_dorking" ||
+			technique == "subdomain_enumeration" || technique == "subdomain_takeover_analysis" {
+			sessionAwareTools[tool.Name] = false
+			continue
+		}
+
+		if factory, ok := modules.GetModuleFactory(technique); ok {
+			if mod, err := factory(dummyPayload, func(string) {}); err == nil && mod != nil {
+				underlying := mod.GetUnderlying()
+				if _, ok := underlying.(modules.SessionAware); ok {
+					sessionAwareTools[tool.Name] = true
+				} else if _, ok := underlying.(interface{ GetBaseModule() *modules.BaseModule }); ok {
+					sessionAwareTools[tool.Name] = true
+				}
+			}
+		}
 	}
-	return &RealExecutor{registry: registry, toolByName: toolByName}, nil
+	return &RealExecutor{registry: registry, toolByName: toolByName, sessionAwareTools: sessionAwareTools}, nil
+}
+
+func (e *RealExecutor) IsSessionAware(toolName string) bool {
+	if e == nil || e.sessionAwareTools == nil {
+		return false
+	}
+	return e.sessionAwareTools[toolName]
 }
 
 func (e *RealExecutor) Tools() []ToolDefinition {
@@ -112,10 +143,10 @@ func (e *RealExecutor) executeDecision(ctx context.Context, decision Decision, p
 	// Helper to inject cookies if the module supports it
 	injectCookies := func(module any) {
 		if cookiesStr != "" {
-			if baseModule, ok := module.(interface{ SetCookies(string) }); ok {
-				baseModule.SetCookies(cookiesStr)
+			if sa, ok := module.(modules.SessionAware); ok {
+				sa.SetCookies(cookiesStr)
 			} else if hasBaseModule, ok := module.(interface{ GetBaseModule() *modules.BaseModule }); ok {
-				hasBaseModule.GetBaseModule().Cookies = cookiesStr
+				hasBaseModule.GetBaseModule().SetCookies(cookiesStr)
 			}
 		}
 	}
@@ -133,20 +164,47 @@ func (e *RealExecutor) executeDecision(ctx context.Context, decision Decision, p
 
 		injectCookies(module.GetUnderlying())
 
+		// Configure thread concurrency if specified in payload and module supports it
+		if threadsVal, ok := payload["threads"]; ok {
+			var threads int
+			switch v := threadsVal.(type) {
+			case int:
+				threads = v
+			case float64:
+				threads = int(v)
+			case string:
+				threads, _ = strconv.Atoi(v)
+			}
+			if threads > 0 {
+				if tc, ok := module.GetUnderlying().(modules.ThreadConfigurable); ok {
+					tc.SetThreads(threads)
+				} else if hasBaseModule, ok := module.GetUnderlying().(interface{ GetBaseModule() *modules.BaseModule }); ok {
+					base := hasBaseModule.GetBaseModule()
+					if base != nil {
+						base.SetThreads(threads)
+					}
+				}
+			}
+		}
+
 		results, err := module.Execute(ctx)
 		if err != nil {
 			return fmt.Sprintf("%s failed: %v", technique, err), err
 		}
 		resultOutput[technique+"_results"] = results
 
-		if hasBaseModule, ok := module.GetUnderlying().(interface{ GetBaseModule() *modules.BaseModule }); ok {
+		if pp, ok := module.GetUnderlying().(modules.PoCProvider); ok {
+			pocs := pp.GetPoCs()
+			if len(pocs) > 0 {
+				resultOutput["reproduction_steps"] = pocs
+			}
+		} else if hasBaseModule, ok := module.GetUnderlying().(interface{ GetBaseModule() *modules.BaseModule }); ok {
 			base := hasBaseModule.GetBaseModule()
 			if base != nil {
-				base.PocMu.Lock()
-				if len(base.PoCs) > 0 {
-					resultOutput["reproduction_steps"] = base.PoCs
+				pocs := base.GetPoCs()
+				if len(pocs) > 0 {
+					resultOutput["reproduction_steps"] = pocs
 				}
-				base.PocMu.Unlock()
 			}
 		}
 	}

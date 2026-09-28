@@ -50,9 +50,9 @@ func (m *CorsMisconfigurationAnalysis) Execute(ctx context.Context) ([]CorsMisco
 		"null",
 	}
 
-	host := ExtractHostname(m.Target)
+	host := ExtractTargetHost(m.Target)
 	if host != "" {
-		originsToTest = append(originsToTest, "https://subdomain."+host+".evil.com")
+		originsToTest = append(originsToTest, "https://subdomain."+host+".evil.com", "https://nottrusted."+host)
 	} else {
 		originsToTest = append(originsToTest, "https://subdomain.target.com.evil.com")
 	}
@@ -88,6 +88,7 @@ func (m *CorsMisconfigurationAnalysis) Execute(ctx context.Context) ([]CorsMisco
 
 	select {
 	case <-done:
+		m.Mu.Lock()
 		if len(m.results) == 0 {
 			m.results = append(m.results, CorsMisconfigurationAnalysisResult{
 				Target: m.Target,
@@ -95,9 +96,13 @@ func (m *CorsMisconfigurationAnalysis) Execute(ctx context.Context) ([]CorsMisco
 				Detail: "No CORS misconfiguration detected. All tested malicious origins were rejected.",
 			})
 		}
-		return m.results, nil
+		res := make([]CorsMisconfigurationAnalysisResult, len(m.results))
+		copy(res, m.results)
+		m.Mu.Unlock()
+		return res, nil
 	case <-ctx.Done():
 		<-done
+		m.Mu.Lock()
 		if len(m.results) == 0 {
 			m.results = append(m.results, CorsMisconfigurationAnalysisResult{
 				Target: m.Target,
@@ -105,7 +110,10 @@ func (m *CorsMisconfigurationAnalysis) Execute(ctx context.Context) ([]CorsMisco
 				Detail: "No CORS misconfiguration detected. All tested malicious origins were rejected.",
 			})
 		}
-		return m.results, ctx.Err()
+		res := make([]CorsMisconfigurationAnalysisResult, len(m.results))
+		copy(res, m.results)
+		m.Mu.Unlock()
+		return res, ctx.Err()
 	}
 }
 
