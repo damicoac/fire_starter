@@ -518,3 +518,37 @@ func TestGenerateWithRetry(t *testing.T) {
 		t.Fatalf("expected content in response")
 	}
 }
+
+func TestEpisodicMemoryAndTokenWiring(t *testing.T) {
+	kg := matrix.NewKnowledgeGraph()
+	defer kg.Close()
+
+	// Verify token isolation per target
+	kg.AddToken("target1.com", "default", "token=target1")
+	kg.AddToken("target2.com", "default", "token=target2")
+
+	tokens1 := kg.GetTokensForTarget("target1.com")
+	if len(tokens1) != 1 || tokens1[0] != "token=target1" {
+		t.Fatalf("expected token=target1 for target1.com, got %v", tokens1)
+	}
+
+	tokensAll := kg.GetTokens()
+	if len(tokensAll) != 2 {
+		t.Fatalf("expected 2 total tokens, got %v", tokensAll)
+	}
+
+	// Verify episodic memory query
+	kg.Memory.Store(matrix.MemoryEntry{
+		Content:   "Tool: portscan | Target: target1.com | Summary: Open ports 80, 443",
+		Source:    "portscan",
+		Timestamp: time.Now(),
+	})
+
+	results := kg.Memory.Query("target1.com", 3)
+	if len(results) == 0 {
+		t.Fatalf("expected episodic memory results for target1.com, got none")
+	}
+	if !strings.Contains(results[0].Entry.Content, "Open ports 80, 443") {
+		t.Fatalf("unexpected memory query result: %s", results[0].Entry.Content)
+	}
+}

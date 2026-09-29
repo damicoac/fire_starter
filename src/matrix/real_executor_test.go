@@ -29,22 +29,22 @@ func TestRealExecutor_OSCommandInjection(t *testing.T) {
 	}
 	defer func() { modules.DefaultTransport = oldTransport }()
 
-	executor, err := NewRealExecutor([]Decision{})
-	if err != nil {
-		t.Fatalf("Failed to create RealExecutor: %v", err)
-	}
 	decision := Decision{
 		Identifier: "10",
 		Technique:  "os_command_injection",
-		Payload: map[string]any{
-			"ip":        "127.0.0.1",
-			"url":       ts.URL,
-			"threads":   10,
-			"threshold": 1,
-		},
+	}
+	executor, err := NewRealExecutor([]Decision{decision})
+	if err != nil {
+		t.Fatalf("Failed to create RealExecutor: %v", err)
+	}
+	payload := map[string]any{
+		"ip":        "127.0.0.1",
+		"url":       ts.URL,
+		"threads":   10,
+		"threshold": 1,
 	}
 
-	output, err := executor.Execute(context.Background(), decision)
+	output, err := executor.ExecuteByToolName(context.Background(), "decision_os_command_injection", payload, func(string) {})
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
@@ -91,21 +91,22 @@ func TestRealExecutor_ServerSideTemplateInjectionSsti(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	executor, err := NewRealExecutor([]Decision{})
+	decision := Decision{
+		Identifier: "ssti",
+		Technique:  "server_side_template_injection_ssti",
+	}
+	executor, err := NewRealExecutor([]Decision{decision})
 	if err != nil {
 		t.Fatalf("Failed to create RealExecutor: %v", err)
 	}
 
-	decision := Decision{
-		Technique: "server_side_template_injection_ssti",
-		Payload: map[string]any{
-			"ip":      "127.0.0.1",
-			"url":     ts.URL,
-			"threads": 10,
-		},
+	payload := map[string]any{
+		"ip":      "127.0.0.1",
+		"url":     ts.URL,
+		"threads": 10,
 	}
 
-	output, err := executor.Execute(context.Background(), decision)
+	output, err := executor.ExecuteByToolName(context.Background(), "decision_server_side_template_injection_ssti", payload, func(string) {})
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
@@ -122,21 +123,22 @@ func TestRealExecutor_PathTraversalAttack(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	executor, err := NewRealExecutor([]Decision{})
+	decision := Decision{
+		Identifier: "path_traversal",
+		Technique:  "path_traversal_attack",
+	}
+	executor, err := NewRealExecutor([]Decision{decision})
 	if err != nil {
 		t.Fatalf("Failed to create RealExecutor: %v", err)
 	}
 
-	decision := Decision{
-		Technique: "path_traversal_attack",
-		Payload: map[string]any{
-			"ip":      "127.0.0.1",
-			"url":     ts.URL,
-			"threads": 10,
-		},
+	payload := map[string]any{
+		"ip":      "127.0.0.1",
+		"url":     ts.URL,
+		"threads": 10,
 	}
 
-	output, err := executor.Execute(context.Background(), decision)
+	output, err := executor.ExecuteByToolName(context.Background(), "decision_path_traversal_attack", payload, func(string) {})
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
@@ -147,26 +149,22 @@ func TestRealExecutor_PathTraversalAttack(t *testing.T) {
 }
 
 func TestRealExecutor_TechniqueMatching(t *testing.T) {
-	executor, _ := NewRealExecutor([]Decision{})
-
-	// 'json_hijacking' vs 'json_hijacking_test'
 	decision1 := Decision{
 		Identifier: "1",
 		Technique:  "json_hijacking",
-		Payload:    map[string]any{"url": "http://127.0.0.1"},
 	}
-	output1, _ := executor.Execute(context.Background(), decision1)
+	decision2 := Decision{
+		Identifier: "2",
+		Technique:  "google_dorking",
+	}
+	executor, _ := NewRealExecutor([]Decision{decision1, decision2})
+
+	output1, _ := executor.ExecuteByToolName(context.Background(), "decision_json_hijacking", map[string]any{"url": "http://127.0.0.1"}, func(string) {})
 	if strings.Contains(output1, "JsonHijackingTest") {
 		t.Errorf("Expected json_hijacking to NOT match json_hijacking_test, but it did.")
 	}
 
-	// 'google_dorking' vs 'google_dorking_for_apis'
-	decision2 := Decision{
-		Identifier: "2",
-		Technique:  "google_dorking",
-		Payload:    map[string]any{"url": "http://127.0.0.1"},
-	}
-	output2, _ := executor.Execute(context.Background(), decision2)
+	output2, _ := executor.ExecuteByToolName(context.Background(), "decision_google_dorking", map[string]any{"url": "http://127.0.0.1"}, func(string) {})
 	if strings.Contains(output2, "GoogleDorkingForApis") {
 		t.Errorf("Expected google_dorking to NOT match google_dorking_for_apis, but it did.")
 	}
@@ -198,21 +196,22 @@ func TestRealExecutor_ServerSideTemplateInjectionSsti_OOB(t *testing.T) {
 	}
 	defer func() { modules.DefaultTransport = oldTransport }()
 
-	executor, err := NewRealExecutor([]Decision{})
+	decision := Decision{
+		Identifier: "ssti_oob",
+		Technique:  "server_side_template_injection_ssti",
+	}
+	executor, err := NewRealExecutor([]Decision{decision})
 	if err != nil {
 		t.Fatalf("Failed to create RealExecutor: %v", err)
 	}
 
-	decision := Decision{
-		Technique: "server_side_template_injection_ssti",
-		Payload: map[string]any{
-			"ip":      "127.0.0.1",
-			"url":     ts.URL + "?q=test", // Providing a vector to avoid default 3 vectors
-			"threads": 5,
-		},
+	payload := map[string]any{
+		"ip":      "127.0.0.1",
+		"url":     ts.URL + "?q=test", // Providing a vector to avoid default 3 vectors
+		"threads": 5,
 	}
 
-	output, err := executor.Execute(context.Background(), decision)
+	output, err := executor.ExecuteByToolName(context.Background(), "decision_server_side_template_injection_ssti", payload, func(string) {})
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
@@ -222,35 +221,6 @@ func TestRealExecutor_ServerSideTemplateInjectionSsti_OOB(t *testing.T) {
 	}
 }
 
-func TestRealExecutor_ExecuteReal(t *testing.T) {
-	executor, err := NewRealExecutor([]Decision{})
-	if err != nil {
-		t.Fatalf("Failed to create RealExecutor: %v", err)
-	}
-
-	// ExecuteReal
-	decision := Decision{Technique: "unknown_technique", Payload: map[string]any{"ip": "10.0.0.1"}}
-	output, err := executor.ExecuteReal(context.Background(), decision, decision.Payload, func(s string) {})
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-	if !strings.Contains(output, "unknown_technique") {
-		t.Errorf("unexpected output: %s", output)
-	}
-}
-
-func TestRealExecutor_ExecuteMissingTarget(t *testing.T) {
-	executor, err := NewRealExecutor([]Decision{})
-	if err != nil {
-		t.Fatalf("Failed to create RealExecutor: %v", err)
-	}
-
-	decision := Decision{Technique: "unknown_technique"}
-	_, err = executor.ExecuteReal(context.Background(), decision, nil, func(s string) {})
-	if err == nil {
-		t.Error("expected error for missing target")
-	}
-}
 
 func TestRealExecutor_ExecuteByToolName(t *testing.T) {
 	decisions := []Decision{

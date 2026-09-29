@@ -33,6 +33,7 @@ func main() {
 	if *mcpMode {
 		kg := matrix.NewKnowledgeGraph()
 		defer kg.Close()
+		defer matrix.CloseDB()
 
 		decisions, err := matrix.LoadDecisions("src/matrix/decisions.json")
 		if err != nil {
@@ -46,6 +47,7 @@ func main() {
 		}
 		return
 	}
+	defer matrix.CloseDB()
 
 	loadedCfg, err := agent.LoadConfig(*configPath)
 	if err != nil {

@@ -186,13 +186,6 @@ type KnowledgeSnapshot struct {
 	OpenPorts           []int
 }
 
-func (kg *KnowledgeGraph) Version() uint64 {
-	return kg.version.Load()
-}
-
-func (kg *KnowledgeGraph) IsDirty() bool {
-	return kg.version.Load() > kg.lastSentVer.Load()
-}
 
 func (kg *KnowledgeGraph) MarkClean(ver uint64) {
 	for {
@@ -268,21 +261,6 @@ func (kg *KnowledgeGraph) triggerUpdate() {
 	}
 }
 
-func (kg *KnowledgeGraph) RLock() {
-	kg.mu.RLock()
-}
-
-func (kg *KnowledgeGraph) RUnlock() {
-	kg.mu.RUnlock()
-}
-
-func (kg *KnowledgeGraph) Lock() {
-	kg.mu.Lock()
-}
-
-func (kg *KnowledgeGraph) Unlock() {
-	kg.mu.Unlock()
-}
 
 func IsZeroTarget(val string) bool {
 	if val == "0.0.0.0" || val == "::" || val == "[::]" {
@@ -390,13 +368,6 @@ func (kg *KnowledgeGraph) GetTargetsSnapshot() map[string]*Target {
 	return result
 }
 
-// HasTargetKey returns true if the exact key exists in the internal targets map.
-func (kg *KnowledgeGraph) HasTargetKey(key string) bool {
-	kg.mu.RLock()
-	defer kg.mu.RUnlock()
-	_, ok := kg.targets[key]
-	return ok
-}
 
 // GetTargetValues returns all target keys under a read lock.
 func (kg *KnowledgeGraph) GetTargetValues() []string {
@@ -501,127 +472,6 @@ type ExtractedIntelligence struct {
 	Summary         string           `json:"summary"`
 }
 
-func (kg *KnowledgeGraph) evaluateScopeWithLLM(ctx context.Context, model fantasy.LanguageModel, ips []string, urls []string) ([]string, []string) {
-	if len(ips) == 0 && len(urls) == 0 {
-		return nil, nil
-	}
-
-	fallbackAllowedIPs, fallbackAllowedURLs := kg.filterCandidatesByScope(ips, urls)
-
-	domains := kg.TargetDomains
-	if len(domains) == 0 && kg.BaseDomain != "" {
-		domains = []string{kg.BaseDomain}
-	}
-
-	// If no whitelist targets are configured at all, allow everything
-	if len(domains) == 0 {
-		return ips, urls
-	}
-
-	candidates := append([]string{}, ips...)
-	candidates = append(candidates, urls...)
-
-	type DecisionItem struct {
-		Candidate string `json:"candidate"`
-		ShouldAdd bool   `json:"should_add"`
-		Reason    string `json:"reason"`
-	}
-	type BatchDecision struct {
-		Results []DecisionItem `json:"results"`
-	}
-
-	prompt := fmt.Sprintf(`You are a security boundary guard sub-agent.
-Your task is to evaluate a list of candidate IPs and URLs/domains discovered during a red team engagement, and decide if they are related to the whitelisted targets.
-We must ONLY target/add systems that are in-scope and related.
-
-Whitelisted Targets:
-%s
-
-Candidate Targets to Evaluate:
-%s
-
-For each candidate, decide if it should be added to the knowledge graph (should_add = true) or ignored (should_add = false).
-Rules for deciding:
-1. Subdomains of a whitelisted domain are related and should be added.
-2. IPs that belong to the whitelisted domains or configured target networks are related.
-3. Common third-party domains (e.g. googleapis.com, jquery.com, cloudflare.com, bootstrapcdn.com) or external CDNs/apis should NOT be added.
-4. Unrelated IPs should NOT be added.
-5. Provide a clear, concise reason explaining your decision.
-
-Respond STRICTLY in the following JSON format:
-{
-  "results": [
-    {
-      "candidate": "candidate name",
-      "should_add": true,
-      "reason": "explanation of relationship or lack thereof"
-    }
-  ]
-}`, strings.Join(domains, ", "), strings.Join(candidates, "\n"))
-
-	msg := fantasy.NewUserMessage(prompt)
-	resp, err := model.Generate(ctx, fantasy.Call{
-		Prompt: []fantasy.Message{msg},
-	})
-	if err != nil {
-		log.Errorf("Decision agent failed to generate: %v. Falling back to default whitelisting check.", err)
-		return fallbackAllowedIPs, fallbackAllowedURLs
-	}
-
-	var rawText string
-	for _, part := range resp.Content {
-		if textPart, ok := part.(fantasy.TextContent); ok {
-			rawText += textPart.Text
-		}
-	}
-
-	rawText = strings.TrimSpace(rawText)
-	if strings.HasPrefix(rawText, "```json") {
-		rawText = strings.TrimPrefix(rawText, "```json")
-		rawText = strings.TrimSuffix(rawText, "```")
-	} else if strings.HasPrefix(rawText, "```") {
-		rawText = strings.TrimPrefix(rawText, "```")
-		rawText = strings.TrimSuffix(rawText, "```")
-	}
-	rawText = strings.TrimSpace(rawText)
-
-	var decision BatchDecision
-	if err := json.Unmarshal([]byte(rawText), &decision); err != nil {
-		log.Errorf("Decision agent returned invalid JSON: %v. Falling back to default whitelisting check.", err)
-		return fallbackAllowedIPs, fallbackAllowedURLs
-	}
-
-	shouldAddMap := make(map[string]bool)
-	for _, item := range decision.Results {
-		shouldAddMap[item.Candidate] = item.ShouldAdd
-		log.Debugf("DECISION_TO_ADD candidate=%s should_add=%v reason=%s", item.Candidate, item.ShouldAdd, item.Reason)
-	}
-
-	var allowedIPs []string
-	var allowedURLs []string
-	for _, ip := range ips {
-		if val, exists := shouldAddMap[ip]; exists {
-			if val {
-				allowedIPs = append(allowedIPs, ip)
-			}
-		} else {
-			// If not returned by LLM, default to false (safe approach)
-			log.Warnf("Decision agent omitted candidate IP: %s. Defaulting to ignore.", ip)
-		}
-	}
-	for _, u := range urls {
-		if val, exists := shouldAddMap[u]; exists {
-			if val {
-				allowedURLs = append(allowedURLs, u)
-			}
-		} else {
-			// If not returned by LLM, default to false
-			log.Warnf("Decision agent omitted candidate URL: %s. Defaulting to ignore.", u)
-		}
-	}
-
-	return allowedIPs, allowedURLs
-}
 
 func (kg *KnowledgeGraph) ExtractIntelligence(ctx context.Context, model fantasy.LanguageModel, toolName, target string, payload map[string]any, resultData string) (string, string, error) {
 	if model == nil {

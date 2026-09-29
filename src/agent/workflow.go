@@ -940,7 +940,14 @@ func runVulnerabilityHelperSubAgent(
 						}
 					}
 				case "tokens":
-					resBytes, err = json.Marshal(kg.GetTokens())
+					target, _ := qArgs["target"].(string)
+					var tokens []string
+					if target != "" {
+						tokens = kg.GetTokensForTarget(target)
+					} else {
+						tokens = kg.GetTokens()
+					}
+					resBytes, err = json.Marshal(tokens)
 					if err != nil {
 						resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
 					}
@@ -1552,6 +1559,15 @@ IP whitelist policy:
 				}
 			}
 		}
+		if kg != nil && kg.Memory != nil {
+			observations := kg.Memory.Query(currentTarget, 3)
+			if len(observations) > 0 {
+				summaryBuilder.WriteString("Recent Observations:\n")
+				for _, obs := range observations {
+					summaryBuilder.WriteString(fmt.Sprintf("- %s\n", obs.Entry.Content))
+				}
+			}
+		}
 
 		// Filter out any previous system summary messages to prevent history context accumulation
 		cleanedHistory := make([]fantasy.Message, 0, len(history))
@@ -1785,7 +1801,6 @@ IP whitelist policy:
 					})
 					continue
 				}
-				vulnID, _ := args["vuln_id"].(string)
 				targetStr, _ := args["target"].(string)
 				finding, _ := args["finding"].(string)
 				testCode, _ := args["test_code"].(string)
@@ -1794,7 +1809,7 @@ IP whitelist policy:
 				severity, _ := args["severity"].(string)
 
 				// Enforce consistent vuln_id naming convention
-				vulnID = matrix.GenerateVulnID(targetStr, finding)
+				vulnID := matrix.GenerateVulnID(targetStr, finding)
 				if validationErr := validateVulnerabilityLogInput(vulnID, targetStr, finding, testCode, exploitable, status, severity); validationErr != nil {
 					toolResultParts = append(toolResultParts, fantasy.ToolResultPart{
 						ToolCallID: tc.ToolCallID,
@@ -1860,7 +1875,14 @@ IP whitelist policy:
 						}
 					}
 				case "tokens":
-					resBytes, err = json.Marshal(kg.GetTokens())
+					target, _ := qArgs["target"].(string)
+					var tokens []string
+					if target != "" {
+						tokens = kg.GetTokensForTarget(target)
+					} else {
+						tokens = kg.GetTokens()
+					}
+					resBytes, err = json.Marshal(tokens)
 					if err != nil {
 						resBytes = []byte(fmt.Sprintf("{\"error\": \"failed to marshal result: %v\"}", err))
 					}
