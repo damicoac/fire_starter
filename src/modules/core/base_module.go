@@ -37,7 +37,6 @@ const (
 	ContextHTML      ReflectionType = "html"
 	ContextAttribute ReflectionType = "attribute"
 	ContextScript    ReflectionType = "script"
-	ContextUnknown   ReflectionType = "unknown"
 )
 
 type ReflectionContext struct {

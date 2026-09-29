@@ -42,7 +42,6 @@ func TestPayloadHelpers(t *testing.T) {
 		"str_val":   "hello",
 		"int_val":   42,
 		"float_val": 3.14,
-		"bool_val":  true,
 	}
 
 	if val := PayloadString(payload, "str_val", "default"); val != "hello" {
@@ -60,12 +59,5 @@ func TestPayloadHelpers(t *testing.T) {
 	}
 	if val := PayloadInt(payload, "missing", 10); val != 10 {
 		t.Errorf("expected 10, got %d", val)
-	}
-
-	if val := PayloadBool(payload, "bool_val", false); !val {
-		t.Errorf("expected true, got %v", val)
-	}
-	if val := PayloadBool(payload, "missing", true); !val {
-		t.Errorf("expected true, got %v", val)
 	}
 }

@@ -2,7 +2,7 @@ package matrix
 
 import "testing"
 
-func TestToolRegistry_SortsAndLooksUpByIdentifier(t *testing.T) {
+func TestToolRegistry_SortsByIdentifier(t *testing.T) {
 	decisions := []Decision{
 		{Identifier: "002", Technique: "port_scanning", UseCase: "u2", Function: "f2", ProblemTheToolSolves: "p2"},
 		{Identifier: "001", Technique: "google_dorking", UseCase: "u1", Function: "f1", ProblemTheToolSolves: "p1"},
@@ -17,16 +17,11 @@ func TestToolRegistry_SortsAndLooksUpByIdentifier(t *testing.T) {
 	if tools[0].Identifier != "001" || tools[1].Identifier != "002" {
 		t.Fatalf("expected tools sorted by identifier, got %q then %q", tools[0].Identifier, tools[1].Identifier)
 	}
-
-	tool, ok := registry.ToolForIdentifier("002")
-	if !ok {
-		t.Fatal("expected tool lookup by identifier to succeed")
+	if tools[1].Name != "decision_port_scanning" {
+		t.Fatalf("expected normalized tool name, got %q", tools[1].Name)
 	}
-	if tool.Name != "decision_port_scanning" {
-		t.Fatalf("expected normalized tool name, got %q", tool.Name)
-	}
-	if tool.Technique != "port_scanning" {
-		t.Fatalf("expected preserved technique, got %q", tool.Technique)
+	if tools[1].Technique != "port_scanning" {
+		t.Fatalf("expected preserved technique, got %q", tools[1].Technique)
 	}
 }
 

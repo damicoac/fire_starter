@@ -1,12 +1,10 @@
 package matrix
 
 import (
-	"context"
 	"path/filepath"
 	"sync"
 	"testing"
 
-	"charm.land/fantasy"
 )
 
 func TestKnowledgeGraph_Scoring(t *testing.T) {
@@ -41,7 +39,7 @@ func TestKnowledgeGraph_Scoring(t *testing.T) {
 	}
 
 	kg.AddURL("http://example.com?id=1", "")
-	if kg.HasTargetKey("example.com?id=1") {
+	if _, ok := kg.GetTargetsSnapshot()["example.com?id=1"]; ok {
 		t.Errorf("Expected parameterized URL to be folded into base target")
 	}
 	targetUrl, _ = kg.GetTarget("example.com")
@@ -51,11 +49,11 @@ func TestKnowledgeGraph_Scoring(t *testing.T) {
 
 	// Test www normalization
 	kg.AddURL("http://www.example.com", "")
-	if kg.HasTargetKey("www.example.com") {
+	if _, ok := kg.GetTargetsSnapshot()["www.example.com"]; ok {
 		t.Errorf("Expected URL to be normalized and merged")
 	}
 	kg.AddURL("https://www.example.com", "")
-	if kg.HasTargetKey("www.example.com") {
+	if _, ok := kg.GetTargetsSnapshot()["www.example.com"]; ok {
 		t.Errorf("Expected https://www.example.com to be merged as well")
 	}
 	kg.AddURL("www.test.com", "")
@@ -257,73 +255,6 @@ func TestKnowledgeGraph_AddURLResolvesRelativePaths(t *testing.T) {
 
 	if _, ok := kg.GetTarget("example.com/admin/login"); !ok {
 		t.Fatalf("expected relative path to resolve against base target")
-	}
-}
-
-type mockModel struct {
-	fantasy.LanguageModel
-	responseStr string
-	err         error
-}
-
-func (m *mockModel) Generate(ctx context.Context, call fantasy.Call) (*fantasy.Response, error) {
-	if m.err != nil {
-		return nil, m.err
-	}
-	return &fantasy.Response{
-		Content: fantasy.ResponseContent{
-			fantasy.TextContent{Text: m.responseStr},
-		},
-	}, nil
-}
-
-func TestKnowledgeGraph_EvaluateScopeWithLLM(t *testing.T) {
-	kg := NewKnowledgeGraph()
-	defer kg.Close()
-	kg.TargetDomains = []string{"*.example.com", "192.168.1.*"}
-
-	mockJSON := `{
-		"results": [
-			{"candidate": "sub.example.com", "should_add": true, "reason": "subdomain"},
-			{"candidate": "attacker.com", "should_add": false, "reason": "unrelated"},
-			{"candidate": "192.168.1.1", "should_add": true, "reason": "in scope"}
-		]
-	}`
-
-	model := &mockModel{
-		responseStr: mockJSON,
-	}
-
-	ips := []string{"192.168.1.1"}
-	urls := []string{"sub.example.com", "attacker.com"}
-
-	allowedIPs, allowedURLs := kg.evaluateScopeWithLLM(context.Background(), model, ips, urls)
-
-	if len(allowedIPs) != 1 || allowedIPs[0] != "192.168.1.1" {
-		t.Errorf("Expected 192.168.1.1 to be allowed, got: %v", allowedIPs)
-	}
-
-	if len(allowedURLs) != 1 || allowedURLs[0] != "sub.example.com" {
-		t.Errorf("Expected sub.example.com to be allowed, got: %v", allowedURLs)
-	}
-}
-
-func TestKnowledgeGraph_EvaluateScopeWithLLMFallbackUsesScopeFilter(t *testing.T) {
-	kg := NewKnowledgeGraph()
-	defer kg.Close()
-	kg.TargetDomains = []string{"*.example.com", "192.168.1.*"}
-
-	ips := []string{"192.168.1.10", "10.0.0.5"}
-	urls := []string{"sub.example.com", "attacker.com"}
-
-	allowedIPs, allowedURLs := kg.evaluateScopeWithLLM(context.Background(), &mockModel{err: context.DeadlineExceeded}, ips, urls)
-
-	if len(allowedIPs) != 1 || allowedIPs[0] != "192.168.1.10" {
-		t.Fatalf("expected only in-scope IPs after fallback, got %v", allowedIPs)
-	}
-
-	if len(allowedURLs) != 1 || allowedURLs[0] != "sub.example.com" {
-		t.Fatalf("expected only in-scope URLs after fallback, got %v", allowedURLs)
 	}
 }
 

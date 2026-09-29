@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 )
@@ -68,12 +67,6 @@ func (m *WebSocketProbing) Execute(ctx context.Context) ([]WebSocketProbingResul
 }
 
 func (m *WebSocketProbing) testWebSocket(ctx context.Context, endpoint string) {
-	testURL := m.Target + endpoint
-	if strings.HasPrefix(testURL, "https://") {
-		testURL = strings.Replace(testURL, "https://", "wss://", 1)
-	} else if strings.HasPrefix(testURL, "http://") {
-		testURL = strings.Replace(testURL, "http://", "ws://", 1)
-	}
 
 	// This is a heuristic test, we just check if it accepts websocket connections
 	// without origin validation by attempting a standard HTTP upgrade request

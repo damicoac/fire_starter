@@ -132,6 +132,19 @@ func TestDualMCPClientAndServer(t *testing.T) {
 	if _, ok := vulnsRes["vulnerabilities"]; !ok {
 		t.Errorf("expected 'vulnerabilities' array in response")
 	}
+
+	// 6b. Verify fire_starter_get_vulnerabilities with target filter
+	targetVulnsRaw, err := client.CallTool(ctx, "fire_starter_get_vulnerabilities", map[string]interface{}{"target": "example.com"})
+	if err != nil {
+		t.Fatalf("failed to call fire_starter_get_vulnerabilities with target: %v", err)
+	}
+	var targetVulnsRes map[string]interface{}
+	if err := json.Unmarshal(targetVulnsRaw, &targetVulnsRes); err != nil {
+		t.Fatalf("failed to unmarshal filtered vulns result: %v", err)
+	}
+	if _, ok := targetVulnsRes["vulnerabilities"]; !ok {
+		t.Errorf("expected 'vulnerabilities' array in response")
+	}
 }
 
 func TestMCPClient_ConnectionClosed(t *testing.T) {

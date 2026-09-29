@@ -92,35 +92,34 @@ func (s *MCPServer) registerBuiltinTools() {
 		Name:        "fire_starter_get_vulnerabilities",
 		Description: "Query confirmed and candidate vulnerability findings from assessment records",
 	}, func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+		targetFilter, _ := args["target"].(string)
+		if targetFilter != "" {
+			vulns, err := matrix.GetVulnerabilitiesByTarget(targetFilter)
+			if err != nil {
+				// When database is uninitialized, fall back to target vulnerabilities from Knowledge Graph
+				if s.kg != nil {
+					var kgVulns []string
+					if t, ok := s.kg.GetTarget(targetFilter); ok {
+						kgVulns = append(kgVulns, t.Vulnerabilities...)
+					}
+					return map[string]interface{}{"vulnerabilities": kgVulns}, nil
+				}
+				return map[string]interface{}{"vulnerabilities": []interface{}{}}, nil
+			}
+			return map[string]interface{}{"vulnerabilities": vulns}, nil
+		}
+
 		vulns, err := matrix.GetVulnerabilities()
 		if err != nil {
 			// When database is uninitialized, fall back to target vulnerabilities from Knowledge Graph
 			if s.kg != nil {
-				targetFilter, _ := args["target"].(string)
 				var kgVulns []string
-				if targetFilter != "" {
-					if t, ok := s.kg.GetTarget(targetFilter); ok {
-						kgVulns = append(kgVulns, t.Vulnerabilities...)
-					}
-				} else {
-					for _, t := range s.kg.GetTargetsSnapshot() {
-						kgVulns = append(kgVulns, t.Vulnerabilities...)
-					}
+				for _, t := range s.kg.GetTargetsSnapshot() {
+					kgVulns = append(kgVulns, t.Vulnerabilities...)
 				}
 				return map[string]interface{}{"vulnerabilities": kgVulns}, nil
 			}
 			return map[string]interface{}{"vulnerabilities": []interface{}{}}, nil
-		}
-		targetFilter, _ := args["target"].(string)
-		if targetFilter != "" {
-			targetFilter = matrix.NormalizeURL(targetFilter)
-			filtered := make([]matrix.VulnInfo, 0)
-			for _, v := range vulns {
-				if matrix.NormalizeURL(v.TargetDomain) == targetFilter {
-					filtered = append(filtered, v)
-				}
-			}
-			return map[string]interface{}{"vulnerabilities": filtered}, nil
 		}
 		return map[string]interface{}{"vulnerabilities": vulns}, nil
 	})

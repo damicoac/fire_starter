@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"time"
 )
 
 // Phase represents a professional red team engagement phase
@@ -21,11 +20,6 @@ const (
 	PhaseReporting             Phase = "reporting"
 )
 
-type RulesOfEngagement struct {
-	AllowedIPs     []string `json:"allowed_ips"`
-	BlacklistedIPs []string `json:"blacklisted_ips"`
-	AllowedDomains []string `json:"allowed_domains"`
-}
 
 type Decision struct {
 	UseCase              string         `json:"use_case"`
@@ -40,11 +34,6 @@ type DecisionData struct {
 	Decisions []Decision `json:"decisions"`
 }
 
-type ExecutionResult struct {
-	DecisionSelected Decision
-	ResultData       string
-	Timestamp        time.Time
-}
 
 type ToolDefinition struct {
 	Name        string         `json:"name"`

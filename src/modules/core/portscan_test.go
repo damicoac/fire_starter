@@ -4,7 +4,6 @@ import (
 	"context"
 	"net"
 	"testing"
-	"time"
 )
 
 func TestNewPortScanner(t *testing.T) {
@@ -21,14 +20,6 @@ func TestNewPortScanner(t *testing.T) {
 	}
 }
 
-func TestSetTimeout(t *testing.T) {
-	scanner := NewPortScanner("127.0.0.1", []int{80})
-	scanner.SetTimeout(5 * time.Second)
-
-	if scanner.Timeout != 5*time.Second {
-		t.Errorf("Expected timeout to be 5s, got %v", scanner.Timeout)
-	}
-}
 
 func TestSetThreads(t *testing.T) {
 	scanner := NewPortScanner("127.0.0.1", []int{80})
@@ -56,7 +47,6 @@ func TestPortScanner_Scan(t *testing.T) {
 	port := addr.Port
 
 	scanner := NewPortScanner("127.0.0.1", []int{port, port + 1, port + 2})
-	scanner.SetTimeout(100 * time.Millisecond)
 
 	ctx := context.Background()
 

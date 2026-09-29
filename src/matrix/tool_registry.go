@@ -7,14 +7,11 @@ import (
 )
 
 type ToolRegistry struct {
-	byIdentifier map[string]ToolDefinition
-	sortedTools  []ToolDefinition
+	sortedTools []ToolDefinition
 }
 
 func NewToolRegistry(decisions []Decision) *ToolRegistry {
-	byIdentifier := make(map[string]ToolDefinition, len(decisions))
 	tools := make([]ToolDefinition, 0, len(decisions))
-
 	for _, decision := range decisions {
 		name := toolNameFromDecision(decision)
 		description := fmt.Sprintf(
@@ -55,7 +52,6 @@ func NewToolRegistry(decisions []Decision) *ToolRegistry {
 			},
 		}
 
-		byIdentifier[decision.Identifier] = tool
 		tools = append(tools, tool)
 	}
 
@@ -64,8 +60,7 @@ func NewToolRegistry(decisions []Decision) *ToolRegistry {
 	})
 
 	return &ToolRegistry{
-		byIdentifier: byIdentifier,
-		sortedTools:  tools,
+		sortedTools: tools,
 	}
 }
 
@@ -75,10 +70,6 @@ func (r *ToolRegistry) ListTools() []ToolDefinition {
 	return result
 }
 
-func (r *ToolRegistry) ToolForIdentifier(identifier string) (ToolDefinition, bool) {
-	tool, ok := r.byIdentifier[identifier]
-	return tool, ok
-}
 
 func toolNameFromDecision(decision Decision) string {
 	normalized := strings.ToLower(decision.Technique)

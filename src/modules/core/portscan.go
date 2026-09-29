@@ -36,10 +36,6 @@ func NewPortScanner(target string, ports []int) *PortScanner {
 	}
 }
 
-// SetTimeout sets the connection timeout (default: 2s)
-func (ps *PortScanner) SetTimeout(duration time.Duration) {
-	ps.Timeout = duration
-}
 
 // SetThreads sets the number of concurrent scanning threads (default: 100)
 func (ps *PortScanner) SetThreads(count int) {

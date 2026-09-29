@@ -76,13 +76,6 @@ func (e *RealExecutor) Tools() []ToolDefinition {
 	return e.registry.ListTools()
 }
 
-func (e *RealExecutor) Execute(ctx context.Context, decision Decision) (string, error) {
-	payload := decision.Payload
-	if payload == nil {
-		payload = make(map[string]any)
-	}
-	return e.executeDecision(ctx, decision, payload, func(string) {})
-}
 
 func (e *RealExecutor) ExecuteByToolName(ctx context.Context, toolName string, payload map[string]any, onLog func(string)) (string, error) {
 	tool, ok := e.toolByName[toolName]
@@ -93,9 +86,6 @@ func (e *RealExecutor) ExecuteByToolName(ctx context.Context, toolName string, p
 	return e.executeDecision(ctx, decision, payload, onLog)
 }
 
-func (e *RealExecutor) ExecuteReal(ctx context.Context, decision Decision, payload map[string]any, onLog func(string)) (string, error) {
-	return e.executeDecision(ctx, decision, payload, onLog)
-}
 
 func (e *RealExecutor) executeDecision(ctx context.Context, decision Decision, payload map[string]any, onLog func(string)) (string, error) {
 	stage := MapTechniqueToStage(decision.Technique)
