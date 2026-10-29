@@ -198,7 +198,7 @@ func (m *WebSocketProbing) testWebSocket(ctx context.Context, endpoint string) {
 
 func init() {
 	RegisterModule("websocket_vulnerability_probing", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting WebSocketProbing on: %s", target))
 		tester := NewWebSocketProbing(target)
 		return ModuleWrapper{

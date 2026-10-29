@@ -60,3 +60,33 @@ func TestEpisodicMemory_CapBound(t *testing.T) {
 	}
 }
 
+func TestEpisodicMemory_QueryReturnsMetadataCopy(t *testing.T) {
+	mem := matrix.NewEpisodicMemory()
+
+	mem.Store(matrix.MemoryEntry{
+		ID:       "mem-meta",
+		Content:  "confirmed SQL injection on /api/users",
+		Source:   "verifier",
+		Metadata: map[string]string{"tool": "sql_injection"},
+	})
+
+	results := mem.Query("SQL injection", 5)
+	if len(results) == 0 {
+		t.Fatalf("expected query results")
+	}
+
+	// Mutating the returned Metadata map must not affect the stored entry.
+	results[0].Entry.Metadata["tool"] = "tampered"
+	results[0].Entry.Metadata["injected"] = "value"
+
+	again := mem.Query("SQL injection", 5)
+	if len(again) == 0 {
+		t.Fatalf("expected query results on second read")
+	}
+	if got := again[0].Entry.Metadata["tool"]; got != "sql_injection" {
+		t.Fatalf("stored Metadata was mutated via Query result: tool=%q", got)
+	}
+	if _, exists := again[0].Entry.Metadata["injected"]; exists {
+		t.Fatalf("stored Metadata gained a key via Query result mutation")
+	}
+}

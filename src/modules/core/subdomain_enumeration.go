@@ -218,7 +218,6 @@ func randomHexLabel() string {
 func (m *SubdomainEnumeration) addResult(detail, status string) {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
-	m.RecordPoC(nil, nil, detail)
 	m.results = append(m.results, SubdomainEnumerationResult{
 		Target: m.Target,
 		Status: status,
@@ -229,7 +228,7 @@ func (m *SubdomainEnumeration) addResult(detail, status string) {
 func init() {
 	RegisterModule("subdomain_enumeration", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting SubdomainEnumeration on: %s", target))
 
 		tester := NewSubdomainEnumeration(target)

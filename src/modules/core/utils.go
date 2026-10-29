@@ -13,7 +13,7 @@ import (
 	"golang.org/x/net/publicsuffix"
 )
 
-// NewHTTPClient returns a configured *http.Client with reasonable timeouts, insecure skip verify, and an independent CookieJar.
+// NewHTTPClient returns a configured *http.Client with reasonable timeouts and an independent CookieJar.
 var DefaultTransport http.RoundTripper = &http.Transport{
 	Proxy: http.ProxyFromEnvironment,
 	DialContext: (&net.Dialer{
@@ -26,7 +26,7 @@ var DefaultTransport http.RoundTripper = &http.Transport{
 	IdleConnTimeout:       90 * time.Second,
 	TLSHandshakeTimeout:   10 * time.Second,
 	ExpectContinueTimeout: 1 * time.Second,
-	TLSClientConfig:       &tls.Config{InsecureSkipVerify: true},
+	TLSClientConfig:       &tls.Config{InsecureSkipVerify: false},
 }
 
 // defaultTransportMu guards Get/Set of DefaultTransport so test mock swaps do
@@ -47,6 +47,29 @@ func SetDefaultTransport(rt http.RoundTripper) (restore func()) {
 	}
 }
 
+// SetTransportInsecureSkipVerify toggles TLS certificate verification on the
+// shared default transport. It rebuilds the transport (cloning the existing
+// one so all other settings are preserved) and swaps it in under the package
+// lock, so concurrent getDefaultTransport readers never observe a torn state.
+// No-op when the current transport is not an *http.Transport (e.g. a test
+// mock round-tripper installed via SetDefaultTransport).
+func SetTransportInsecureSkipVerify(insecure bool) {
+	defaultTransportMu.Lock()
+	defer defaultTransportMu.Unlock()
+	tr, ok := DefaultTransport.(*http.Transport)
+	if !ok || tr == nil {
+		return
+	}
+	cloned := tr.Clone()
+	if cloned.TLSClientConfig == nil {
+		cloned.TLSClientConfig = &tls.Config{}
+	} else {
+		cloned.TLSClientConfig = cloned.TLSClientConfig.Clone()
+	}
+	cloned.TLSClientConfig.InsecureSkipVerify = insecure
+	DefaultTransport = cloned
+}
+
 // getDefaultTransport reads DefaultTransport under the package lock.
 func getDefaultTransport() http.RoundTripper {
 	defaultTransportMu.RLock()
@@ -64,10 +87,13 @@ func NewHTTPClient(timeout time.Duration) *http.Client {
 }
 
 // EnsureHTTPPrefix ensures the target URL starts with http:// or https://.
-// Targets that already carry a scheme separator (including ftp:// or
-// uppercase HTTP://) are returned unchanged.
+// Targets that already parse as absolute URLs carrying a host (including
+// ftp:// or uppercase HTTP://) are returned unchanged. A "://" deeper in the
+// string (e.g. a query parameter like ?next=https://evil.com) does not
+// suppress prefixing, and a bare host:port form such as "127.0.0.1:8080"
+// still gets prefixed.
 func EnsureHTTPPrefix(target string) string {
-	if strings.Contains(target, "://") {
+	if parsed, err := url.Parse(target); err == nil && parsed.IsAbs() && parsed.Host != "" {
 		return target
 	}
 	return "https://" + target

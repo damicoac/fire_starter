@@ -217,7 +217,7 @@ func (m *CloudStorageFuzzing) testProbe(ctx context.Context, probe storageProbe)
 func init() {
 	RegisterModule("cloud_storage_fuzzing", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting CloudStorageFuzzing on: %s", target))
 
 		tester := NewCloudStorageFuzzing(target)

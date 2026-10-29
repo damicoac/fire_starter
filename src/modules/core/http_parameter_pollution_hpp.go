@@ -259,7 +259,7 @@ func hppConcatenationEvidence(body, originalVal, pollutedVal string) bool {
 func init() {
 	RegisterModule("http_parameter_pollution_hpp", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting HttpParameterPollutionHpp on: %s", target))
 
 		tester := NewHttpParameterPollutionHpp(target)

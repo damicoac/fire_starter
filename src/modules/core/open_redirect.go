@@ -222,7 +222,7 @@ func openRedirectCanonicalHost(host string) string {
 
 func init() {
 	RegisterModule("open_redirect_testing", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting OpenRedirect on: %s", target))
 		tester := NewOpenRedirect(target)
 		return ModuleWrapper{

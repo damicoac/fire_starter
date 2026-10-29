@@ -3,20 +3,17 @@ package matrix
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	_ "github.com/mattn/go-sqlite3"
 )
 
-func resetTestDB() {
-	_ = CloseDB()
-}
-
 func TestDatabaseOperations(t *testing.T) {
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "test_fire_starter.db")
 
-	resetTestDB()
+	ResetDBForTest()
 
 	// Initialize database
 	_, err := InitDB(dbPath)
@@ -89,7 +86,7 @@ func TestLogVulnerabilityWithStatusRejectsInvalidStatus(t *testing.T) {
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "test_fire_starter.db")
 
-	resetTestDB()
+	ResetDBForTest()
 	_, err := InitDB(dbPath)
 	if err != nil {
 		t.Fatalf("InitDB failed: %v", err)
@@ -113,7 +110,7 @@ func TestLogVulnerabilityWithStatusRejectsInvalidSeverity(t *testing.T) {
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "test_fire_starter.db")
 
-	resetTestDB()
+	ResetDBForTest()
 	_, err := InitDB(dbPath)
 	if err != nil {
 		t.Fatalf("InitDB failed: %v", err)
@@ -164,7 +161,7 @@ func TestInitDBMigratesLegacyVulnerabilityStatuses(t *testing.T) {
 		t.Fatalf("failed to close legacy DB: %v", err)
 	}
 
-	resetTestDB()
+	ResetDBForTest()
 	_, err = InitDB(dbPath)
 	if err != nil {
 		t.Fatalf("InitDB failed: %v", err)
@@ -202,13 +199,29 @@ func TestInitDBMigratesLegacyVulnerabilityStatuses(t *testing.T) {
 	if columns["processed"] {
 		t.Fatalf("expected processed column to be removed during migration")
 	}
+	if !columns["status"] || !columns["severity"] {
+		t.Fatalf("expected legacy schema to gain status and severity columns, got %v", columns)
+	}
+
+	var version int
+	if err := db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("failed to read schema version: %v", err)
+	}
+	if version != currentSchemaVersion {
+		t.Fatalf("expected legacy DB to upgrade to schema version %d, got %d", currentSchemaVersion, version)
+	}
+
+	// Re-running InitDB on the now-current DB must be a clean no-op.
+	if _, err := InitDB(dbPath); err != nil {
+		t.Fatalf("re-InitDB after legacy migration failed: %v", err)
+	}
 }
 
 func TestGetVulnerabilitiesByTargetAndPaginated(t *testing.T) {
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "test_target_vulns.db")
 
-	resetTestDB()
+	ResetDBForTest()
 	_, err := InitDB(dbPath)
 	if err != nil {
 		t.Fatalf("InitDB failed: %v", err)
@@ -255,7 +268,7 @@ func TestPayloadIdempotency(t *testing.T) {
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "test_idempotency.db")
 
-	resetTestDB()
+	ResetDBForTest()
 	_, err := InitDB(dbPath)
 	if err != nil {
 		t.Fatalf("InitDB failed: %v", err)
@@ -293,7 +306,7 @@ func TestTargetStatePersistence(t *testing.T) {
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "test_target_state.db")
 
-	resetTestDB()
+	ResetDBForTest()
 	_, err := InitDB(dbPath)
 	if err != nil {
 		t.Fatalf("InitDB failed: %v", err)
@@ -333,5 +346,52 @@ func TestTargetStatePersistence(t *testing.T) {
 	}
 	if len(states2) != 1 || states2[0].CurrentPhase != "exploitation" || len(states2[0].OpenPorts) != 3 {
 		t.Fatalf("Updated state not reflected: %#v", states2)
+	}
+}
+
+func TestInitDBSecondPathAfterInitErrors(t *testing.T) {
+	tempDir := t.TempDir()
+
+	ResetDBForTest()
+	db1, err := InitDB(filepath.Join(tempDir, "first.db"))
+	if err != nil {
+		t.Fatalf("InitDB(first) failed: %v", err)
+	}
+
+	// Same path re-initialization returns the existing connection.
+	db2, err := InitDB(filepath.Join(tempDir, "first.db"))
+	if err != nil {
+		t.Fatalf("InitDB(same path) should not error: %v", err)
+	}
+	if db2 != db1 {
+		t.Fatalf("expected identical *sql.DB handle for same-path re-initialization")
+	}
+
+	// A different path must be rejected instead of silently reusing the first DB.
+	_, err = InitDB(filepath.Join(tempDir, "second.db"))
+	if err == nil {
+		t.Fatalf("expected error when initializing with a different path after initialization")
+	}
+	if !strings.Contains(err.Error(), "already initialized") {
+		t.Fatalf("expected re-initialization error, got: %v", err)
+	}
+}
+
+func TestInitDBRecordsSchemaVersion(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "versioned.db")
+
+	ResetDBForTest()
+	db, err := InitDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+
+	var version int
+	if err := db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("failed to read schema version: %v", err)
+	}
+	if version != currentSchemaVersion {
+		t.Fatalf("expected schema version %d, got %d", currentSchemaVersion, version)
 	}
 }

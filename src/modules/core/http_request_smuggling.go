@@ -272,8 +272,6 @@ func (m *HTTPRequestSmuggling) runDesyncProbe(ctx context.Context, target *url.U
 	defer m.Mu.Unlock()
 	switch {
 	case timeouts == repeats:
-		m.RecordPoC(nil, []byte(fmt.Sprintf("Content-Length: %s / Transfer-Encoding: chunked / body %q", contentLength, body)),
-			fmt.Sprintf("%s HTTP Request Smuggling reproducible desync at: %s", variant, m.Target))
 		m.results = append(m.results, HTTPRequestSmugglingResult{
 			Target: m.Target,
 			Status: "vulnerable",
@@ -305,7 +303,7 @@ func (m *HTTPRequestSmuggling) runDesyncProbe(ctx context.Context, target *url.U
 
 func init() {
 	RegisterModule("http_request_smuggling_testing", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting HTTPRequestSmuggling on: %s", target))
 		tester := NewHTTPRequestSmuggling(target)
 		return ModuleWrapper{

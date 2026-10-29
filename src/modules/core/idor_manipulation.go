@@ -251,7 +251,7 @@ func (m *IDORManipulation) testPayload(ctx context.Context, u *url.URL, payload 
 func init() {
 	RegisterModule("idor_manipulation", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting IDORManipulation on: %s", target))
 
 		tester := NewIDORManipulation(target)

@@ -250,7 +250,7 @@ func (e *LoginCookieExtractor) Execute(ctx context.Context) ([]map[string]any, e
 func init() {
 	RegisterModule("login_cookie_extractor", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		username, _ := payload["username"].(string)
 		password, _ := payload["password"].(string)
 

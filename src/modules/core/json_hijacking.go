@@ -111,7 +111,7 @@ func (m *JsonHijackingTest) Execute(ctx context.Context) ([]JsonHijackingTestRes
 
 func init() {
 	RegisterModule("json_hijacking_test", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting JsonHijackingTest on: %s", target))
 
 		tester := NewJsonHijackingTest(target)

@@ -177,7 +177,10 @@ func (m *OSCommandInjection) Execute(ctx context.Context) ([]OSCommandInjectionR
 	}
 
 	// Discover vectors
-	vectors, _ := m.DiscoverVectors(parsedURL, nil, "", headers)
+	vectors, _, err := m.DiscoverVectors(parsedURL, nil, "", headers)
+	if err != nil {
+		return nil, err
+	}
 
 	// sendPayload supports query, form, and JSON vectors only: exclude header
 	// and path-segment vectors instead of generating swallowed errors.
@@ -302,7 +305,10 @@ func (m *OSCommandInjection) measureBaseline(ctx context.Context, u *url.URL) (t
 func (m *OSCommandInjection) vectorBaseline(ctx context.Context, u *url.URL, vector InputVector) (string, bool) {
 	cacheKey := string(vector.Type) + ":" + vector.Key
 	if cached, ok := m.baselines.Load(cacheKey); ok {
-		return cached.(string), true
+		if s, ok := cached.(string); ok {
+			return s, true
+		}
+		return "", false
 	}
 	_, body, _, err := m.sendPayload(ctx, u, vector, osCanarySuffix)
 	if err != nil {
@@ -505,7 +511,7 @@ func (m *OSCommandInjection) sendPayload(ctx context.Context, u *url.URL, vector
 func init() {
 	RegisterModule("os_command_injection", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting OSCommandInjection on: %s", target))
 
 		tester := NewOSCommandInjection(target)

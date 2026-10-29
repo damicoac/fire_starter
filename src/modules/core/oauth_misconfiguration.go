@@ -413,7 +413,7 @@ func (m *OAuthMisconfiguration) testOAuthState(ctx context.Context, endpoint str
 
 func init() {
 	RegisterModule("oauth_misconfiguration_testing", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting OAuthMisconfiguration on: %s", target))
 		tester := NewOAuthMisconfiguration(target)
 		return ModuleWrapper{

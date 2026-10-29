@@ -149,7 +149,7 @@ func (m *UnrestrictedFileUpload) testUpload(ctx context.Context, endpoint, filen
 
 func init() {
 	RegisterModule("unrestricted_file_upload_analysis", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting UnrestrictedFileUploadAnalysis on: %s", target))
 		tester := NewUnrestrictedFileUpload(target)
 		return ModuleWrapper{

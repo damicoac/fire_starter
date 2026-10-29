@@ -269,7 +269,7 @@ func (m *CorsMisconfigurationAnalysis) testOrigin(ctx context.Context, origin st
 func init() {
 	RegisterModule("cors_misconfiguration_analysis", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting CorsMisconfigurationAnalysis on: %s", target))
 
 		tester := NewCorsMisconfigurationAnalysis(target)

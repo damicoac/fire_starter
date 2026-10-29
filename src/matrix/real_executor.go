@@ -14,6 +14,7 @@ type RealExecutor struct {
 	registry          *ToolRegistry
 	toolByName        map[string]ToolDefinition
 	sessionAwareTools map[string]bool
+	oobPublicHost     string
 }
 
 func payloadString(payload map[string]any, key, fallback string) string {
@@ -76,19 +77,32 @@ func (e *RealExecutor) Tools() []ToolDefinition {
 	return e.registry.ListTools()
 }
 
+// SetOOBPublicHost configures the externally reachable out-of-band callback
+// host that is injected into module payloads as "oob_host" before factory
+// lookup. An empty value (the default) keeps the loopback-safe OOB behavior.
+func (e *RealExecutor) SetOOBPublicHost(host string) {
+	e.oobPublicHost = strings.TrimSpace(host)
+}
 
 func (e *RealExecutor) ExecuteByToolName(ctx context.Context, toolName string, payload map[string]any, onLog func(string)) (string, error) {
 	tool, ok := e.toolByName[toolName]
 	if !ok {
 		return "", fmt.Errorf("tool %s not found", toolName)
 	}
-	decision := Decision{Identifier: tool.Identifier, Technique: tool.Technique}
+	if e.oobPublicHost != "" {
+		if payload == nil {
+			payload = make(map[string]any)
+		}
+		if _, ok := payload["oob_host"]; !ok {
+			payload["oob_host"] = e.oobPublicHost
+		}
+	}
+	decision := Decision{Identifier: tool.Identifier, Technique: tool.Technique, Phase: tool.Phase}
 	return e.executeDecision(ctx, decision, payload, onLog)
 }
 
-
 func (e *RealExecutor) executeDecision(ctx context.Context, decision Decision, payload map[string]any, onLog func(string)) (string, error) {
-	stage := MapTechniqueToStage(decision.Technique)
+	stage := decisionPhase(decision.Phase)
 	onLog(fmt.Sprintf("Mapped decision technique '%s' to node stage '%s'", decision.Technique, stage))
 
 	if payload == nil {
@@ -108,7 +122,7 @@ func (e *RealExecutor) executeDecision(ctx context.Context, decision Decision, p
 	cookiesStr := payloadString(payload, "cookies", "")
 
 	if ipStr == "" && urlStr == "" {
-		return "", fmt.Errorf("target IP address or URL is required")
+		return "", fmt.Errorf(`{"error":"payload missing target url/ip"}`)
 	}
 
 	// Cross-populate
@@ -145,7 +159,7 @@ func (e *RealExecutor) executeDecision(ctx context.Context, decision Decision, p
 
 	factory, ok := modules.GetModuleFactory(technique)
 	if !ok {
-		onLog("No matching technique found for execution.")
+		return fmt.Sprintf(`{"error":"unknown technique %s"}`, technique), fmt.Errorf("unknown technique %s", technique)
 	} else {
 		module, err := factory(payload, onLog)
 		if err != nil {
@@ -209,23 +223,35 @@ func (e *RealExecutor) executeDecision(ctx context.Context, decision Decision, p
 	return string(jsonData), nil
 }
 
-func MapTechniqueToStage(technique string) string {
-	t := strings.ToLower(technique)
-
-	switch {
-	case strings.Contains(t, "google_dorking") || strings.Contains(t, "subdomain_enumeration") || strings.Contains(t, "subdomain_takeover"):
-		return string(PhaseReconnaissance)
-	case strings.Contains(t, "port_scanning") || strings.Contains(t, "error_message"):
-		return string(PhaseScanning)
-	case strings.Contains(t, "component_version_analyzer") || strings.Contains(t, "idor") || strings.Contains(t, "broken_object_level_authorization") || strings.Contains(t, "broken_function_level_authorization") || strings.Contains(t, "ssrf") || strings.Contains(t, "xml_external_entity") || strings.Contains(t, "server_side_template_injection") || strings.Contains(t, "insecure_deserialization") || strings.Contains(t, "ssi_injection") || strings.Contains(t, "http_verb_tampering") || strings.Contains(t, "security_headers") || strings.Contains(t, "websocket_vulnerability"):
-		return string(PhaseVulnerabilityAnalysis)
-	case strings.Contains(t, "sql_injection") || strings.Contains(t, "nosql_injection") || strings.Contains(t, "os_command_injection") || strings.Contains(t, "ldap_injection") || strings.Contains(t, "xpath_injection") || strings.Contains(t, "cross_site_scripting") || strings.Contains(t, "dom_based_xss") || strings.Contains(t, "csrf") || strings.Contains(t, "session_fixation") || strings.Contains(t, "jwt") || strings.Contains(t, "saml") || strings.Contains(t, "cors_misconfiguration") || strings.Contains(t, "race_condition") || strings.Contains(t, "mass_assignment") || strings.Contains(t, "http_parameter_pollution") || strings.Contains(t, "crlf_injection") || strings.Contains(t, "path_traversal") || strings.Contains(t, "json_hijacking") || strings.Contains(t, "unrestricted_file_upload") || strings.Contains(t, "oauth_misconfiguration") || strings.Contains(t, "mfa_bypass") || strings.Contains(t, "open_redirect") || strings.Contains(t, "http_request_smuggling") || strings.Contains(t, "business_logic_bypass") || strings.Contains(t, "graphql_advanced"):
-		return string(PhaseExploitation)
-	case strings.Contains(t, "rate_limit") || strings.Contains(t, "threat_monitoring"):
-		return string(PhaseVulnerabilityAnalysis)
-	case strings.Contains(t, "local_privilege_escalation") || strings.Contains(t, "ssh_pivot"):
-		return string(PhasePostExploitation)
+// decisionPhase resolves the engagement phase for a decision from its
+// declared phase, falling back to reconnaissance for unknown or empty values.
+func decisionPhase(phase string) string {
+	switch Phase(phase) {
+	case PhasePreEngagement, PhaseReconnaissance, PhaseScanning, PhaseVulnerabilityAnalysis,
+		PhaseExploitation, PhasePostExploitation, PhaseReporting:
+		return phase
 	default:
 		return string(PhaseReconnaissance)
 	}
+}
+
+// RegisteredTechniques returns the set of technique names this executor can
+// actually run (as declared in its decisions, matching modules registered in
+// src/modules/core). Callers use it to detect catalog drift between
+// decisions.json entries and RegisterModule'd modules in both directions:
+//
+//	registered := modules.RegisteredModuleTechniques()
+//	declared := executor.RegisteredTechniques()
+//	for _, m := range registered {
+//	    if !declared[m] { ... decision missing for registered module ... }
+//	}
+//	for m := range declared {
+//	    if _, ok := modules.GetModuleFactory(m); !ok { ... module missing for decision ... }
+//	}
+func (e *RealExecutor) RegisteredTechniques() map[string]bool {
+	out := make(map[string]bool, len(e.toolByName))
+	for _, tool := range e.toolByName {
+		out[strings.ToLower(strings.TrimSpace(tool.Technique))] = true
+	}
+	return out
 }

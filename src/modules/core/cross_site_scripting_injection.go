@@ -215,7 +215,10 @@ func (m *CrossSiteScriptingInjection) Execute(ctx context.Context) ([]CrossSiteS
 	}
 
 	// 1. Discover all input vectors.
-	vectors, _ := m.DiscoverVectors(parsedURL, nil, "", headers)
+	vectors, _, err := m.DiscoverVectors(parsedURL, nil, "", headers)
+	if err != nil {
+		return m.results, err
+	}
 	if len(vectors) == 0 {
 		vectors = append(vectors,
 			InputVector{Type: VectorQueryParam, Key: "q", Value: ""},
@@ -316,7 +319,7 @@ func (m *CrossSiteScriptingInjection) testContextPayload(ctx context.Context, u 
 
 	client := m.Client
 	if client == nil {
-		client = http.DefaultClient
+		client = &http.Client{Timeout: 10 * time.Second}
 	}
 
 	resp, err := client.Do(req)
@@ -370,7 +373,7 @@ func (m *CrossSiteScriptingInjection) testContextPayload(ctx context.Context, u 
 func init() {
 	RegisterModule("cross_site_scripting_injection", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting CrossSiteScriptingInjection on: %s", target))
 
 		tester := NewCrossSiteScriptingInjection(target)

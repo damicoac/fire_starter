@@ -1,10 +1,11 @@
 package matrix
 
 import (
+	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
-
 )
 
 func TestKnowledgeGraph_Scoring(t *testing.T) {
@@ -101,10 +102,14 @@ func TestKnowledgeGraph_GetTokensForTarget(t *testing.T) {
 		t.Errorf("Expected sub.example.com tokens NOT to contain cookie_other, got %v", tokensSub)
 	}
 
-	// Test 3: parent domain retrieval (should get sub.example.com tokens as well because they share domain scope)
+	// Test 3: parent domain retrieval (must NOT inherit sub.example.com cookies —
+	// cookie scoping only flows from cookie domain down to its subdomains)
 	tokensParent := kg.GetTokensForTarget("example.com")
-	if !contains(tokensParent, "cookie_example=1") || !contains(tokensParent, "cookie_sub=1") {
-		t.Errorf("Expected example.com tokens to contain both cookie_example and cookie_sub, got %v", tokensParent)
+	if !contains(tokensParent, "cookie_example=1") {
+		t.Errorf("Expected example.com tokens to contain cookie_example, got %v", tokensParent)
+	}
+	if contains(tokensParent, "cookie_sub=1") {
+		t.Errorf("Expected example.com tokens NOT to contain cookie_sub (sub.example.com cookie must not leak to parent domain), got %v", tokensParent)
 	}
 
 	// Test 4: unrelated domain isolation
@@ -422,3 +427,175 @@ func TestKnowledgeGraph_ConcurrentAddURLAndToJSON(t *testing.T) {
 	wg.Wait()
 }
 
+func TestToRedactedJSON_HidesSecrets(t *testing.T) {
+	kg := NewKnowledgeGraph()
+	defer kg.Close()
+
+	kg.AddCredential("http://example.com", "admin", "s3cret")
+	kg.AddToken("http://example.com", "sess1", "Authorization: Bearer tok_aaa111")
+	kg.AddToken("http://example.com", "sess1", "Cookie: session=cook_secret42")
+	kg.AddIP("192.168.1.1")
+	kg.AddTestCase(TestCase{
+		VulnID:     "V-1",
+		ToolName:   "decision_sql_injection",
+		Target:     "http://example.com",
+		Payload:    "user=admin' OR 1=1--&password=s3cret",
+		ResultData: "HTTP 200 Set-Cookie: session=cook_secret42; raw header: Authorization: Bearer tok_aaa111",
+		PoCs: []ProofOfConcept{{
+			Description: "login bypass",
+			Request:     "curl -H 'Authorization: Bearer tok_aaa111' -d 'password=s3cret' http://example.com/login",
+		}},
+	})
+
+	redacted, err := kg.ToRedactedJSON("")
+	if err != nil {
+		t.Fatalf("ToRedactedJSON: %v", err)
+	}
+	red := string(redacted)
+	for _, secret := range []string{"s3cret", "tok_aaa111"} {
+		if strings.Contains(red, secret) {
+			t.Errorf("redacted JSON leaks secret %q", secret)
+		}
+	}
+	for _, kept := range []string{"admin", "REDACTED", "example.com", "192.168.1.1"} {
+		if !strings.Contains(red, kept) {
+			t.Errorf("redacted JSON missing expected content %q", kept)
+		}
+	}
+
+	// ToJSON must still contain the raw secrets (redaction is opt-in).
+	raw, err := kg.ToJSON("")
+	if err != nil {
+		t.Fatalf("ToJSON: %v", err)
+	}
+	for _, secret := range []string{"s3cret", "tok_aaa111"} {
+		if !strings.Contains(string(raw), secret) {
+			t.Errorf("ToJSON lost secret %q", secret)
+		}
+	}
+}
+
+func TestKnowledgeGraph_CookieDomainScoping(t *testing.T) {
+	kg := NewKnowledgeGraph()
+	defer kg.Close()
+
+	kg.AddToken("sub.example.com", "default", "sub_session=SUBVAL")
+	kg.AddToken("example.com", "default", "base_session=BASEVAL")
+	kg.AddToken("192.168.1.1", "default", "ip_session=IPVAL")
+
+	// want: cookie name=value pairs that MUST be present.
+	// forbidden: cookie name=value pairs that MUST NOT be present.
+	tests := []struct {
+		name      string
+		targetURL string
+		want      []string
+		forbidden []string
+	}{
+		{
+			// A cookie set for sub.example.com must NOT leak to the parent domain.
+			name:      "parent domain does not inherit subdomain cookie",
+			targetURL: "https://example.com/login",
+			want:      []string{"base_session=BASEVAL"},
+			forbidden: []string{"sub_session=SUBVAL"},
+		},
+		{
+			// A cookie set for example.com applies to its subdomains
+			// (request domain is a subdomain of the cookie domain).
+			name:      "subdomain inherits parent cookie",
+			targetURL: "https://sub.example.com/login",
+			want:      []string{"sub_session=SUBVAL", "base_session=BASEVAL"},
+		},
+		{
+			// A cookie set for sub.example.com IS returned for deeper subdomains.
+			name:      "deep subdomain inherits subdomain cookie",
+			targetURL: "https://a.sub.example.com/login",
+			want:      []string{"sub_session=SUBVAL", "base_session=BASEVAL"},
+		},
+		{
+			name:      "unrelated domain isolated",
+			targetURL: "https://other.com/",
+			forbidden: []string{"sub_session=SUBVAL", "base_session=BASEVAL", "ip_session=IPVAL"},
+		},
+		{
+			// IP cookies match exactly, never by suffix.
+			name:      "ip exact match",
+			targetURL: "https://192.168.1.1/x",
+			want:      []string{"ip_session=IPVAL"},
+			forbidden: []string{"sub_session=SUBVAL", "base_session=BASEVAL"},
+		},
+		{
+			name:      "ip different host",
+			targetURL: "https://192.168.1.2/x",
+			forbidden: []string{"ip_session=IPVAL", "sub_session=SUBVAL", "base_session=BASEVAL"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := kg.GetCookiesForRequest("default", tt.targetURL)
+			for _, want := range tt.want {
+				if !strings.Contains(got, want) {
+					t.Fatalf("GetCookiesForRequest(%q) = %q, want it to contain %q", tt.targetURL, got, want)
+				}
+			}
+			for _, forbidden := range tt.forbidden {
+				if strings.Contains(got, forbidden) {
+					t.Fatalf("GetCookiesForRequest(%q) = %q unexpectedly contains %q", tt.targetURL, got, forbidden)
+				}
+			}
+		})
+	}
+}
+
+func TestKnowledgeGraph_CookieDomainLeadingDot(t *testing.T) {
+	kg := NewKnowledgeGraph()
+	defer kg.Close()
+
+	// Set-Cookie attribute style stores the domain with a leading dot.
+	kg.AddToken("sub.example.com", "default", "sid=DOTVAL; domain=.example.com")
+
+	// Subdomains of the cookie domain match.
+	if got := kg.GetCookiesForRequest("default", "https://other.example.com/path"); !strings.Contains(got, "sid=DOTVAL") {
+		t.Errorf("dotted-domain cookie should match subdomain, got %q", got)
+	}
+	// The cookie domain itself matches.
+	if got := kg.GetCookiesForRequest("default", "https://example.com/"); !strings.Contains(got, "sid=DOTVAL") {
+		t.Errorf("dotted-domain cookie should match parent domain, got %q", got)
+	}
+	// Unrelated hosts and suffix look-alikes never match.
+	if got := kg.GetCookiesForRequest("default", "https://notexample.com/"); strings.Contains(got, "sid=DOTVAL") {
+		t.Errorf("dotted-domain cookie must not match look-alike host, got %q", got)
+	}
+}
+
+func TestKnowledgeGraph_SetOnUpdateConcurrentWithMutations(t *testing.T) {
+	kg := NewKnowledgeGraph()
+	defer kg.Close()
+	kg.TargetDomains = []string{"example.com", "*.example.com"}
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	// Concurrent SetOnUpdate calls race with the unsynchronized debounce read
+	// unless guarded; run under -race to prove the guard.
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			kg.SetOnUpdate(func(*KnowledgeGraph) {})
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			kg.SetOnUpdate(nil)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			kg.AddURL(fmt.Sprintf("https://example.com/page/%d", i), "")
+		}
+	}()
+
+	wg.Wait()
+}

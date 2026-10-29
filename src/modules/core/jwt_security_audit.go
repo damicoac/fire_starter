@@ -258,7 +258,6 @@ func (m *JWTSecurityAudit) Execute(ctx context.Context) ([]JWTSecurityAuditResul
 	switch {
 	case noneAccepted && !nonNoneAccepted && noneClaimBound:
 		summary := "Differential matrix rejected random/invalid JWT probes while accepting alg=none tokens with claim-linked authorization outcome changes."
-		m.RecordPoC(nil, nil, summary)
 		m.results = append(m.results, JWTSecurityAuditResult{
 			Target: m.Target,
 			Status: statusFromEvidence(EvidenceConfirmed, false),
@@ -294,7 +293,6 @@ func (m *JWTSecurityAudit) Execute(ctx context.Context) ([]JWTSecurityAuditResul
 
 	if nonNoneAccepted {
 		summary := "Endpoint accepts arbitrary bearer tokens: random and/or invalid-signed JWTs (or requests with no token) are accepted without verification."
-		m.RecordPoC(nil, nil, summary)
 		m.results = append(m.results, JWTSecurityAuditResult{
 			Target: m.Target,
 			Status: statusFromEvidence(EvidenceConfirmed, false),
@@ -308,7 +306,7 @@ func (m *JWTSecurityAudit) Execute(ctx context.Context) ([]JWTSecurityAuditResul
 func init() {
 	RegisterModule("jwt_security_audit", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting JWTSecurityAudit on: %s", target))
 
 		tester := NewJWTSecurityAudit(target)

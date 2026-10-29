@@ -140,7 +140,7 @@ func csrfParseForms(pageHTML string, base *url.URL) []csrfForm {
 func (m *CSRFTesting) csrfNoRedirectClient() *http.Client {
 	base := m.Client
 	if base == nil {
-		base = http.DefaultClient
+		base = &http.Client{Timeout: 10 * time.Second}
 	}
 	c := *base
 	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
@@ -426,7 +426,6 @@ func (m *CSRFTesting) testForm(ctx context.Context, form csrfForm, getBody strin
 			tier := EvaluateDifferentialEvidence(noTokEff, getBody, getBody, true)
 			if tier == EvidenceConfirmed && normalizedCompactLower(noTokEff) != normalizedCompactLower(getBody) {
 				detail := fmt.Sprintf("POST form at %s was accepted without any CSRF token field and produced a response differing from the page baseline.", form.Action)
-				m.RecordPoC(nil, nil, detail)
 				m.results = append(m.results, CSRFTestingResult{
 					Target: m.Target,
 					Status: statusFromEvidence(EvidenceConfirmed, false),
@@ -442,7 +441,6 @@ func (m *CSRFTesting) testForm(ctx context.Context, form csrfForm, getBody strin
 			tier := EvaluateDifferentialEvidence(noTokEff, withTokEff, getBody, true)
 			if tier == EvidenceConfirmed && normalizedCompactLower(noTokEff) != normalizedCompactLower(getBody) {
 				detail := fmt.Sprintf("POST form at %s was accepted without its CSRF token and produced a response differing from the token-bearing baseline.", form.Action)
-				m.RecordPoC(nil, nil, detail)
 				m.results = append(m.results, CSRFTestingResult{
 					Target: m.Target,
 					Status: statusFromEvidence(EvidenceConfirmed, false),
@@ -462,7 +460,7 @@ func (m *CSRFTesting) testForm(ctx context.Context, form csrfForm, getBody strin
 func init() {
 	RegisterModule("csrf_testing", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting CSRFTesting on: %s", target))
 
 		tester := NewCSRFTesting(target)

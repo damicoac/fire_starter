@@ -67,7 +67,6 @@ func (m *PortScanning) Execute(ctx context.Context) ([]PortScanningResult, error
 		switch pr.State {
 		case "open":
 			openCount++
-			m.RecordPoC(nil, nil, fmt.Sprintf("Port %d is open. Banner: %s", pr.Port, pr.Banner))
 			m.results = append(m.results, PortScanningResult{
 				Target: m.Target,
 				Status: statusFromEvidence(EvidenceWeak, false),
@@ -122,7 +121,7 @@ func scanTargetHost(target string) string {
 func init() {
 	RegisterModule("port_scanning", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting PortScanning on: %s", target))
 
 		tester := NewPortScanning(target)

@@ -337,7 +337,6 @@ func (m *DOMBasedXSSAnalysis) addFinding(sourceURL string, line int, match, sink
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
 	detail := fmt.Sprintf("DOM sink %s consumes controllable source %s at %s line %d", sink, source, sourceURL, line)
-	m.RecordPoC(nil, nil, detail)
 	m.results = append(m.results, DOMBasedXSSAnalysisResult{
 		Target:    m.Target,
 		ScriptURL: sourceURL,
@@ -371,7 +370,7 @@ func (m *DOMBasedXSSAnalysis) addInconclusive(scriptURL, detail string) {
 func init() {
 	RegisterModule("dom_based_xss_analysis", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting DOMBasedXSSAnalysis on: %s", target))
 
 		tester := NewDOMBasedXSSAnalysis(target)

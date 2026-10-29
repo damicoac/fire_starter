@@ -179,7 +179,7 @@ func (m *SubdomainTakeoverAnalysis) probeTakeover(ctx context.Context, sub, sche
 func init() {
 	RegisterModule("subdomain_takeover_analysis", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting SubdomainTakeoverAnalysis on: %s", target))
 
 		tester := NewSubdomainTakeoverAnalysis(target)

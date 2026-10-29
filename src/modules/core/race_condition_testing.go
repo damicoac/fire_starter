@@ -127,14 +127,12 @@ func (m *RaceConditionTesting) Execute(ctx context.Context) ([]RaceConditionTest
 
 	if successCount > 1 && rejectionCount > 0 {
 		detail := fmt.Sprintf("Potential race condition: concurrent identical requests yielded inconsistent enforcement: %v", responses)
-		m.RecordPoC(nil, nil, detail)
 		m.results = append(m.results, RaceConditionTestingResult{
 			Target: m.Target,
 			Status: statusFromEvidence(EvidenceConfirmed, false),
 			Detail: detail,
 		})
 	} else {
-		m.RecordPoC(nil, nil, "Concurrent requests produced uniform or non-differential outcomes; no race-condition evidence.")
 		m.results = append(m.results, RaceConditionTestingResult{
 			Target: m.Target,
 			Status: statusFromEvidence(EvidenceWeak, false),
@@ -151,7 +149,7 @@ func (m *RaceConditionTesting) Execute(ctx context.Context) ([]RaceConditionTest
 func init() {
 	RegisterModule("race_condition_testing", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting RaceConditionTesting on: %s", target))
 
 		tester := NewRaceConditionTesting(target)

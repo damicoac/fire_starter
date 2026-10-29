@@ -15,8 +15,8 @@ func NewToolRegistry(decisions []Decision) *ToolRegistry {
 	for _, decision := range decisions {
 		name := toolNameFromDecision(decision)
 		description := fmt.Sprintf(
-			"Use Case: %s\nFunction: %s\nProblem Solved: %s\nContext: Select this tool when applicable for lateral movement and the recon, probe, test, repeat loop. Feel free to use this dynamically as needed. State/cookies are injected based on the 'session_id' provided.",
-			decision.UseCase, decision.Function, decision.ProblemTheToolSolves,
+			"%s (id %s). Use case: %s. Problem solved: %s. Implements: %s",
+			decision.Technique, decision.Identifier, decision.UseCase, decision.ProblemTheToolSolves, decision.Function,
 		)
 
 		tool := ToolDefinition{
@@ -24,6 +24,7 @@ func NewToolRegistry(decisions []Decision) *ToolRegistry {
 			Description: description,
 			Identifier:  decision.Identifier,
 			Technique:   decision.Technique,
+			Phase:       decisionPhase(decision.Phase),
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -45,9 +46,9 @@ func NewToolRegistry(decisions []Decision) *ToolRegistry {
 					},
 				},
 				"anyOf": []map[string]any{
-					{"required": []string{"ip"}},
-					{"required": []string{"url"}},
-					{"required": []string{"payload"}},
+					{"type": "object", "required": []string{"ip"}},
+					{"type": "object", "required": []string{"url"}},
+					{"type": "object", "required": []string{"payload"}},
 				},
 			},
 		}
@@ -70,7 +71,6 @@ func (r *ToolRegistry) ListTools() []ToolDefinition {
 	return result
 }
 
-
 func toolNameFromDecision(decision Decision) string {
 	normalized := strings.ToLower(decision.Technique)
 	normalized = strings.ReplaceAll(normalized, "-", "_")
@@ -83,7 +83,7 @@ func toolNameFromDecision(decision Decision) string {
 	}
 	name := strings.Trim(builder.String(), "_")
 	if name == "" {
-		name = fmt.Sprintf("decision_%s", decision.Identifier)
+		name = decision.Identifier
 	}
 	return fmt.Sprintf("decision_%s", name)
 }

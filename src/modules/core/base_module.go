@@ -133,7 +133,41 @@ type OOBInteraction struct {
 	ID        string
 	Protocol  string // "http" or "dns"
 	RemoteIP  string
+	Path      string
+	UserAgent string
 	Timestamp time.Time
+}
+
+// OOBHit is one out-of-band callback received by the OOB listener, rendered
+// in the shape modules record as proof-of-concept evidence.
+type OOBHit struct {
+	SourceIP  string
+	Path      string
+	UserAgent string
+	Timestamp time.Time
+}
+
+// oobNoCallbackControl is the false-condition/baseline sentinel used when
+// routing out-of-band callback evidence through EvaluateDifferentialEvidence:
+// the true condition is a callback signal, the false condition and baseline
+// are the no-callback control, so a callback yields EvidenceConfirmed while
+// silence yields EvidenceWeak (candidate, not confirmed).
+const oobNoCallbackControl = "no oob callback observed"
+
+// oobEvidenceTier converts observed OOB callback hits into an evidence tier
+// via EvaluateDifferentialEvidence: at least one callback for the interaction
+// confirms the probe; silence stays inconclusive (candidate).
+func oobEvidenceTier(id string, hits []OOBHit) EvidenceTier {
+	signal := ""
+	if len(hits) > 0 {
+		signal = "oob callback observed for interaction " + id
+	}
+	return EvaluateDifferentialEvidence(signal, oobNoCallbackControl, oobNoCallbackControl, true)
+}
+
+// oobHitDescription renders a single OOB callback hit for PoC records.
+func oobHitDescription(id string, h OOBHit) string {
+	return fmt.Sprintf("OOB callback (id %s) from %s path %q user-agent %q", id, h.SourceIP, h.Path, h.UserAgent)
 }
 
 type OOBManager struct {
@@ -144,7 +178,66 @@ type OOBManager struct {
 	Mu           sync.Mutex
 }
 
+// normalizeOOBHost canonicalizes a configured public OOB host for port
+// detection and callback URL construction: a leading scheme (http://,
+// https://, ...) and any path/query are stripped, and a bracket-wrapped bare
+// host such as "[::1]" is unwrapped. Bracketed host:port forms like
+// "[::1]:9000" are preserved verbatim so net.SplitHostPort keeps parsing them.
+func normalizeOOBHost(host string) string {
+	h := strings.TrimSpace(host)
+	if i := strings.Index(h, "://"); i != -1 {
+		h = h[i+3:]
+		if j := strings.IndexAny(h, "/?#"); j != -1 {
+			h = h[:j]
+		}
+	}
+	if _, _, err := net.SplitHostPort(h); err != nil {
+		h = strings.Trim(h, "[]")
+	}
+	return h
+}
+
+// oobHostIsLoopback reports whether the configured public OOB host (optionally
+// host:port) refers to a loopback address.
+func oobHostIsLoopback(host string) bool {
+	h := host
+	if hostOnly, _, err := net.SplitHostPort(h); err == nil {
+		h = hostOnly
+	}
+	if ip := net.ParseIP(h); ip != nil {
+		return ip.IsLoopback()
+	}
+	return strings.EqualFold(h, "localhost")
+}
+
+// hostHasPort reports whether host already carries an explicit port.
+func hostHasPort(host string) bool {
+	_, _, err := net.SplitHostPort(host)
+	return err == nil
+}
+
 func (m *OOBManager) StartOOBReceiver(listenAddr string) error {
+	// With a configured public host the callback must be reachable from the
+	// target's network, so bind on all interfaces instead of loopback. When
+	// the public host carries an explicit port, the listener must use that
+	// same port: GenerateOOBPayload names it verbatim, so an ephemeral bind
+	// would leave callbacks pointing at a port nobody listens on.
+	m.Mu.Lock()
+	publicHost := normalizeOOBHost(m.PublicHost)
+	m.Mu.Unlock()
+	if publicHost != "" && !oobHostIsLoopback(publicHost) {
+		if _, port, err := net.SplitHostPort(publicHost); err == nil && port != "" {
+			listenAddr = net.JoinHostPort("0.0.0.0", port)
+		} else {
+			listenAddr = "0.0.0.0:0"
+		}
+	} else if publicHost != "" && hostHasPort(publicHost) {
+		// Loopback public host with an explicit port: keep the loopback-safe
+		// interface but honor the port the callback URLs name.
+		if _, port, err := net.SplitHostPort(publicHost); err == nil && port != "" {
+			listenAddr = net.JoinHostPort("127.0.0.1", port)
+		}
+	}
 	l, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return err
@@ -156,6 +249,8 @@ func (m *OOBManager) StartOOBReceiver(listenAddr string) error {
 				ID:        id,
 				Protocol:  "http",
 				RemoteIP:  r.RemoteAddr,
+				Path:      r.URL.Path,
+				UserAgent: r.UserAgent(),
 				Timestamp: time.Now(),
 			}
 			m.Mu.Lock()
@@ -198,16 +293,24 @@ func (m *OOBManager) StopOOBReceiver() {
 
 func (m *OOBManager) GenerateOOBPayload() (string, string) {
 	m.Mu.Lock()
-	host := m.PublicHost
-	if host == "" && m.Listener != nil {
-		host = m.Listener.Addr().String()
-	}
+	host := normalizeOOBHost(m.PublicHost)
+	listener := m.Listener
 	m.Mu.Unlock()
 
 	// No resolvable OOB host: a degenerate "/<id>" payload would produce a
 	// malformed URL, so report the absence explicitly.
+	if host == "" && listener != nil {
+		host = listener.Addr().String()
+	}
 	if host == "" {
 		return "", ""
+	}
+	// A public host without an explicit port needs the ephemeral listener
+	// port appended, otherwise the callback URL would target port 80.
+	if listener != nil && !hostHasPort(host) {
+		if _, port, err := net.SplitHostPort(listener.Addr().String()); err == nil && port != "" {
+			host = net.JoinHostPort(host, port)
+		}
 	}
 	id := fmt.Sprintf("%d", time.Now().UnixNano())
 	return fmt.Sprintf("%s/%s", host, id), id
@@ -223,9 +326,38 @@ func (m *OOBManager) GetInteractions(id string) []OOBInteraction {
 	return interactions
 }
 
+// Hits returns a snapshot of the out-of-band callback hits recorded by this
+// manager. When id is non-empty only hits belonging to that interaction id
+// are returned; an empty id returns every recorded hit.
+func (m *OOBManager) Hits(id string) []OOBHit {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	hits := make([]OOBHit, 0)
+	for interactionID, interactions := range m.Interactions {
+		if id != "" && interactionID != id {
+			continue
+		}
+		for _, in := range interactions {
+			sourceIP := in.RemoteIP
+			if host, _, err := net.SplitHostPort(in.RemoteIP); err == nil {
+				sourceIP = host
+			}
+			hits = append(hits, OOBHit{
+				SourceIP:  sourceIP,
+				Path:      in.Path,
+				UserAgent: in.UserAgent,
+				Timestamp: in.Timestamp,
+			})
+		}
+	}
+	sort.Slice(hits, func(i, j int) bool { return hits[i].Timestamp.Before(hits[j].Timestamp) })
+	return hits
+}
+
 // DiscoverVectors finds all input vectors (query params, form body, etc.) from a request.
-// It returns a new reader for the body so it can be read again if needed.
-func (b *BaseModule) DiscoverVectors(u *url.URL, body io.Reader, contentType string, headers http.Header) ([]InputVector, io.Reader) {
+// It returns a new reader for the body so it can be read again if needed. If the
+// body cannot be read, it returns an error instead of a partial result.
+func (b *BaseModule) DiscoverVectors(u *url.URL, body io.Reader, contentType string, headers http.Header) ([]InputVector, io.Reader, error) {
 	vectors := []InputVector{}
 	var bodyBytes []byte
 	var newBody io.Reader
@@ -234,9 +366,7 @@ func (b *BaseModule) DiscoverVectors(u *url.URL, body io.Reader, contentType str
 		var err error
 		bodyBytes, err = ReadBoundedBody(body, MaxResponseBodyBytes)
 		if err != nil {
-			// Since we can't return an error, record the failure via the PoC
-			// trail instead of silently proceeding.
-			b.RecordPoC(nil, nil, fmt.Sprintf("DiscoverVectors failed to read request body: %v", err))
+			return nil, nil, fmt.Errorf("discover input vectors: failed to read request body: %w", err)
 		}
 	}
 
@@ -289,7 +419,7 @@ func (b *BaseModule) DiscoverVectors(u *url.URL, body io.Reader, contentType str
 			newBody = nil
 		}
 	}
-	return vectors, newBody
+	return vectors, newBody, nil
 }
 
 func (b *BaseModule) discoverHeaderVectors(headers http.Header) []InputVector {
@@ -587,7 +717,7 @@ func (b *BaseModule) DiscoverReflection(ctx context.Context, u *url.URL, vector 
 
 	client := b.Client
 	if client == nil {
-		client = http.DefaultClient
+		client = &http.Client{Timeout: 10 * time.Second}
 	}
 
 	cookies := b.GetCookies()

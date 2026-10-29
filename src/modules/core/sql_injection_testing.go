@@ -64,18 +64,6 @@ func NewSQLInjectionTesting(target string) *SQLInjectionTesting {
 	}
 }
 
-// SetCookies sets the Cookie header value for the requests.
-func (m *SQLInjectionTesting) SetCookies(cookies string) {
-	m.BaseModule.SetCookies(cookies)
-}
-
-// SetThreads sets the maximum number of concurrent threads.
-func (m *SQLInjectionTesting) SetThreads(count int) {
-	if count > 0 {
-		m.MaxThreads = count
-	}
-}
-
 // SetThreshold sets the time threshold for blind time-based injection detection.
 func (m *SQLInjectionTesting) SetThreshold(threshold time.Duration) {
 	m.Threshold = threshold
@@ -236,7 +224,10 @@ func (m *SQLInjectionTesting) Execute(ctx context.Context) ([]SQLInjectionTestin
 	}
 
 	// 1. Discover Input Vectors
-	vectors, _ := m.DiscoverVectors(parsedURL, nil, "", nil)
+	vectors, _, derr := m.DiscoverVectors(parsedURL, nil, "", nil)
+	if derr != nil {
+		return nil, derr
+	}
 	if len(vectors) == 0 {
 		vectors = append(vectors,
 			InputVector{Type: VectorQueryParam, Key: "id", Value: "1"},
@@ -506,7 +497,7 @@ func (m *SQLInjectionTesting) addResult(vector InputVector, payload SQLPayload, 
 func init() {
 	RegisterModule("sql_injection_testing", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting SQLInjectionTesting on: %s", target))
 
 		tester := NewSQLInjectionTesting(target)

@@ -221,7 +221,7 @@ func (m *SsiInjectionTesting) testPayload(ctx context.Context, u *url.URL, paylo
 func init() {
 	RegisterModule("ssi_injection_testing", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting SsiInjectionTesting on: %s", target))
 
 		tester := NewSsiInjectionTesting(target)

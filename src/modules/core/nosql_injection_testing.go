@@ -368,7 +368,7 @@ func (m *NosqlInjectionTesting) addResult(status, detail string, req *http.Reque
 func init() {
 	RegisterModule("nosql_injection_testing", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting NosqlInjectionTesting on: %s", target))
 
 		tester := NewNosqlInjectionTesting(target)

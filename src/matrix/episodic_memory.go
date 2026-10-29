@@ -23,7 +23,7 @@ type MemoryQueryResult struct {
 	Score float64     `json:"score"`
 }
 
-// EpisodicMemory Store manages episodic memory indexing and keyword/Jaccard vector retrieval
+// EpisodicMemory Store manages episodic memory indexing and keyword/cosine-similarity retrieval
 type EpisodicMemory struct {
 	mu      sync.RWMutex
 	entries []MemoryEntry
@@ -52,7 +52,7 @@ func (em *EpisodicMemory) Store(entry MemoryEntry) {
 	em.entries = append(em.entries, entry)
 }
 
-// Query performs Jaccard and term-frequency similarity retrieval over stored memory entries
+// Query performs cosine-similarity retrieval over stored memory entries
 func (em *EpisodicMemory) Query(queryStr string, topK int) []MemoryQueryResult {
 	em.mu.RLock()
 	defer em.mu.RUnlock()
@@ -72,7 +72,7 @@ func (em *EpisodicMemory) Query(queryStr string, topK int) []MemoryQueryResult {
 		score := calculateSimilarity(queryTokens, entryTokens)
 		if score > 0.0 {
 			results = append(results, MemoryQueryResult{
-				Entry: entry,
+				Entry: copyMemoryEntry(entry),
 				Score: score,
 			})
 		}
@@ -93,6 +93,19 @@ func (em *EpisodicMemory) Count() int {
 	em.mu.RLock()
 	defer em.mu.RUnlock()
 	return len(em.entries)
+}
+
+// copyMemoryEntry returns a deep copy of entry so callers of Query cannot
+// mutate the shared Metadata map backing the stored entry.
+func copyMemoryEntry(entry MemoryEntry) MemoryEntry {
+	if entry.Metadata != nil {
+		metadata := make(map[string]string, len(entry.Metadata))
+		for k, v := range entry.Metadata {
+			metadata[k] = v
+		}
+		entry.Metadata = metadata
+	}
+	return entry
 }
 
 func tokenize(text string) map[string]int {

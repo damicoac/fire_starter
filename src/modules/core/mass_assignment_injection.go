@@ -159,7 +159,6 @@ func (m *MassAssignmentInjection) Execute(ctx context.Context) ([]MassAssignment
 			summary := "Verified privileged field persistence for correlated object marker " + marker + " on field " + field + "."
 			detail := formatEvidenceDetail(EvidenceConfirmed, summary)
 			m.Mu.Lock()
-			m.RecordPoC(nil, nil, summary)
 			m.results = append(m.results, MassAssignmentInjectionResult{
 				Target: m.Target,
 				Status: statusFromEvidence(EvidenceConfirmed, false),
@@ -436,7 +435,7 @@ func significantlyDiffersFromBaseline(baselineBody string, responseBody string) 
 func init() {
 	RegisterModule("mass_assignment_injection", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting MassAssignmentInjection on: %s", target))
 
 		tester := NewMassAssignmentInjection(target)

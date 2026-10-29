@@ -288,7 +288,7 @@ func (m *BufferOverflowProbing) probeOneParam(ctx context.Context, testURL *url.
 func init() {
 	RegisterModule("buffer_overflow_probing", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting BufferOverflowProbing on: %s", target))
 
 		tester := NewBufferOverflowProbing(target)

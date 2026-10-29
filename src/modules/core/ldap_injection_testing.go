@@ -147,7 +147,7 @@ func (m *LDAPInjectionTesting) testPayload(ctx context.Context, u *url.URL, payl
 func init() {
 	RegisterModule("ldap_injection_testing", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting LDAPInjectionTesting on: %s", target))
 
 		tester := NewLDAPInjectionTesting(target)

@@ -3,8 +3,8 @@ package matrix
 import (
 	_ "embed"
 	"encoding/json"
+	"fmt"
 	"os"
-	"path/filepath"
 )
 
 // Phase represents a professional red team engagement phase
@@ -20,6 +20,17 @@ const (
 	PhaseReporting             Phase = "reporting"
 )
 
+// IsValidPhase reports whether the given phase name matches a defined
+// engagement phase. Used to hard-fail on catalog drift at startup.
+func IsValidPhase(phase string) bool {
+	switch Phase(phase) {
+	case PhasePreEngagement, PhaseReconnaissance, PhaseScanning,
+		PhaseVulnerabilityAnalysis, PhaseExploitation, PhasePostExploitation,
+		PhaseReporting:
+		return true
+	}
+	return false
+}
 
 type Decision struct {
 	UseCase              string         `json:"use_case"`
@@ -28,33 +39,52 @@ type Decision struct {
 	ProblemTheToolSolves string         `json:"problem_the_tool_solves"`
 	Identifier           string         `json:"identifier"`
 	Payload              map[string]any `json:"payload,omitempty"`
+	Phase                string         `json:"phase,omitempty"`
 }
 
 type DecisionData struct {
 	Decisions []Decision `json:"decisions"`
 }
 
+// Name returns the technique in tool-name form (used for error messages).
+func (d Decision) Name() string {
+	return d.Technique
+}
+
+// Description renders the per-tool LLM description from the decision's own
+// data, mirroring the format built by NewToolRegistry.
+func (d Decision) Description() string {
+	return fmt.Sprintf(
+		"%s (id %s). Use case: %s. Problem solved: %s. Implements: %s",
+		d.Technique, d.Identifier, d.UseCase, d.ProblemTheToolSolves, d.Function,
+	)
+}
 
 type ToolDefinition struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
 	Identifier  string         `json:"identifier"`
 	Technique   string         `json:"technique"`
+	Phase       string         `json:"phase,omitempty"`
 	InputSchema map[string]any `json:"input_schema"`
 }
 
 //go:embed decisions.json
 var embeddedDecisions []byte
 
-// Add to the bottom of src/matrix/models.go
+// ReadDecisionsFile returns the decisions catalog. When path is non-empty and
+// the file exists on disk, the on-disk file wins; otherwise the embedded copy
+// (kept in sync with src/matrix/decisions.json at build time) is returned so
+// packaged binaries keep working without the source tree.
 func ReadDecisionsFile(path string) ([]byte, error) {
-	if len(embeddedDecisions) > 0 {
-		return embeddedDecisions, nil
+	if path != "" {
+		if _, err := os.Stat(path); err == nil {
+			return os.ReadFile(path)
+		} else if !os.IsNotExist(err) {
+			return nil, err
+		}
 	}
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		path = filepath.Join("..", "..", "src", "matrix", "decisions.json")
-	}
-	return os.ReadFile(path)
+	return embeddedDecisions, nil
 }
 
 // LoadDecisions reads and parses the decisions configuration into a slice of Decisions.

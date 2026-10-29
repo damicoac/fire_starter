@@ -120,7 +120,7 @@ func (m *GraphqlIntrospection) Execute(ctx context.Context) ([]GraphqlIntrospect
 func init() {
 	RegisterModule("graphql_introspection", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting GraphqlIntrospection on: %s", target))
 
 		tester := NewGraphqlIntrospection(target)

@@ -164,12 +164,13 @@ type KnowledgeGraph struct {
 	BaseDomain     string   `json:"base_domain"`
 	TargetDomains  []string `json:"target_domains"`
 	allowedIPs     map[string]bool
-	ConfigTarget   string                    `json:"config_target"`
+	ConfigTarget   string `json:"config_target"`
 	targets        map[string]*Target
 	SessionCookies map[string][]*http.Cookie `json:"session_cookies"`
 	Context        map[string]any            `json:"context"`
 	Memory         *EpisodicMemory           `json:"-"`
 	OnUpdate       func(*KnowledgeGraph)     `json:"-"`
+	onUpdateMu     sync.RWMutex              `json:"-"`
 	chanMu         sync.Mutex                `json:"-"`
 	updateChan     chan struct{}             `json:"-"`
 	version        atomic.Uint64
@@ -185,7 +186,6 @@ type KnowledgeSnapshot struct {
 	TargetPhases        map[string]Phase
 	OpenPorts           []int
 }
-
 
 func (kg *KnowledgeGraph) MarkClean(ver uint64) {
 	for {
@@ -229,14 +229,26 @@ func NewKnowledgeGraph() *KnowledgeGraph {
 				timer = nil
 				timerCh = nil
 				currentVer := kg.version.Load()
-				if kg.OnUpdate != nil && currentVer > kg.lastSentVer.Load() {
+				kg.onUpdateMu.RLock()
+				callback := kg.OnUpdate
+				kg.onUpdateMu.RUnlock()
+				if callback != nil && currentVer > kg.lastSentVer.Load() {
 					kg.MarkClean(currentVer)
-					kg.OnUpdate(kg)
+					callback(kg)
 				}
 			}
 		}
 	}(kg.updateChan)
 	return kg
+}
+
+// SetOnUpdate installs (or removes, by passing nil) the callback invoked on
+// the debounce goroutine after knowledge-graph changes. It is safe to call
+// concurrently with graph mutations and with the debounce goroutine itself.
+func (kg *KnowledgeGraph) SetOnUpdate(fn func(*KnowledgeGraph)) {
+	kg.onUpdateMu.Lock()
+	defer kg.onUpdateMu.Unlock()
+	kg.OnUpdate = fn
 }
 
 func (kg *KnowledgeGraph) Close() {
@@ -260,7 +272,6 @@ func (kg *KnowledgeGraph) triggerUpdate() {
 	default:
 	}
 }
-
 
 func IsZeroTarget(val string) bool {
 	if val == "0.0.0.0" || val == "::" || val == "[::]" {
@@ -368,7 +379,6 @@ func (kg *KnowledgeGraph) GetTargetsSnapshot() map[string]*Target {
 	return result
 }
 
-
 // GetTargetValues returns all target keys under a read lock.
 func (kg *KnowledgeGraph) GetTargetValues() []string {
 	kg.mu.RLock()
@@ -437,6 +447,10 @@ func (kg *KnowledgeGraph) GetTargetPorts() map[string][]int {
 }
 
 // MutateTarget executes a locked mutation function on a specific target.
+//
+// Non-reentrant: fn runs while kg.mu is held, so fn MUST NOT call any other
+// KnowledgeGraph method that acquires kg.mu (including MutateTarget itself) —
+// doing so deadlocks. The Target pointer is only valid inside fn.
 func (kg *KnowledgeGraph) MutateTarget(value string, fn func(t *Target)) bool {
 	defer kg.triggerUpdate()
 	kg.mu.Lock()
@@ -452,7 +466,6 @@ func (kg *KnowledgeGraph) MutateTarget(value string, fn func(t *Target)) bool {
 	fn(t)
 	return true
 }
-
 
 type ExtractedToken struct {
 	SessionID string `json:"session_id"`
@@ -471,7 +484,6 @@ type ExtractedIntelligence struct {
 	Credentials     []CredentialInfo `json:"credentials"`
 	Summary         string           `json:"summary"`
 }
-
 
 func (kg *KnowledgeGraph) ExtractIntelligence(ctx context.Context, model fantasy.LanguageModel, toolName, target string, payload map[string]any, resultData string) (string, string, error) {
 	if model == nil {
@@ -884,18 +896,61 @@ func (kg *KnowledgeGraph) AddAllowedIP(ip string) {
 }
 
 func (kg *KnowledgeGraph) ToJSON(target string) ([]byte, error) {
-	return kg.toJSONInternal(target, true)
+	return kg.toJSONInternal(target, true, false)
 }
 
 func (kg *KnowledgeGraph) ToJSONWithoutTestCases(target string) ([]byte, error) {
-	return kg.toJSONInternal(target, false)
+	return kg.toJSONInternal(target, false, false)
 }
 
-func (kg *KnowledgeGraph) toJSONInternal(target string, includeTestCases bool) ([]byte, error) {
+// ToRedactedJSON renders the knowledge graph as JSON with every secret value
+// (credential passwords, session tokens, cookie values) replaced by "REDACTED".
+// Usernames, cookie names, and overall structure are preserved so the output
+// remains useful for reports. Use this instead of ToJSON when writing the
+// markdown report or any artifact that leaves the operator's machine.
+func (kg *KnowledgeGraph) ToRedactedJSON(target string) ([]byte, error) {
+	return kg.toJSONInternal(target, true, true)
+}
+
+func (kg *KnowledgeGraph) toJSONInternal(target string, includeTestCases bool, redactSecrets bool) ([]byte, error) {
 	vulnerabilityRecords, _ := GetVulnerabilities()
 
 	kg.mu.RLock()
 	defer kg.mu.RUnlock()
+
+	// Collect the raw secret strings once; they are scrubbed from every
+	// structured field AND from free-text evidence (test-case payloads,
+	// raw tool output, PoC requests, vulnerability test code, context
+	// values) where harvested tokens and credentials routinely reappear.
+	secrets := make(map[string]bool)
+	if redactSecrets {
+		for _, tgt := range kg.targets {
+			for _, cred := range tgt.Credentials {
+				if cred.Password != "" {
+					secrets[cred.Password] = true
+				}
+			}
+			for _, tok := range tgt.Tokens {
+				if tok != "" {
+					secrets[tok] = true
+					// Raw header form ("Cookie: session=abc") — the value part
+					// is what reappears in tool output.
+					if idx := strings.Index(tok, "="); idx != -1 {
+						if val := strings.TrimSpace(tok[idx+1:]); val != "" {
+							secrets[val] = true
+						}
+					}
+				}
+			}
+		}
+		for _, cookies := range kg.SessionCookies {
+			for _, c := range cookies {
+				if c.Value != "" {
+					secrets[c.Value] = true
+				}
+			}
+		}
+	}
 
 	targetsCopy := make(map[string]*Target, len(kg.targets))
 	for k, v := range kg.targets {
@@ -906,7 +961,65 @@ func (kg *KnowledgeGraph) toJSONInternal(target string, includeTestCases bool) (
 		if target != "" && NormalizeURL(k) != NormalizeURL(target) {
 			tCopy.Tokens = nil // Omit tokens and cookies for other targets
 		}
+		if redactSecrets {
+			for i := range tCopy.Credentials {
+				tCopy.Credentials[i].Password = "REDACTED"
+			}
+			for i := range tCopy.Tokens {
+				tCopy.Tokens[i] = "REDACTED"
+			}
+			for i := range tCopy.TestCases {
+				tc := &tCopy.TestCases[i]
+				tc.Payload = redactSecretText(tc.Payload, secrets)
+				tc.ResultData = redactSecretText(tc.ResultData, secrets)
+				tc.Description = redactSecretText(tc.Description, secrets)
+				for j := range tc.PoCs {
+					tc.PoCs[j].Request = redactSecretText(tc.PoCs[j].Request, secrets)
+					tc.PoCs[j].Description = redactSecretText(tc.PoCs[j].Description, secrets)
+				}
+			}
+		}
 		targetsCopy[k] = tCopy
+	}
+
+	sessionCookies := kg.SessionCookies
+	if redactSecrets {
+		// Raw token strings can surface in cookie Name or Value depending on
+		// how the header parsed, so scrub both against the known secrets.
+		sessionCookies = make(map[string][]*http.Cookie, len(kg.SessionCookies))
+		for sid, cookies := range kg.SessionCookies {
+			redacted := make([]*http.Cookie, len(cookies))
+			for i, c := range cookies {
+				rc := *c
+				rc.Value = "REDACTED"
+				for sec := range secrets {
+					if strings.Contains(rc.Name, sec) {
+						rc.Name = "REDACTED"
+						break
+					}
+				}
+				redacted[i] = &rc
+			}
+			sessionCookies[sid] = redacted
+		}
+	}
+
+	if redactSecrets {
+		for i := range vulnerabilityRecords {
+			vulnerabilityRecords[i].TestCode = redactSecretText(vulnerabilityRecords[i].TestCode, secrets)
+			vulnerabilityRecords[i].Finding = redactSecretText(vulnerabilityRecords[i].Finding, secrets)
+		}
+	}
+	contextCopy := kg.Context
+	if redactSecrets {
+		contextCopy = make(map[string]any, len(kg.Context))
+		for ck, cv := range kg.Context {
+			if s, ok := cv.(string); ok {
+				contextCopy[ck] = redactSecretText(s, secrets)
+			} else {
+				contextCopy[ck] = cv
+			}
+		}
 	}
 
 	type KGWrapper struct {
@@ -925,11 +1038,22 @@ func (kg *KnowledgeGraph) toJSONInternal(target string, includeTestCases bool) (
 		ConfigTarget:         kg.ConfigTarget,
 		Targets:              targetsCopy,
 		VulnerabilityRecords: vulnerabilityRecords,
-		SessionCookies:       kg.SessionCookies,
-		Context:              kg.Context,
+		SessionCookies:       sessionCookies,
+		Context:              contextCopy,
 	}
 
 	return json.Marshal(wrapper)
+}
+
+// redactSecretText replaces every known raw secret string in free-text
+// evidence with "REDACTED". Tokens and credentials routinely reappear inside
+// raw tool output, generated PoC requests, and context values; structured
+// redaction alone would let them leak into the report.
+func redactSecretText(s string, secrets map[string]bool) string {
+	for sec := range secrets {
+		s = strings.ReplaceAll(s, sec, "REDACTED")
+	}
+	return s
 }
 
 func (kg *KnowledgeGraph) AddIP(ip string) {
@@ -1161,11 +1285,11 @@ func (kg *KnowledgeGraph) AddVulnerability(targetValue string, vuln string) {
 
 func (kg *KnowledgeGraph) AddTestCase(tc TestCase) {
 	defer kg.triggerUpdate()
-	kg.mu.Lock()
-	defer kg.mu.Unlock()
 
+	kg.mu.Lock()
 	t := kg.getOrCreateTarget(tc.Target, "url")
 	if t == nil {
+		kg.mu.Unlock()
 		return
 	}
 
@@ -1192,7 +1316,11 @@ func (kg *KnowledgeGraph) AddTestCase(tc TestCase) {
 		testCode = tc.Payload
 	}
 
-	if t.CurrentPhase == PhaseReconnaissance || t.CurrentPhase == PhaseScanning || t.CurrentPhase == PhaseVulnerabilityAnalysis {
+	shouldPersist := t.CurrentPhase == PhaseReconnaissance || t.CurrentPhase == PhaseScanning || t.CurrentPhase == PhaseVulnerabilityAnalysis
+	kg.mu.Unlock()
+
+	// Persist outside kg.mu so the SQLite write cannot stall concurrent readers.
+	if shouldPersist {
 		if err := LogVulnerability(tc.VulnID, NormalizeURL(tc.Target), tc.Description, testCode, "no"); err != nil {
 			log.Warnf("Failed to log vulnerability to database: %v", err)
 		}
@@ -1201,7 +1329,10 @@ func (kg *KnowledgeGraph) AddTestCase(tc TestCase) {
 
 func parseCookieStr(s string, defaultDomain string) *http.Cookie {
 	c := &http.Cookie{Path: "/"}
-	s = strings.TrimPrefix(s, "Cookie:")
+	// Accept an optional "Cookie:" header prefix in any letter casing.
+	if len(s) >= len("Cookie:") && strings.EqualFold(s[:len("Cookie:")], "Cookie:") {
+		s = s[len("Cookie:"):]
+	}
 	s = strings.TrimSpace(s)
 	parts := strings.Split(s, ";")
 	for i, part := range parts {
@@ -1300,7 +1431,17 @@ func (kg *KnowledgeGraph) AddCredential(targetValue string, username string, pas
 		}
 	}
 	t.Credentials = append(t.Credentials, CredentialInfo{Username: username, Password: password})
-	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=known_credentials target=%s username=%s", targetValue, username)
+	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=known_credentials target=%s username=%s", targetValue, maskUsername(username))
+}
+
+// maskUsername returns the first rune of the username followed by "***" so
+// plaintext usernames are never written to logs.
+func maskUsername(username string) string {
+	runes := []rune(username)
+	if len(runes) == 0 {
+		return "***"
+	}
+	return string(runes[0]) + "***"
 }
 
 func (kg *KnowledgeGraph) GetCredentials(targetValue ...string) []CredentialInfo {
@@ -1350,38 +1491,52 @@ func (kg *KnowledgeGraph) GetTargetPhase(targetValue string) Phase {
 func (kg *KnowledgeGraph) AdvanceTargetPhase(targetValue string) Phase {
 	defer kg.triggerUpdate()
 	kg.mu.Lock()
-	defer kg.mu.Unlock()
 	normalized := NormalizeURL(targetValue)
 	t, ok := kg.targets[normalized]
 	if !ok {
 		t, ok = kg.targets[targetValue]
 		if !ok {
+			kg.mu.Unlock()
 			return PhaseReconnaissance
 		}
 	}
 	previous := t.CurrentPhase
 	t.CurrentPhase = NextPhase(t.CurrentPhase)
-	_ = SaveTargetState(t.Value, t.Type, string(t.CurrentPhase), t.Score, t.OpenPorts, t.Tokens)
-	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=target_phase target=%s from=%s to=%s", targetValue, previous, t.CurrentPhase)
-	return t.CurrentPhase
+	saveValue, saveType, savePhase := t.Value, t.Type, t.CurrentPhase
+	saveScore, savePorts, saveTokens := t.Score, t.OpenPorts, t.Tokens
+	kg.mu.Unlock()
+
+	// Persist outside kg.mu so the SQLite write cannot stall concurrent readers.
+	if err := SaveTargetState(saveValue, saveType, string(savePhase), saveScore, savePorts, saveTokens); err != nil {
+		log.Warnf("Failed to save target state for %s: %v", saveValue, err)
+	}
+	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=target_phase target=%s from=%s to=%s", targetValue, previous, savePhase)
+	return savePhase
 }
 
 func (kg *KnowledgeGraph) SetTargetPhase(targetValue string, phase Phase) {
 	defer kg.triggerUpdate()
 	kg.mu.Lock()
-	defer kg.mu.Unlock()
 	normalized := NormalizeURL(targetValue)
 	t, ok := kg.targets[normalized]
 	if !ok {
 		t, ok = kg.targets[targetValue]
 		if !ok {
+			kg.mu.Unlock()
 			return
 		}
 	}
 	previous := t.CurrentPhase
 	t.CurrentPhase = phase
-	_ = SaveTargetState(t.Value, t.Type, string(t.CurrentPhase), t.Score, t.OpenPorts, t.Tokens)
-	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=target_phase target=%s from=%s to=%s", targetValue, previous, t.CurrentPhase)
+	saveValue, saveType := t.Value, t.Type
+	saveScore, savePorts, saveTokens := t.Score, t.OpenPorts, t.Tokens
+	kg.mu.Unlock()
+
+	// Persist outside kg.mu so the SQLite write cannot stall concurrent readers.
+	if err := SaveTargetState(saveValue, saveType, string(phase), saveScore, savePorts, saveTokens); err != nil {
+		log.Warnf("Failed to save target state for %s: %v", saveValue, err)
+	}
+	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=target_phase target=%s from=%s to=%s", targetValue, previous, phase)
 }
 
 func (kg *KnowledgeGraph) GetTokens() []string {
@@ -1492,12 +1647,12 @@ func (kg *KnowledgeGraph) GetCookiesForRequest(sessionID string, targetURL strin
 	var validCookies []string
 	for _, cookie := range kg.SessionCookies[sessionID] {
 		// Domain match
-		domainMatch := false
-		if cookie.Domain == "" {
-			domainMatch = true // Assume valid if no domain set
-		} else {
-			domainMatch = isDomainOrSubdomain(reqHost, cookie.Domain) || isDomainOrSubdomain(cookie.Domain, reqHost)
-		}
+		cookieDomain := strings.TrimPrefix(strings.ToLower(cookie.Domain), ".")
+		domainMatch := cookieDomain != "" &&
+			// Browser-style scoping: a cookie set for a domain applies to that
+			// domain and its subdomains only — never to the parent domain, and
+			// a cookie with no domain never matches (fail closed).
+			isDomainOrSubdomain(reqHost, cookieDomain)
 
 		// Path match
 		pathMatch := false

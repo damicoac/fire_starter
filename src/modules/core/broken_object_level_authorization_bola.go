@@ -295,7 +295,7 @@ func (m *BrokenObjectLevelAuthorizationBola) testID(ctx context.Context, id stri
 func init() {
 	RegisterModule("broken_object_level_authorization_bola", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting BrokenObjectLevelAuthorizationBola on: %s", target))
 
 		tester := NewBrokenObjectLevelAuthorizationBola(target)

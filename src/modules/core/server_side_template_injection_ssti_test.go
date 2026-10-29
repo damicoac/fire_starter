@@ -18,7 +18,7 @@ func TestSSTIValidator(t *testing.T) {
 		name    string
 		body    string
 		payload SSTIPayload
-		oobHits []OOBInteraction
+		oobHits []OOBHit
 		want    bool
 	}{
 		{
@@ -49,7 +49,7 @@ func TestSSTIValidator(t *testing.T) {
 				Value: "{{req('http://OOB')}}",
 				OOBID: "test-id",
 			},
-			oobHits: []OOBInteraction{{ID: "test-id"}},
+			oobHits: []OOBHit{{SourceIP: "127.0.0.1"}},
 			want:    true,
 		},
 		{

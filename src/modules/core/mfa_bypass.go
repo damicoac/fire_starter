@@ -133,7 +133,7 @@ func (m *MFABypass) testMFA(ctx context.Context, endpoint, payload string) {
 
 func init() {
 	RegisterModule("mfa_bypass_testing", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting MFABypass on: %s", target))
 		tester := NewMFABypass(target)
 		return ModuleWrapper{

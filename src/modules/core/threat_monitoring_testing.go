@@ -305,7 +305,7 @@ func threatMonitorIsTimeoutErr(err error) bool {
 func init() {
 	RegisterModule("threat_monitoring_testing", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting ThreatMonitoringTesting on: %s", target))
 
 		tester := NewThreatMonitoringTesting(target)

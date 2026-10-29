@@ -1,4 +1,8 @@
-package mcp
+package mcp_test
+
+// This file holds the MCP JSON-RPC client used only by tests to exercise the
+// MCP server over a pipe. It deliberately lives in a _test.go file: no
+// production code path consumes the client.
 
 import (
 	"context"
@@ -7,36 +11,9 @@ import (
 	"io"
 	"sync"
 	"sync/atomic"
+
+	"fire_starter/src/mcp"
 )
-
-// JSONRPCRequest represents a standard JSON-RPC 2.0 Request
-type JSONRPCRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      uint64          `json:"id"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
-}
-
-// JSONRPCResponse represents a standard JSON-RPC 2.0 Response
-type JSONRPCResponse struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      uint64          `json:"id"`
-	Result  json.RawMessage `json:"result,omitempty"`
-	Error   *JSONRPCError   `json:"error,omitempty"`
-}
-
-// JSONRPCError represents a JSON-RPC error payload
-type JSONRPCError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
-// ToolDescriptor describes an MCP tool available on a server
-type ToolDescriptor struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description"`
-	InputSchema map[string]interface{} `json:"inputSchema,omitempty"`
-}
 
 // MCPClient handles JSON-RPC 2.0 communication with an external MCP server
 type MCPClient struct {
@@ -44,7 +21,7 @@ type MCPClient struct {
 	writer  io.Writer
 	mu      sync.Mutex
 	nextID  uint64
-	pending map[uint64]chan *JSONRPCResponse
+	pending map[uint64]chan *mcp.JSONRPCResponse
 }
 
 // NewMCPClient initializes a new MCPClient attached to input/output streams
@@ -52,7 +29,7 @@ func NewMCPClient(reader io.Reader, writer io.Writer) *MCPClient {
 	client := &MCPClient{
 		reader:  reader,
 		writer:  writer,
-		pending: make(map[uint64]chan *JSONRPCResponse),
+		pending: make(map[uint64]chan *mcp.JSONRPCResponse),
 	}
 	go client.listenLoop()
 	return client
@@ -61,7 +38,7 @@ func NewMCPClient(reader io.Reader, writer io.Writer) *MCPClient {
 func (c *MCPClient) listenLoop() {
 	decoder := json.NewDecoder(c.reader)
 	for {
-		var resp JSONRPCResponse
+		var resp mcp.JSONRPCResponse
 		if err := decoder.Decode(&resp); err != nil {
 			c.mu.Lock()
 			for id, ch := range c.pending {
@@ -99,7 +76,7 @@ func (c *MCPClient) CallMethod(ctx context.Context, method string, params interf
 		rawParams = b
 	}
 
-	req := JSONRPCRequest{
+	req := mcp.JSONRPCRequest{
 		JSONRPC: "2.0",
 		ID:      reqID,
 		Method:  method,
@@ -112,7 +89,7 @@ func (c *MCPClient) CallMethod(ctx context.Context, method string, params interf
 	}
 	reqData = append(reqData, '\n')
 
-	respChan := make(chan *JSONRPCResponse, 1)
+	respChan := make(chan *mcp.JSONRPCResponse, 1)
 	c.mu.Lock()
 	c.pending[reqID] = respChan
 	c.mu.Unlock()
@@ -145,14 +122,14 @@ func (c *MCPClient) CallMethod(ctx context.Context, method string, params interf
 }
 
 // ListTools queries the MCP server for available tools (`tools/list`)
-func (c *MCPClient) ListTools(ctx context.Context) ([]ToolDescriptor, error) {
+func (c *MCPClient) ListTools(ctx context.Context) ([]mcp.ToolDescriptor, error) {
 	resultRaw, err := c.CallMethod(ctx, "tools/list", nil)
 	if err != nil {
 		return nil, err
 	}
 
 	var payload struct {
-		Tools []ToolDescriptor `json:"tools"`
+		Tools []mcp.ToolDescriptor `json:"tools"`
 	}
 	if err := json.Unmarshal(resultRaw, &payload); err != nil {
 		return nil, err

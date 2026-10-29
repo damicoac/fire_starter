@@ -131,7 +131,6 @@ func (m *ReplaciveFuzzing) Execute(ctx context.Context) ([]ReplaciveFuzzingResul
 			if !baselineHealthy {
 				detail = "Baseline endpoint already returns a server error; payload-specific 5xx judging was disabled."
 			}
-			m.RecordPoC(nil, nil, detail)
 			m.results = append(m.results, ReplaciveFuzzingResult{
 				Target: m.Target,
 				Status: statusFromEvidence(EvidenceWeak, false),
@@ -256,7 +255,7 @@ func (m *ReplaciveFuzzing) testPayload(ctx context.Context, u *url.URL, payload 
 func init() {
 	RegisterModule("replacive_fuzzing", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting ReplaciveFuzzing on: %s", target))
 
 		tester := NewReplaciveFuzzing(target)

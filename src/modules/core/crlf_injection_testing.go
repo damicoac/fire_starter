@@ -223,7 +223,7 @@ func (m *CrlfInjectionTesting) recordVulnerable(req *http.Request, detail string
 func init() {
 	RegisterModule("crlf_injection_testing", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting CrlfInjectionTesting on: %s", target))
 
 		tester := NewCrlfInjectionTesting(target)

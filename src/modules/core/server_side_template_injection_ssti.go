@@ -27,7 +27,7 @@ type SSTIPayload struct {
 
 type SSTIValidator struct{}
 
-func (v *SSTIValidator) IsVulnerable(body string, payload SSTIPayload, oobHits []OOBInteraction) bool {
+func (v *SSTIValidator) IsVulnerable(body string, payload SSTIPayload, oobHits []OOBHit) bool {
 	if payload.Type == SSTIMath {
 		// Vulnerable if body contains the evaluated math result, but NOT the literal template string
 		if strings.Contains(body, payload.Expected) && !strings.Contains(body, payload.Value) {
@@ -93,7 +93,10 @@ func (m *ServerSideTemplateInjectionSsti) Execute(ctx context.Context) ([]Server
 		return m.results, err
 	}
 
-	vectors, _ := m.DiscoverVectors(parsedURL, nil, "", req.Header)
+	vectors, _, err := m.DiscoverVectors(parsedURL, nil, "", req.Header)
+	if err != nil {
+		return m.results, err
+	}
 	hasQueryOrBody := false
 	for _, v := range vectors {
 		if v.Type == VectorQueryParam || v.Type == VectorFormBody || v.Type == VectorJSONBody {
@@ -281,28 +284,24 @@ func (m *ServerSideTemplateInjectionSsti) testVector(ctx context.Context, u *url
 		}
 	}
 
-	var oobHits []OOBInteraction
+	var oobHits []OOBHit
 	if payload.Type == SSTIOOB && m.OOB != nil && payload.OOBID != "" {
-		timeout := time.After(5 * time.Second)
-		ticker := time.NewTicker(500 * time.Millisecond)
-		defer ticker.Stop()
-	pollLoop:
-		for {
-			select {
-			case <-ctx.Done():
-				break pollLoop
-			case <-timeout:
-				break pollLoop
-			case <-ticker.C:
-				oobHits = m.OOB.GetInteractions(payload.OOBID)
-				if len(oobHits) > 0 {
-					break pollLoop
-				}
-			}
+		oobHits = m.pollOOBHits(ctx, payload.OOBID)
+		for _, h := range oobHits {
+			m.RecordPoC(req, nil, oobHitDescription(payload.OOBID, h))
 		}
 	}
 
-	if validator.IsVulnerable(bodyStr, payload, oobHits) {
+	// OOB confirmation routes through EvaluateDifferentialEvidence: a callback
+	// is the true condition against the no-callback control baseline, so a
+	// callback confirms while silence stays inconclusive.
+	confirmed := false
+	if payload.Type == SSTIOOB {
+		confirmed = oobEvidenceTier(payload.OOBID, oobHits) == EvidenceConfirmed
+	} else if validator.IsVulnerable(bodyStr, payload, oobHits) {
+		confirmed = true
+	}
+	if confirmed {
 		m.Mu.Lock()
 		summary := fmt.Sprintf("SSTI (%s) successful in %s '%s' using payload: %s", payload.Type, vector.Type, vector.Key, payload.Value)
 		if payload.Type == SSTIMath {
@@ -319,10 +318,30 @@ func (m *ServerSideTemplateInjectionSsti) testVector(ctx context.Context, u *url
 	}
 }
 
+// pollOOBHits waits up to 5 seconds for out-of-band callbacks belonging to
+// the given interaction id.
+func (m *ServerSideTemplateInjectionSsti) pollOOBHits(ctx context.Context, id string) []OOBHit {
+	timeout := time.After(5 * time.Second)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-timeout:
+			return nil
+		case <-ticker.C:
+			if hits := m.OOB.Hits(id); len(hits) > 0 {
+				return hits
+			}
+		}
+	}
+}
+
 func init() {
 	RegisterModule("server_side_template_injection_ssti", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting ServerSideTemplateInjectionSsti on: %s", target))
 
 		tester := NewServerSideTemplateInjectionSsti(target)
@@ -332,7 +351,7 @@ func init() {
 		return ModuleWrapper{
 			Module: tester,
 			ExecuteFunc: func(ctx context.Context) (any, error) {
-				oob := &OOBManager{}
+				oob := &OOBManager{PublicHost: PayloadString(payload, "oob_host", "127.0.0.1")}
 				if err := oob.StartOOBReceiver("127.0.0.1:0"); err == nil {
 					onLog(fmt.Sprintf("OOB Receiver started on %s", oob.Listener.Addr().String()))
 					tester.OOB = oob

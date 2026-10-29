@@ -228,7 +228,7 @@ func (m *BrokenFunctionLevelAuthorizationBfla) testPath(ctx context.Context, pat
 func init() {
 	RegisterModule("broken_function_level_authorization_bfla", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting BrokenFunctionLevelAuthorizationBfla on: %s", target))
 
 		tester := NewBrokenFunctionLevelAuthorizationBfla(target)

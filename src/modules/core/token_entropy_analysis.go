@@ -118,7 +118,6 @@ func (m *TokenEntropyAnalysis) Execute(ctx context.Context) ([]TokenEntropyAnaly
 func (m *TokenEntropyAnalysis) addResult(detail, status string) {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
-	m.RecordPoC(nil, nil, detail)
 	m.results = append(m.results, TokenEntropyAnalysisResult{
 		Target: m.Target,
 		Status: status,
@@ -129,7 +128,7 @@ func (m *TokenEntropyAnalysis) addResult(detail, status string) {
 func init() {
 	RegisterModule("token_entropy_analysis", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting TokenEntropyAnalysis on: %s", target))
 
 		tester := NewTokenEntropyAnalysis(target)

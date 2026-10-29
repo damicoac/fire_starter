@@ -44,7 +44,7 @@ func TestToolNameFromDecision_NormalizationAndFallback(t *testing.T) {
 	}
 
 	fallback := toolNameFromDecision(Decision{Identifier: "999", Technique: "***"})
-	if fallback != "decision_decision_999" {
+	if fallback != "decision_999" {
 		t.Fatalf("unexpected fallback name %q", fallback)
 	}
 }

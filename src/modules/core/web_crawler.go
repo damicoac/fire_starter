@@ -22,7 +22,9 @@ type WebCrawler struct {
 func NewWebCrawler(target string, customURLs []string, maxDepth int) *WebCrawler {
 	urls := customURLs
 	if len(urls) == 0 {
-		urls = []string{target}
+		// Normalize bare-host input ("example.com") the same way every
+		// other module does; otherwise the crawl silently visits nothing.
+		urls = []string{EnsureHTTPPrefix(target)}
 	}
 	return &WebCrawler{
 		TargetURLs: urls,
@@ -110,7 +112,7 @@ func (c *WebCrawler) Crawl(ctx context.Context) ([]string, error) {
 
 				client := c.Client
 				if client == nil {
-					client = &http.Client{Timeout: 10 * time.Second}
+					client = &http.Client{Timeout: 10 * time.Second, Transport: getDefaultTransport()}
 				}
 
 				resp, err := client.Do(req)
@@ -265,7 +267,7 @@ func extractAttr(attrs []html.Attribute, key string) string {
 func init() {
 	RegisterModule("web_crawler", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		maxDepth := PayloadInt(payload, "max_depth", 2)
 		onLog(fmt.Sprintf("Starting WebCrawler on: %s with depth %d", target, maxDepth))
 

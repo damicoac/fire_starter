@@ -3,7 +3,9 @@ package matrix
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -13,15 +15,43 @@ import (
 
 var (
 	dbInstance *sql.DB
+	dbPathUsed string
 	dbMu       sync.RWMutex
 )
 
-// InitDB initializes the SQLite database connection and creates tables if they don't exist.
+// currentSchemaVersion is the highest schema version produced by dbMigrations.
+const currentSchemaVersion = 5
+
+// schemaQuerier is satisfied by both *sql.DB and *sql.Tx, letting schema
+// helpers run either directly or inside a migration transaction.
+type schemaQuerier interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
+// dbMigrations maps a schema version to the migration that upgrades a database
+// to that version. Each migration runs in its own transaction; the runner
+// records the version in schema_version within the same transaction.
+var dbMigrations = map[int]func(tx *sql.Tx) error{
+	1: migrateV1CreateTables,
+	2: migrateV2EnsureVulnColumns,
+	3: migrateV3VulnerabilityStatuses,
+	4: migrateV4DropLegacyProcessedColumn,
+	5: migrateV5CreateIndexes,
+}
+
+// InitDB initializes the SQLite database connection and applies pending schema
+// migrations. Calling it again with the same path returns the existing
+// connection; calling it with a different path after initialization is an
+// error.
 func InitDB(dbPath string) (*sql.DB, error) {
 	dbMu.Lock()
 	defer dbMu.Unlock()
 
 	if dbInstance != nil {
+		if dbPathUsed != dbPath {
+			return nil, fmt.Errorf("database already initialized at %q; refusing to re-initialize with %q", dbPathUsed, dbPath)
+		}
 		return dbInstance, nil
 	}
 
@@ -33,6 +63,11 @@ func InitDB(dbPath string) (*sql.DB, error) {
 	if err := db.Ping(); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
+	}
+
+	// Restrict the database file to owner-only permissions.
+	if err := os.Chmod(dbPath, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Warnf("failed to restrict database file permissions on %s: %v", dbPath, err)
 	}
 
 	if _, err := db.Exec("PRAGMA journal_mode=WAL;"); err != nil {
@@ -47,23 +82,62 @@ func InitDB(dbPath string) (*sql.DB, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 
-	// Create execution_log table
-	_, err = db.Exec(`
-		CREATE TABLE IF NOT EXISTS execution_log (
+	if err := runMigrations(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
+	dbInstance = db
+	dbPathUsed = dbPath
+	return dbInstance, nil
+}
+
+// runMigrations creates the schema_version bookkeeping table (if needed) and
+// applies every pending migration from dbMigrations, each in its own
+// transaction with the resulting version recorded transactionally.
+func runMigrations(db *sql.DB) error {
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);`); err != nil {
+		return fmt.Errorf("failed to create schema_version table: %w", err)
+	}
+
+	var current int
+	if err := db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_version").Scan(&current); err != nil {
+		return fmt.Errorf("failed to read schema version: %w", err)
+	}
+
+	for v := current + 1; v <= currentSchemaVersion; v++ {
+		migrate, ok := dbMigrations[v]
+		if !ok {
+			return fmt.Errorf("missing migration for schema version %d", v)
+		}
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("failed to begin migration to schema version %d: %w", v, err)
+		}
+		if err := migrate(tx); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("migration to schema version %d failed: %w", v, err)
+		}
+		if _, err := tx.Exec("INSERT INTO schema_version (version) VALUES (?)", v); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("failed to record schema version %d: %w", v, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("failed to commit migration to schema version %d: %w", v, err)
+		}
+	}
+	return nil
+}
+
+func migrateV1CreateTables(tx *sql.Tx) error {
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS execution_log (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			date_time DATETIME DEFAULT CURRENT_TIMESTAMP,
 			target_domain TEXT NOT NULL,
 			json_output TEXT NOT NULL
-		);
-	`)
-	if err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("failed to create execution_log table: %w", err)
-	}
-
-	// Create target_state table
-	_, err = db.Exec(`
-		CREATE TABLE IF NOT EXISTS target_state (
+		);`,
+		`CREATE TABLE IF NOT EXISTS target_state (
 			target_domain TEXT PRIMARY KEY,
 			type TEXT NOT NULL,
 			current_phase TEXT NOT NULL,
@@ -71,30 +145,14 @@ func InitDB(dbPath string) (*sql.DB, error) {
 			open_ports TEXT NOT NULL DEFAULT '',
 			tokens TEXT NOT NULL DEFAULT '',
 			last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
-		);
-	`)
-	if err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("failed to create target_state table: %w", err)
-	}
-
-	// Create executed_payloads table
-	_, err = db.Exec(`
-		CREATE TABLE IF NOT EXISTS executed_payloads (
+		);`,
+		`CREATE TABLE IF NOT EXISTS executed_payloads (
 			payload_hash TEXT PRIMARY KEY,
 			tool_name TEXT NOT NULL,
 			target TEXT NOT NULL,
 			executed_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		);
-	`)
-	if err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("failed to create executed_payloads table: %w", err)
-	}
-
-	// Create vuln table
-	_, err = db.Exec(`
-		CREATE TABLE IF NOT EXISTS vuln (
+		);`,
+		`CREATE TABLE IF NOT EXISTS vuln (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			vuln_id TEXT UNIQUE,
 			date_time DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -104,82 +162,38 @@ func InitDB(dbPath string) (*sql.DB, error) {
 			exploitable TEXT NOT NULL DEFAULT 'no',
 			status TEXT NOT NULL DEFAULT 'candidate',
 			severity TEXT NOT NULL DEFAULT 'unknown'
-		);
-	`)
-	if err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("failed to create vuln table: %w", err)
+		);`,
 	}
-
-	if err := ensureVulnColumn(db, "exploitable", "TEXT NOT NULL DEFAULT 'no'"); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if err := ensureVulnColumn(db, "vuln_id", "TEXT"); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if err := ensureVulnColumn(db, "status", "TEXT NOT NULL DEFAULT 'candidate'"); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if err := ensureVulnColumn(db, "severity", "TEXT NOT NULL DEFAULT 'unknown'"); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if err := migrateVulnerabilityStatuses(db); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if err := dropLegacyProcessedColumn(db); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	_, err = db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_vuln_id ON vuln(vuln_id);`)
-	if err != nil && err.Error() != "index idx_vuln_id already exists" { // SQLite might ignore IF NOT EXISTS depending on version, so just in case
-		_ = db.Close()
-		return nil, fmt.Errorf("failed to create unique index on vuln_id: %w", err)
-	}
-	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_vuln_target ON vuln(target_domain);`)
-	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_vuln_status ON vuln(status);`)
-
-	dbInstance = db
-	return dbInstance, nil
-}
-
-// CloseDB closes the SQLite database connection if one is open.
-func CloseDB() error {
-	dbMu.Lock()
-	defer dbMu.Unlock()
-
-	if dbInstance != nil {
-		err := dbInstance.Close()
-		dbInstance = nil
-		return err
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func getDB() (*sql.DB, error) {
-	dbMu.RLock()
-	defer dbMu.RUnlock()
-
-	if dbInstance == nil {
-		return nil, fmt.Errorf("database not initialized")
+func migrateV2EnsureVulnColumns(tx *sql.Tx) error {
+	if err := ensureVulnColumn(tx, "exploitable", "TEXT NOT NULL DEFAULT 'no'"); err != nil {
+		return err
 	}
-	return dbInstance, nil
+	if err := ensureVulnColumn(tx, "vuln_id", "TEXT"); err != nil {
+		return err
+	}
+	if err := ensureVulnColumn(tx, "status", "TEXT NOT NULL DEFAULT 'candidate'"); err != nil {
+		return err
+	}
+	return ensureVulnColumn(tx, "severity", "TEXT NOT NULL DEFAULT 'unknown'")
 }
 
-func migrateVulnerabilityStatuses(db *sql.DB) error {
-	_, err := db.Exec("UPDATE vuln SET status = 'confirmed' WHERE exploitable = 'yes' AND (status = '' OR status = 'candidate')")
-	if err != nil {
+func migrateV3VulnerabilityStatuses(tx *sql.Tx) error {
+	if _, err := tx.Exec("UPDATE vuln SET status = 'confirmed' WHERE exploitable = 'yes' AND (status = '' OR status = 'candidate')"); err != nil {
 		return fmt.Errorf("failed to migrate confirmed vulnerability statuses: %w", err)
 	}
 	return nil
 }
 
-func dropLegacyProcessedColumn(db *sql.DB) error {
-	columns, err := vulnColumnNames(db)
+func migrateV4DropLegacyProcessedColumn(tx *sql.Tx) error {
+	columns, err := vulnColumnNames(tx)
 	if err != nil {
 		return err
 	}
@@ -187,7 +201,7 @@ func dropLegacyProcessedColumn(db *sql.DB) error {
 		return nil
 	}
 
-	_, err = db.Exec(`
+	_, err = tx.Exec(`
 		CREATE TABLE vuln_new (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			vuln_id TEXT UNIQUE,
@@ -210,8 +224,52 @@ func dropLegacyProcessedColumn(db *sql.DB) error {
 	return nil
 }
 
-func vulnColumnNames(db *sql.DB) (map[string]bool, error) {
-	rows, err := db.Query("PRAGMA table_info(vuln)")
+func migrateV5CreateIndexes(tx *sql.Tx) error {
+	stmts := []string{
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_vuln_id ON vuln(vuln_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_vuln_target ON vuln(target_domain);`,
+		`CREATE INDEX IF NOT EXISTS idx_vuln_status ON vuln(status);`,
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("failed to create vuln index: %w", err)
+		}
+	}
+	return nil
+}
+
+// CloseDB closes the SQLite database connection if one is open.
+func CloseDB() error {
+	dbMu.Lock()
+	defer dbMu.Unlock()
+
+	if dbInstance != nil {
+		err := dbInstance.Close()
+		dbInstance = nil
+		dbPathUsed = ""
+		return err
+	}
+	return nil
+}
+
+// ResetDBForTest closes the currently open database (if any) so tests can
+// re-initialize it with a fresh path. It is intended for test use only.
+func ResetDBForTest() {
+	_ = CloseDB()
+}
+
+func getDB() (*sql.DB, error) {
+	dbMu.RLock()
+	defer dbMu.RUnlock()
+
+	if dbInstance == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+	return dbInstance, nil
+}
+
+func vulnColumnNames(q schemaQuerier) (map[string]bool, error) {
+	rows, err := q.Query("PRAGMA table_info(vuln)")
 	if err != nil {
 		return nil, fmt.Errorf("failed to inspect vuln table schema: %w", err)
 	}
@@ -236,8 +294,8 @@ func vulnColumnNames(db *sql.DB) (map[string]bool, error) {
 	return columns, nil
 }
 
-func ensureVulnColumn(db *sql.DB, columnName string, columnDef string) error {
-	rows, err := db.Query("PRAGMA table_info(vuln)")
+func ensureVulnColumn(q schemaQuerier, columnName string, columnDef string) error {
+	rows, err := q.Query("PRAGMA table_info(vuln)")
 	if err != nil {
 		return fmt.Errorf("failed to inspect vuln table schema: %w", err)
 	}
@@ -261,7 +319,7 @@ func ensureVulnColumn(db *sql.DB, columnName string, columnDef string) error {
 		return fmt.Errorf("failed to iterate vuln table schema rows: %w", err)
 	}
 
-	_, err = db.Exec(fmt.Sprintf("ALTER TABLE vuln ADD COLUMN %s %s", columnName, columnDef))
+	_, err = q.Exec(fmt.Sprintf("ALTER TABLE vuln ADD COLUMN %s %s", columnName, columnDef))
 	if err != nil {
 		return fmt.Errorf("failed to add %s column to vuln table: %w", columnName, err)
 	}
@@ -389,7 +447,6 @@ func MarkVulnerabilityDisproven(vulnID string) error {
 	return err
 }
 
-
 func scanVulnRows(rows *sql.Rows) ([]VulnInfo, error) {
 	var vulns []VulnInfo
 	for rows.Next() {
@@ -487,7 +544,7 @@ func GetVulnerabilitiesPaginated(limit, offset int) ([]VulnInfo, error) {
 func IsPayloadExecuted(payloadHash string) (bool, error) {
 	db, err := getDB()
 	if err != nil {
-		return false, nil
+		return false, err
 	}
 	var count int
 	err = db.QueryRow("SELECT COUNT(1) FROM executed_payloads WHERE payload_hash = ?", payloadHash).Scan(&count)
@@ -501,7 +558,7 @@ func IsPayloadExecuted(payloadHash string) (bool, error) {
 func RecordPayloadExecuted(payloadHash, toolName, target string) error {
 	db, err := getDB()
 	if err != nil {
-		return nil
+		return err
 	}
 	_, err = db.Exec(
 		`INSERT OR IGNORE INTO executed_payloads (payload_hash, tool_name, target, executed_at) VALUES (?, ?, ?, ?)`,

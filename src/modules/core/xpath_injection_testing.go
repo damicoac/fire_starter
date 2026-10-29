@@ -146,7 +146,7 @@ func (m *XpathInjectionTesting) testPayload(ctx context.Context, u *url.URL, pay
 func init() {
 	RegisterModule("xpath_injection_testing", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting XpathInjectionTesting on: %s", target))
 
 		tester := NewXpathInjectionTesting(target)

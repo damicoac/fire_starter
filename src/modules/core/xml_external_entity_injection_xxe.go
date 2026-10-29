@@ -72,8 +72,8 @@ func xxeBodyContainsMarker(body string) bool {
 		strings.Contains(body, "ami-id") // AWS metadata indicator
 }
 
-// pollOOBInteractions waits up to 5s for an OOB interaction with the given id.
-func (m *XMLExternalEntityInjectionXxe) pollOOBInteractions(ctx context.Context, id string) []OOBInteraction {
+// pollOOBHits waits up to 5s for an OOB callback with the given id.
+func (m *XMLExternalEntityInjectionXxe) pollOOBHits(ctx context.Context, id string) []OOBHit {
 	timeout := time.After(5 * time.Second)
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
@@ -84,7 +84,7 @@ func (m *XMLExternalEntityInjectionXxe) pollOOBInteractions(ctx context.Context,
 		case <-timeout:
 			return nil
 		case <-ticker.C:
-			if hits := m.OOB.GetInteractions(id); len(hits) > 0 {
+			if hits := m.OOB.Hits(id); len(hits) > 0 {
 				return hits
 			}
 		}
@@ -226,17 +226,24 @@ func (m *XMLExternalEntityInjectionXxe) testPayload(ctx context.Context, payload
 	baseStr := string(baseBytes)
 
 	if oobID != "" && m.OOB != nil {
-		if hits := m.pollOOBInteractions(ctx, oobID); len(hits) > 0 {
-			m.Mu.Lock()
-			summary := fmt.Sprintf("OOB interaction observed for XXE parameter entity (id: %s).", oobID)
-			detail := formatEvidenceDetail(EvidenceConfirmed, summary)
-			m.RecordPoC(req, nil, detail)
-			m.results = append(m.results, XMLExternalEntityInjectionXxeResult{
-				Target: m.Target,
-				Status: statusFromEvidence(EvidenceConfirmed, false),
-				Detail: detail,
-			})
-			m.Mu.Unlock()
+		if hits := m.pollOOBHits(ctx, oobID); len(hits) > 0 {
+			for _, h := range hits {
+				m.RecordPoC(req, nil, oobHitDescription(oobID, h))
+			}
+			// A callback is the confirming true condition against the
+			// no-callback control: confirmed only when the interaction fired.
+			if oobEvidenceTier(oobID, hits) == EvidenceConfirmed {
+				m.Mu.Lock()
+				summary := fmt.Sprintf("OOB interaction observed for XXE parameter entity (id: %s).", oobID)
+				detail := formatEvidenceDetail(EvidenceConfirmed, summary)
+				m.RecordPoC(req, nil, detail)
+				m.results = append(m.results, XMLExternalEntityInjectionXxeResult{
+					Target: m.Target,
+					Status: statusFromEvidence(EvidenceConfirmed, false),
+					Detail: detail,
+				})
+				m.Mu.Unlock()
+			}
 			return
 		}
 	}
@@ -260,7 +267,7 @@ func (m *XMLExternalEntityInjectionXxe) testPayload(ctx context.Context, payload
 func init() {
 	RegisterModule("xml_external_entity_injection_xxe", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting XMLExternalEntityInjectionXxe on: %s", target))
 
 		tester := NewXMLExternalEntityInjectionXxe(target)
@@ -268,7 +275,7 @@ func init() {
 		return ModuleWrapper{
 			Module: tester,
 			ExecuteFunc: func(ctx context.Context) (any, error) {
-				oob := &OOBManager{}
+				oob := &OOBManager{PublicHost: PayloadString(payload, "oob_host", "127.0.0.1")}
 				if err := oob.StartOOBReceiver("127.0.0.1:0"); err == nil {
 					onLog(fmt.Sprintf("OOB Receiver started on %s", oob.Listener.Addr().String()))
 					tester.OOB = oob

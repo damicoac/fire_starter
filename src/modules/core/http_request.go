@@ -96,7 +96,7 @@ func (m *HTTPRequestModule) Execute(ctx context.Context) (map[string]any, error)
 func init() {
 	RegisterModule("http_request", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		method := PayloadString(payload, "method", "GET")
 		body := PayloadString(payload, "body", "")
 

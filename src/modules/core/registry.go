@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -67,6 +68,18 @@ func GetModuleFactory(technique string) (ModuleFactory, bool) {
 	defer registryMu.RUnlock()
 	factory, ok := moduleRegistry[strings.ToLower(strings.TrimSpace(technique))]
 	return factory, ok
+}
+
+// RegisteredModuleTechniques returns every registered technique key (lowercase, sorted).
+func RegisteredModuleTechniques() []string {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	out := make([]string, 0, len(moduleRegistry))
+	for k := range moduleRegistry {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Payload helpers available to all modules during factory initialization

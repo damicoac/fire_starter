@@ -189,7 +189,7 @@ func (m *GraphQLAdvanced) testDeepQuery(ctx context.Context, endpoint string) in
 
 func init() {
 	RegisterModule("graphql_advanced_attacks", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting GraphQLAdvanced on: %s", target))
 		tester := NewGraphQLAdvanced(target)
 		return ModuleWrapper{

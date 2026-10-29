@@ -177,7 +177,10 @@ func (m *PathTraversalAttack) Execute(ctx context.Context) ([]PathTraversalAttac
 	}
 
 	// Step 1: Discover vectors
-	vectors, _ := m.DiscoverVectors(parsedURL, nil, "", nil)
+	vectors, _, verr := m.DiscoverVectors(parsedURL, nil, "", nil)
+	if verr != nil {
+		return results, verr
+	}
 
 	if len(vectors) == 0 {
 		vectors = append(vectors, InputVector{Type: VectorPathSegment, Key: "path_append", Value: ""})
@@ -301,7 +304,7 @@ func (m *PathTraversalAttack) testVector(ctx context.Context, u *url.URL, vector
 func init() {
 	RegisterModule("path_traversal_attack", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		threads := PayloadInt(payload, "threads", 5)
 		onLog(fmt.Sprintf("Starting PathTraversalAttack on: %s", target))
 

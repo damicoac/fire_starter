@@ -249,7 +249,6 @@ func (m *SessionFixationTesting) testCookie(ctx context.Context, cookieName stri
 		// bound to the new session is our attacker-chosen fake ID — a directly
 		// confirmed session fixation.
 		m.Mu.Lock()
-		m.RecordPoC(nil, nil, "Session Fixation: Server did not rotate the pre-authenticated session cookie "+cookieName)
 		m.results = append(m.results, SessionFixationTestingResult{
 			Target: m.Target,
 			Status: statusFromEvidence(EvidenceConfirmed, false),
@@ -262,7 +261,7 @@ func (m *SessionFixationTesting) testCookie(ctx context.Context, cookieName stri
 func init() {
 	RegisterModule("session_fixation_testing", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting SessionFixationTesting on: %s", target))
 
 		tester := NewSessionFixationTesting(target)

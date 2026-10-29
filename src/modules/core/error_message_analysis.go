@@ -134,7 +134,6 @@ func (m *ErrorMessageAnalysis) Execute(ctx context.Context) ([]ErrorMessageAnaly
 						}
 						seenSignatures[sigName] = true
 						detail := fmt.Sprintf("Leaked %s on %s (HTTP %d)", sigName, targetURL, status)
-						m.RecordPoC(nil, nil, detail)
 						m.results = append(m.results, ErrorMessageAnalysisResult{
 							Target: m.Target,
 							Status: statusFromEvidence(EvidenceConfirmed, false),
@@ -218,7 +217,7 @@ func (m *ErrorMessageAnalysis) noteInconclusive(detail string) {
 func init() {
 	RegisterModule("error_message_analysis", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting ErrorMessageAnalysis on: %s", target))
 
 		tester := NewErrorMessageAnalysis(target)

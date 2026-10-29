@@ -23,6 +23,14 @@ type Config struct {
 	IPWhitelist       []string     `json:"ip_whitelist"`
 	RulesOfEngagement string       `json:"rules_of_engagement"`
 	Credentials       []Credential `json:"credentials"`
+	// TLSSkipVerify disables TLS certificate verification for scanner
+	// traffic (opt-in for self-signed lab endpoints).
+	TLSSkipVerify bool `json:"tls_skip_verify"`
+	// OOBPublicHost is the externally reachable host[:port] of this
+	// scanner for out-of-band callbacks (blind SSRF/SSTI/XXE
+	// verification). Empty keeps the loopback-safe default; it must be
+	// set for blind OOB testing against remote targets.
+	OOBPublicHost string `json:"oob_public_host"`
 }
 
 func DefaultConfig() Config {

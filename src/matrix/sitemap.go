@@ -10,20 +10,20 @@ import (
 
 // SiteNode represents a URL or path node in the Target Site Map
 type SiteNode struct {
-	Path        string              `json:"path"`
-	Method      string              `json:"method,omitempty"`
-	StatusCode  int                 `json:"status_code,omitempty"`
-	ContentType string              `json:"content_type,omitempty"`
-	Parameters  []string            `json:"parameters,omitempty"`
+	Path        string               `json:"path"`
+	Method      string               `json:"method,omitempty"`
+	StatusCode  int                  `json:"status_code,omitempty"`
+	ContentType string               `json:"content_type,omitempty"`
+	Parameters  []string             `json:"parameters,omitempty"`
 	Children    map[string]*SiteNode `json:"children,omitempty"`
-	Discovered  time.Time           `json:"discovered"`
+	Discovered  time.Time            `json:"discovered"`
 }
 
 // SiteMap represents a tree structure of a target's web attack surface
 type SiteMap struct {
-	mu    sync.RWMutex
-	Root  *SiteNode `json:"root"`
-	Host  string    `json:"host"`
+	mu   sync.RWMutex
+	Root *SiteNode `json:"root"`
+	Host string    `json:"host"`
 }
 
 // NewSiteMap creates a new SiteMap for a given host
@@ -83,7 +83,7 @@ func (sm *SiteMap) AddURL(rawURL string, method string, statusCode int, contentT
 	current.Method = method
 	current.StatusCode = statusCode
 	current.ContentType = contentType
-	
+
 	// Deduplicate parameters
 	paramMap := make(map[string]bool)
 	for _, p := range current.Parameters {
@@ -99,7 +99,11 @@ func (sm *SiteMap) AddURL(rawURL string, method string, statusCode int, contentT
 	return nil
 }
 
-// SortedChildren returns the child nodes sorted alphabetically by path
+// SortedChildren returns the child nodes sorted alphabetically by path.
+//
+// It reads the Children map without acquiring any lock: callers must operate
+// on a snapshot obtained via SiteMap.Clone (the TUI path already clones) or
+// otherwise guarantee exclusive access to the node.
 func (sn *SiteNode) SortedChildren() []*SiteNode {
 	if sn == nil || len(sn.Children) == 0 {
 		return nil

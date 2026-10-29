@@ -163,7 +163,6 @@ func (m *GoogleDorking) testDork(ctx context.Context, query string) {
 func (m *GoogleDorking) addResult(detail, status string) {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
-	m.RecordPoC(nil, nil, detail)
 	m.results = append(m.results, GoogleDorkingResult{
 		Target: m.Target,
 		Status: status,
@@ -174,7 +173,7 @@ func (m *GoogleDorking) addResult(detail, status string) {
 func init() {
 	RegisterModule("google_dorking", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting GoogleDorking on: %s", target))
 
 		tester := NewGoogleDorking(target)

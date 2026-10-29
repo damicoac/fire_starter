@@ -90,6 +90,8 @@ go build -o fire_starter ./cmd/fire_starter
 - `-max-iters <int>`: maximum control-loop iterations
 - `-verbose`: enable debug logging
 - `-efficiency=false`: disable aggressive target triage; efficiency mode defaults to enabled
+- `-insecure-tls`: skip TLS certificate verification (for self-signed lab endpoints only)
+- `-oob-host <host[:port]>`: public host of this scanner reachable by targets for out-of-band (OOB) callbacks. Defaults to loopback-safe behavior; required for blind SSRF/SSTI/XXE testing against remote targets, where the target must be able to reach the scanner's callback listener (e.g. via port forwarding or DNS pointing at the scanner). Can also be set via `oob_public_host` in the config file.
 
 ## TUI navigation
 

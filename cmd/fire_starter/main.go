@@ -27,6 +27,8 @@ func main() {
 	verbose := flag.Bool("verbose", false, "Enable verbose logging")
 	efficiency := flag.Bool("efficiency", true, "Enable efficiency mode to skip low value targets (default true, use -efficiency=false to disable)")
 	mcpMode := flag.Bool("mcp", false, "Run in Model Context Protocol (MCP) server mode via STDIO")
+	insecureTLS := flag.Bool("insecure-tls", false, "Skip TLS certificate verification (for self-signed lab endpoints only)")
+	oobHost := flag.String("oob-host", "", "Public host[:port] of this scanner reachable by targets for out-of-band (OOB) callbacks; required for remote blind OOB testing")
 
 	flag.Parse()
 
@@ -35,13 +37,36 @@ func main() {
 		defer kg.Close()
 		defer matrix.CloseDB()
 
+		// Persistence in MCP mode: initialize SQLite so vulnerability and
+		// target-state records are actually written instead of silently
+		// no-op'ing. A failure is logged but must not abort the server.
+		if _, err := matrix.InitDB("fire_starter.db"); err != nil {
+			log.Warnf("Failed to init SQLite database: %v", err)
+		}
+
 		decisions, err := matrix.LoadDecisions("src/matrix/decisions.json")
 		if err != nil {
-			decisions, _ = matrix.LoadDecisions("decisions.json")
+			log.Fatalf("Failed to load decisions: %v", err)
 		}
-		executor, _ := matrix.NewRealExecutor(decisions)
+		executor, err := matrix.NewRealExecutor(decisions)
+		if err != nil {
+			log.Fatalf("Failed to initialize executor: %v", err)
+		}
 
-		server := mcp.NewMCPServer(kg, executor)
+		// Scope guard for MCP tool execution. Without a config file there is
+		// no declared engagement scope, so we fail closed and only accept
+		// loopback targets; with -config the allowed set is ip_whitelist
+		// plus every IP the configured target resolves to.
+		allow := agent.LoopbackScopeAllow()
+		if *configPath != "" {
+			mcpCfg, err := agent.LoadConfig(*configPath)
+			if err != nil {
+				log.Fatalf("Failed loading config: %v", err)
+			}
+			allow = agent.ConfigScopeAllow(mcpCfg)
+		}
+
+		server := mcp.NewMCPServer(kg, executor, allow)
 		if err := server.ServeSTDIO(os.Stdin, os.Stdout); err != nil {
 			log.Fatalf("MCP Server error: %v", err)
 		}
@@ -73,8 +98,8 @@ func main() {
 	if *verbose {
 		cfg.Verbose = true
 	}
-	
-	// Override the config value with the flag's value. 
+
+	// Override the config value with the flag's value.
 	// If the user specifies -efficiency=false, this overrides the default true.
 	// If the config file had "efficiency_mode": false, we only override it if the user explicitly provided the flag,
 	// but flag.Bool doesn't easily let us check if it was provided vs defaulted.
@@ -85,9 +110,35 @@ func main() {
 			flagSet = true
 		}
 	})
-	
+
 	if flagSet {
 		cfg.EfficiencyMode = *efficiency
+	}
+
+	// TLS skip-verify precedence: the config file's tls_skip_verify applies
+	// by default, but an explicitly passed -insecure-tls flag overrides it
+	// (checked via flag.Visit, since flag.Bool defaults to false).
+	insecureTLSSet := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "insecure-tls" {
+			insecureTLSSet = true
+		}
+	})
+	if insecureTLSSet {
+		cfg.TLSSkipVerify = *insecureTLS
+	}
+
+	// OOB host precedence: the config file's oob_public_host applies by
+	// default, but an explicitly passed -oob-host flag overrides it
+	// (checked via flag.Visit).
+	oobHostSet := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "oob-host" {
+			oobHostSet = true
+		}
+	})
+	if oobHostSet {
+		cfg.OOBPublicHost = *oobHost
 	}
 
 	if cfg.Verbose {

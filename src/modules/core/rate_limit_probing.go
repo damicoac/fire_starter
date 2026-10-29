@@ -305,7 +305,7 @@ func (m *RateLimitProbing) runRecoveryPhase(ctx context.Context) rateProbeSnapsh
 func init() {
 	RegisterModule("rate_limit_probing", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting RateLimitProbing on: %s", target))
 
 		tester := NewRateLimitProbing(target)

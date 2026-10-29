@@ -214,7 +214,7 @@ func (m *InsecureDeserializationTesting) testPayload(ctx context.Context, p dese
 func init() {
 	RegisterModule("insecure_deserialization_testing", func(payload map[string]any, onLog func(string)) (ExecutableModule, error) {
 
-		target := PayloadString(payload, "url", "http://127.0.0.1")
+		target := PayloadString(payload, "url", "")
 		onLog(fmt.Sprintf("Starting InsecureDeserializationTesting on: %s", target))
 
 		tester := NewInsecureDeserializationTesting(target)

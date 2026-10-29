@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"sort"
+	"strings"
 	"sync"
 
 	"fire_starter/src/matrix"
@@ -23,13 +26,57 @@ type MCPServer struct {
 	kg       *matrix.KnowledgeGraph
 	executor *matrix.RealExecutor
 	tools    map[string]RegisteredTool
+	// allow decides whether a requested execution target is inside the
+	// configured engagement scope. It is consulted before every module
+	// execution and must never be nil in practice (NewMCPServer falls back
+	// to defaultScopeAllow).
+	allow func(target string) bool
 }
 
-func NewMCPServer(kg *matrix.KnowledgeGraph, executor *matrix.RealExecutor) *MCPServer {
+// defaultScopeAllow is the deny-by-default guard used when no explicit scope
+// function is supplied: only targets that resolve exclusively to loopback
+// addresses (127.0.0.0/8, ::1) pass. An MCP server started without an
+// engagement config must not enable technique execution against arbitrary
+// remote hosts.
+func DefaultScopeAllow(target string) bool {
+	candidate := strings.TrimSpace(target)
+	if candidate == "" {
+		return false
+	}
+	if strings.Contains(candidate, "://") {
+		u, err := url.Parse(candidate)
+		if err != nil || u.Hostname() == "" {
+			return false
+		}
+		candidate = u.Hostname()
+	}
+	if ip := net.ParseIP(candidate); ip != nil {
+		return ip.IsLoopback()
+	}
+	ips, err := net.LookupIP(candidate)
+	if err != nil || len(ips) == 0 {
+		return false
+	}
+	for _, ip := range ips {
+		if !ip.IsLoopback() {
+			return false
+		}
+	}
+	return true
+}
+
+// NewMCPServer builds an MCP server. allow is the scope guard consulted by the
+// module-execution tools; passing nil selects defaultScopeAllow (loopback
+// only, deny everything else).
+func NewMCPServer(kg *matrix.KnowledgeGraph, executor *matrix.RealExecutor, allow func(target string) bool) *MCPServer {
+	if allow == nil {
+		allow = DefaultScopeAllow
+	}
 	server := &MCPServer{
 		kg:       kg,
 		executor: executor,
 		tools:    make(map[string]RegisteredTool),
+		allow:    allow,
 	}
 	server.registerBuiltinTools()
 	return server
@@ -126,6 +173,45 @@ func (s *MCPServer) registerBuiltinTools() {
 
 	// 4. fire_starter_execute_module and fire_starter_execute_tool
 	execHandler := func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+		payload, _ := args["payload"].(map[string]interface{})
+		if payload == nil {
+			payload = make(map[string]interface{})
+		}
+		// Scope guard FIRST: refuse to point any technique at a target
+		// outside the configured engagement scope (ip_whitelist plus the
+		// configured target). Every host-ish key the executor honors must
+		// pass the allow function — url, ip, and target (plus the same keys
+		// of a nested payload map), mirroring agent's
+		// isPayloadAllowedByIPWhitelist — so a bypass like
+		// {"url": <in-scope>, "target": <out-of-scope>} is rejected. A
+		// payload with none of these keys is rejected as well — it would
+		// otherwise fall back to module defaults.
+		candidates := make([]string, 0, 4)
+		collect := func(value any) {
+			if str, ok := value.(string); ok && strings.TrimSpace(str) != "" {
+				candidates = append(candidates, str)
+			}
+		}
+		collect(payload["url"])
+		collect(payload["ip"])
+		collect(payload["target"])
+		if nested, ok := payload["payload"].(map[string]any); ok {
+			collect(nested["url"])
+			collect(nested["ip"])
+			collect(nested["target"])
+		}
+		inScope := len(candidates) > 0
+		if inScope {
+			for _, candidate := range candidates {
+				if !s.allow(candidate) {
+					inScope = false
+					break
+				}
+			}
+		}
+		if !inScope {
+			return nil, fmt.Errorf("target out of scope")
+		}
 		if s.executor == nil {
 			return nil, fmt.Errorf("executor not configured on MCP server")
 		}
@@ -135,10 +221,6 @@ func (s *MCPServer) registerBuiltinTools() {
 		}
 		if moduleName == "" {
 			return nil, fmt.Errorf("module_name or tool_name argument is required")
-		}
-		payload, _ := args["payload"].(map[string]interface{})
-		if payload == nil {
-			payload = make(map[string]interface{})
 		}
 		var logs []string
 		result, err := s.executor.ExecuteByToolName(ctx, moduleName, payload, func(msg string) {
@@ -155,6 +237,9 @@ func (s *MCPServer) registerBuiltinTools() {
 		target, _ := payload["url"].(string)
 		if target == "" {
 			target, _ = payload["ip"].(string)
+		}
+		if target == "" {
+			target, _ = payload["target"].(string)
 		}
 		if s.kg != nil && target != "" {
 			_, _, _ = s.kg.ExtractIntelligence(ctx, nil, moduleName, target, payload, result)

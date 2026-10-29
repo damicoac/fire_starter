@@ -17,7 +17,10 @@ import (
 func TestDiscoverVectors(t *testing.T) {
 	b := &BaseModule{}
 	u, _ := url.Parse("http://example.com?q=test&id=1")
-	vectors, _ := b.DiscoverVectors(u, nil, "", nil)
+	vectors, _, err := b.DiscoverVectors(u, nil, "", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(vectors) != 2 {
 		t.Errorf("Expected 2 query vectors, got %d", len(vectors))
 	}
@@ -42,7 +45,10 @@ func TestDiscoverVectors(t *testing.T) {
 	// Test Form Body
 	u2, _ := url.Parse("http://example.com")
 	body := strings.NewReader("user=admin&pass=secret")
-	vectors2, newBody := b.DiscoverVectors(u2, body, "application/x-www-form-urlencoded", nil)
+	vectors2, newBody, err := b.DiscoverVectors(u2, body, "application/x-www-form-urlencoded", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(vectors2) != 2 {
 		t.Errorf("Expected 2 form body vectors, got %d", len(vectors2))
 	}
@@ -78,7 +84,10 @@ func TestDiscoverHeaderAndPathVectors(t *testing.T) {
 	headers.Set("User-Agent", "Mozilla/5.0")
 	headers.Set("Cookie", "session=xyz123; theme=dark")
 
-	vectors, _ := b.DiscoverVectors(u, nil, "", headers)
+	vectors, _, err := b.DiscoverVectors(u, nil, "", headers)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	foundUA := false
 	foundCookieSession := false
@@ -188,7 +197,10 @@ func TestDiscoverJSONVectors(t *testing.T) {
 	jsonBody := `{"user": {"id": 123, "name": "test"}, "active": true, "tags": ["admin", "beta"]}`
 	body := strings.NewReader(jsonBody)
 
-	vectors, _ := b.DiscoverVectors(u, body, "application/json", nil)
+	vectors, _, err := b.DiscoverVectors(u, body, "application/json", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	// We expect 4 JSON vectors:
 	// 1. user.id
@@ -323,10 +335,29 @@ func TestBuildRequestWithVector(t *testing.T) {
 func TestDiscoverVectors_NilBody(t *testing.T) {
 	b := &BaseModule{}
 	u, _ := url.Parse("http://example.com")
-	vectors, _ := b.DiscoverVectors(u, nil, "", nil)
+	vectors, _, err := b.DiscoverVectors(u, nil, "", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(vectors) != 0 {
 		t.Errorf("Expected 0 vectors for empty inputs, got %d", len(vectors))
 	}
+}
+
+func TestDiscoverVectors_BodyReadError(t *testing.T) {
+	b := &BaseModule{}
+	u, _ := url.Parse("http://example.com")
+	body := io.MultiReader(strings.NewReader(`{"a":1}`), &failingReader{})
+	_, _, err := b.DiscoverVectors(u, body, "application/json", nil)
+	if err == nil {
+		t.Fatal("expected error for unreadable request body, got nil")
+	}
+}
+
+type failingReader struct{}
+
+func (failingReader) Read(p []byte) (int, error) {
+	return 0, fmt.Errorf("simulated read failure")
 }
 
 func TestMutateJSON_InvalidJSON(t *testing.T) {
@@ -391,7 +422,7 @@ func TestBaseModule_ConcurrentVectorAndBuildRequest(t *testing.T) {
 			defer wg.Done()
 			body := strings.NewReader(fmt.Sprintf(`{"field": %d}`, val))
 			headers := http.Header{"X-Trace": []string{fmt.Sprintf("trace-%d", val)}}
-			_, _ = b.DiscoverVectors(targetURL, body, "application/json", headers)
+			_, _, _ = b.DiscoverVectors(targetURL, body, "application/json", headers)
 		}(i)
 
 		go func(val int) {
@@ -450,7 +481,10 @@ func TestDiscoverJSONVectorsNoAliasing(t *testing.T) {
 	// append(path, k) aliasing corrupted sibling JSONPaths.
 	body := `{"a":{"x":{"p":{"q1":"1","q2":"2","q3":"3","q4":"4"}}}}`
 	u, _ := url.Parse("http://example.com")
-	vectors, _ := b.DiscoverVectors(u, strings.NewReader(body), "application/json", nil)
+	vectors, _, err := b.DiscoverVectors(u, strings.NewReader(body), "application/json", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	expected := map[string]bool{
 		"a.x.p.q1": false,
