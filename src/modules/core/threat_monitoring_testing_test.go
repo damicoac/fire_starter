@@ -66,6 +66,42 @@ func TestThreatMonitoringVulnerable(t *testing.T) {
 	}
 }
 
+func TestThreatMonitoring_InconclusiveWhenAuthGated(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	tester := NewThreatMonitoringTesting(server.URL)
+	results, err := tester.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if len(results) != 1 || results[0].Status != "inconclusive" {
+		t.Fatalf("expected single inconclusive result for auth-gated baseline, got %#v", results)
+	}
+}
+
+func TestThreatMonitoring_InconclusiveWhenBaselineFails(t *testing.T) {
+	// nil response from RoundTrip surfaces as a transport error in Client.Do.
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			return nil
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	tester := NewThreatMonitoringTesting("http://example.com")
+	results, err := tester.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if len(results) != 1 || results[0].Status != "inconclusive" {
+		t.Fatalf("expected single inconclusive result when baseline fails, got %#v", results)
+	}
+}
+
 func TestThreatMonitoringDetection_Execute_CanceledContext(t *testing.T) {
 	tester := NewThreatMonitoringTesting("http://example.com")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -95,5 +131,13 @@ func TestThreatMonitoringDetection_Execute_HTTPError(t *testing.T) {
 
 	tester := NewThreatMonitoringTesting("http://example.com")
 	ctx := context.Background()
-	_, _ = tester.Execute(ctx)
+	results, err := tester.Execute(ctx)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	// A 5xx baseline must short-circuit judging with an inconclusive row, not a
+	// nonstandard "error" status.
+	if len(results) != 1 || results[0].Status != "inconclusive" {
+		t.Fatalf("expected single inconclusive result for 5xx baseline, got %#v", results)
+	}
 }

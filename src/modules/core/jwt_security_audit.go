@@ -52,6 +52,7 @@ type jwtBaselineSnapshot struct {
 	statusCode int
 	authHeader string
 	setCookies []string
+	body       string
 }
 
 type jwtProbeOutcome struct {
@@ -73,10 +74,13 @@ func (m *JWTSecurityAudit) captureBaseline(ctx context.Context) jwtBaselineSnaps
 	}
 	defer resp.Body.Close()
 
+	respBody, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
+
 	return jwtBaselineSnapshot{
 		statusCode: resp.StatusCode,
 		authHeader: strings.ToLower(resp.Header.Get("WWW-Authenticate")),
 		setCookies: resp.Header.Values("Set-Cookie"),
+		body:       string(respBody),
 	}
 }
 
@@ -145,14 +149,29 @@ func isAuthAcceptedStatus(statusCode int) bool {
 	return statusCode >= http.StatusOK && statusCode < http.StatusBadRequest && statusCode != http.StatusUnauthorized && statusCode != http.StatusForbidden
 }
 
-func tokenOutcomeIndicatesClaimBinding(outcome jwtProbeOutcome) bool {
+// tokenOutcomeIndicatesClaimBinding reports whether an accepted alg=none
+// response shows authorization effects bound to the forged token's claims.
+// Bare generic markers ("ok", "allow", "success") and empty bodies no longer
+// count: acceptance must either echo an exact claim pair carried by the forged
+// payload, or differ from a rejected control response while the control matches
+// the baseline.
+func tokenOutcomeIndicatesClaimBinding(outcome jwtProbeOutcome, controlOutcome *jwtProbeOutcome, baselineBody string) bool {
 	if !isAuthAcceptedStatus(outcome.statusCode) {
 		return false
 	}
 	if outcome.body == "" {
+		return false
+	}
+	// Exact claim pairs from the forged alg=none payload (sub=firestarter_admin,
+	// scope=admin). Generic words are deliberately excluded.
+	if containsAnyToken(outcome.body, []string{"firestarter_admin", `"scope":"admin"`}) {
 		return true
 	}
-	return containsAnyToken(outcome.body, []string{"firestarter_admin", "scope", "admin", "role", "firestarter_claim", "allow", "ok", "success"})
+	if controlOutcome == nil {
+		return false
+	}
+	tier := EvaluateDifferentialEvidence(outcome.body, controlOutcome.body, baselineBody, baselineBody != "")
+	return tier == EvidenceConfirmed
 }
 
 func (m *JWTSecurityAudit) Execute(ctx context.Context) ([]JWTSecurityAuditResult, error) {
@@ -188,8 +207,32 @@ func (m *JWTSecurityAudit) Execute(ctx context.Context) ([]JWTSecurityAuditResul
 	nonNoneAccepted := false
 	noneAccepted := false
 	noneClaimBound := false
-	for _, outcome := range outcomes {
+	failedProbes := make([]string, 0)
+
+	// Control (non-none) outcomes are used to differentially judge whether an
+	// accepted alg=none response shows claim-linked authorization effects.
+	var randomOutcome, invalidOutcome *jwtProbeOutcome
+	for i := range outcomes {
+		switch outcomes[i].name {
+		case "random_bearer":
+			randomOutcome = &outcomes[i]
+		case "invalid_signed":
+			invalidOutcome = &outcomes[i]
+		}
+	}
+
+	for i := range outcomes {
+		outcome := outcomes[i]
 		if outcome.err != nil {
+			failedProbes = append(failedProbes, outcome.name)
+			continue
+		}
+		if outcome.name == "no_token" {
+			// The endpoint serving an authenticated-context response with no
+			// token at all is part of the same bearer-bypass class.
+			if isAuthAcceptedStatus(outcome.statusCode) {
+				nonNoneAccepted = true
+			}
 			continue
 		}
 		if outcome.name == "random_bearer" || outcome.name == "invalid_signed" {
@@ -201,7 +244,11 @@ func (m *JWTSecurityAudit) Execute(ctx context.Context) ([]JWTSecurityAuditResul
 		if strings.HasPrefix(outcome.name, "alg_none_") {
 			if isAuthAcceptedStatus(outcome.statusCode) {
 				noneAccepted = true
-				if tokenOutcomeIndicatesClaimBinding(outcome) {
+				control := randomOutcome
+				if control == nil || control.err != nil {
+					control = invalidOutcome
+				}
+				if control != nil && control.err == nil && tokenOutcomeIndicatesClaimBinding(outcome, control, baseline.body) {
 					noneClaimBound = true
 				}
 			}
@@ -218,10 +265,14 @@ func (m *JWTSecurityAudit) Execute(ctx context.Context) ([]JWTSecurityAuditResul
 			Detail: formatEvidenceDetail(EvidenceConfirmed, summary),
 		})
 	case noneAccepted && !nonNoneAccepted && !noneClaimBound:
+		summary := "alg=none tokens were accepted while non-none probes were rejected, but claim-linked authorization change was not reproduced."
+		if len(failedProbes) > 0 {
+			summary = fmt.Sprintf("Differential matrix incomplete: control probe(s) failed (%s); alg=none acceptance could not be differentially judged against a rejected control.", strings.Join(failedProbes, ", "))
+		}
 		m.results = append(m.results, JWTSecurityAuditResult{
 			Target: m.Target,
 			Status: statusFromEvidence(EvidenceStrong, false),
-			Detail: formatEvidenceDetail(EvidenceStrong, "alg=none tokens were accepted while non-none probes were rejected, but claim-linked authorization change was not reproduced."),
+			Detail: formatEvidenceDetail(EvidenceStrong, summary),
 		})
 	case noneAccepted && nonNoneAccepted:
 		m.results = append(m.results, JWTSecurityAuditResult{
@@ -230,10 +281,24 @@ func (m *JWTSecurityAudit) Execute(ctx context.Context) ([]JWTSecurityAuditResul
 			Detail: formatEvidenceDetail(EvidenceStrong, "Bearer bypass was observed for multiple token classes, so acceptance is not uniquely attributable to alg=none."),
 		})
 	default:
+		detail := "Differential matrix showed no acceptance path specific to alg=none JWT tokens."
+		if len(failedProbes) > 0 {
+			detail = fmt.Sprintf("Differential matrix incomplete: %d probe(s) failed (%s); alg=none acceptance could not be confirmed or ruled out.", len(failedProbes), strings.Join(failedProbes, ", "))
+		}
 		m.results = append(m.results, JWTSecurityAuditResult{
 			Target: m.Target,
 			Status: statusFromEvidence(EvidenceWeak, true),
-			Detail: formatEvidenceDetail(EvidenceConfirmed, "Differential matrix showed no acceptance path specific to alg=none JWT tokens."),
+			Detail: formatEvidenceDetail(EvidenceWeak, detail),
+		})
+	}
+
+	if nonNoneAccepted {
+		summary := "Endpoint accepts arbitrary bearer tokens: random and/or invalid-signed JWTs (or requests with no token) are accepted without verification."
+		m.RecordPoC(nil, nil, summary)
+		m.results = append(m.results, JWTSecurityAuditResult{
+			Target: m.Target,
+			Status: statusFromEvidence(EvidenceConfirmed, false),
+			Detail: formatEvidenceDetail(EvidenceConfirmed, summary),
 		})
 	}
 

@@ -39,6 +39,9 @@ func TestBrokenObjectLevelAuthorizationBola_Execute(t *testing.T) {
 	if len(result) == 0 {
 		t.Fatal("Expected findings for exposed user records, got 0")
 	}
+	if result[0].Status != "vulnerable" {
+		t.Fatalf("Expected vulnerable status, got %q", result[0].Status)
+	}
 }
 
 func TestBrokenObjectLevelAuthorizationBola_LoginRedirectIgnored(t *testing.T) {
@@ -61,8 +64,10 @@ func TestBrokenObjectLevelAuthorizationBola_LoginRedirectIgnored(t *testing.T) {
 		t.Fatalf("Execute failed: %v", err)
 	}
 
-	if len(result) > 0 {
-		t.Errorf("Expected login error response to be ignored, got %d findings", len(result))
+	for _, r := range result {
+		if r.Status == "vulnerable" {
+			t.Errorf("Expected login error response to be ignored, got vulnerable finding: %s", r.Detail)
+		}
 	}
 }
 
@@ -95,5 +100,57 @@ func TestBrokenObjectLevelAuthorizationBola__Execute_HTTPError(t *testing.T) {
 
 	module := NewBrokenObjectLevelAuthorizationBola("http://example.com")
 	ctx := context.Background()
-	_, _ = module.Execute(ctx)
+	result, err := module.Execute(ctx)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	// With no 200 responses at all the module must not stay silent: it emits
+	// exactly one inconclusive summary row instead of findings.
+	if len(result) != 1 {
+		t.Fatalf("Expected exactly 1 inconclusive summary row on uniform 500s, got %d results: %+v", len(result), result)
+	}
+	if result[0].Status != "inconclusive" {
+		t.Fatalf("Expected inconclusive status, got %q", result[0].Status)
+	}
+}
+
+func TestBrokenObjectLevelAuthorizationBola_LoginWallGateWithValidBaseline(t *testing.T) {
+	// A valid baseline (sentinel ID 404s with a non-empty body) followed by
+	// login-wall responses on every object ID: the login-wall gate must
+	// suppress the length-only judge, so no vulnerable finding appears.
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			if req.URL.Path == "/api/users/999999999" {
+				return &http.Response{
+					StatusCode: http.StatusNotFound,
+					Body:       io.NopCloser(bytes.NewBufferString(`{"error": "user not found"}`)),
+					Header:     make(http.Header),
+				}
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewBufferString(`<html><body>You must log in to view user records. <form><input type="password" name="pass"></form></body></html>`)),
+				Header:     make(http.Header),
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewBrokenObjectLevelAuthorizationBola("http://example.com")
+	ctx := context.Background()
+	result, err := module.Execute(ctx)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	for _, r := range result {
+		if r.Status == "vulnerable" {
+			t.Fatalf("login-wall responses must not be flagged as BOLA, got: %s", r.Detail)
+		}
+	}
+	// After probes ran with zero findings the run is inconclusive, not silent.
+	if len(result) != 1 || result[0].Status != "inconclusive" {
+		t.Fatalf("Expected exactly 1 inconclusive summary row, got %+v", result)
+	}
 }

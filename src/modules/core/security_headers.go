@@ -9,10 +9,6 @@ import (
 	"time"
 )
 
-var (
-	securityHeadersSeen sync.Map
-)
-
 type SecurityHeadersResult struct {
 	Target string `json:"target"`
 	Status string `json:"status"`
@@ -23,6 +19,12 @@ type SecurityHeaders struct {
 	BaseModule
 	Target  string
 	results []SecurityHeadersResult
+
+	// per-run probe bookkeeping (guarded by m.Mu)
+	attempted    bool
+	probeErr     error
+	lastNon2xx   int
+	missingFound bool
 }
 
 func NewSecurityHeaders(target string) *SecurityHeaders {
@@ -37,6 +39,16 @@ func NewSecurityHeaders(target string) *SecurityHeaders {
 
 func (m *SecurityHeaders) Execute(ctx context.Context) ([]SecurityHeadersResult, error) {
 	m.results = make([]SecurityHeadersResult, 0)
+	m.Mu.Lock()
+	m.attempted = false
+	m.probeErr = nil
+	m.lastNon2xx = 0
+	m.missingFound = false
+	m.Mu.Unlock()
+
+	// Per-run dedup map so repeat scans re-report findings instead of being
+	// silently swallowed by process-global state.
+	seen := make(map[string]bool)
 
 	endpoints := []string{"/"}
 
@@ -56,17 +68,45 @@ func (m *SecurityHeaders) Execute(ctx context.Context) ([]SecurityHeadersResult,
 				case <-ctx.Done():
 					return
 				default:
-					m.testHeaders(ctx, ep)
+					m.testHeaders(ctx, ep, seen)
 				}
 			}
 		}()
 	}
 
 	wg.Wait()
-	return m.results, nil
+
+	// Never end silently-empty: summarize the run outcome.
+	m.Mu.Lock()
+	if len(m.results) == 0 && m.attempted && ctx.Err() == nil {
+		switch {
+		case m.probeErr != nil:
+			m.results = append(m.results, SecurityHeadersResult{
+				Target: m.Target,
+				Status: "inconclusive",
+				Detail: fmt.Sprintf("Security headers could not be evaluated: %v", m.probeErr),
+			})
+		case m.lastNon2xx != 0:
+			m.results = append(m.results, SecurityHeadersResult{
+				Target: m.Target,
+				Status: "inconclusive",
+				Detail: fmt.Sprintf("Endpoint returned HTTP %d; security headers were not evaluated.", m.lastNon2xx),
+			})
+		case !m.missingFound:
+			m.results = append(m.results, SecurityHeadersResult{
+				Target: m.Target,
+				Status: "secure",
+				Detail: "All checked security headers present",
+			})
+		}
+	}
+	res := make([]SecurityHeadersResult, len(m.results))
+	copy(res, m.results)
+	m.Mu.Unlock()
+	return res, nil
 }
 
-func (m *SecurityHeaders) testHeaders(ctx context.Context, endpoint string) {
+func (m *SecurityHeaders) testHeaders(ctx context.Context, endpoint string, seen map[string]bool) {
 	testURL := m.Target + endpoint
 
 	req, err := http.NewRequestWithContext(ctx, "GET", testURL, nil)
@@ -74,13 +114,27 @@ func (m *SecurityHeaders) testHeaders(ctx context.Context, endpoint string) {
 		return
 	}
 
+	m.Mu.Lock()
+	m.attempted = true
+	m.Mu.Unlock()
+
 	resp, err := m.Client.Do(req)
 	if err != nil {
+		m.Mu.Lock()
+		if m.probeErr == nil {
+			m.probeErr = err
+		}
+		m.Mu.Unlock()
 		return
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusNotFound {
+	// Only judge 2xx responses: error pages and redirects do not carry the
+	// security posture of the actual application surface.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		m.Mu.Lock()
+		m.lastNon2xx = resp.StatusCode
+		m.Mu.Unlock()
 		return
 	}
 
@@ -98,23 +152,26 @@ func (m *SecurityHeaders) testHeaders(ctx context.Context, endpoint string) {
 		missing = append(missing, "X-Frame-Options (Clickjacking)")
 	}
 
-	if len(missing) > 0 {
-		detailStr := fmt.Sprintf("Missing headers: %s", strings.Join(missing, ", "))
-
-		dedupKey := testURL + "|" + detailStr
-		if _, loaded := securityHeadersSeen.LoadOrStore(dedupKey, true); loaded {
-			return
-		}
-
-		m.Mu.Lock()
-		m.RecordPoC(req, nil, fmt.Sprintf("Missing Security Headers at: %s", testURL))
-		m.results = append(m.results, SecurityHeadersResult{
-			Target: m.Target,
-			Status: "vulnerable",
-			Detail: detailStr,
-		})
-		m.Mu.Unlock()
+	if len(missing) == 0 {
+		return
 	}
+
+	detailStr := fmt.Sprintf("Missing headers: %s", strings.Join(missing, ", "))
+	dedupKey := testURL + "|" + detailStr
+
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	if seen[dedupKey] {
+		return
+	}
+	seen[dedupKey] = true
+	m.missingFound = true
+	m.RecordPoC(req, nil, fmt.Sprintf("Missing Security Headers at: %s", testURL))
+	m.results = append(m.results, SecurityHeadersResult{
+		Target: m.Target,
+		Status: "vulnerable",
+		Detail: detailStr,
+	})
 }
 
 func init() {

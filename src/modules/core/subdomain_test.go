@@ -21,4 +21,3 @@ func TestGetDefaultWordlist(t *testing.T) {
 		t.Error("expected 'www' to be in default wordlist")
 	}
 }
-

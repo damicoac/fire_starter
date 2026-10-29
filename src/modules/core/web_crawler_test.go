@@ -115,6 +115,58 @@ func TestWebCrawler_Crawl(t *testing.T) {
 	}
 }
 
+func TestWebCrawler_Crawl_SubpathRelativeLinks(t *testing.T) {
+	mux := http.NewServeMux()
+
+	// Entry page links into a DIFFERENT directory; the relative href under test
+	// is served only on that subpage, so resolution against the entry URL
+	// (the old bug) would produce /blog/comments.html instead of the correct
+	// /blog/guides/comments.html.
+	mux.HandleFunc("/blog/post1", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprintln(w, `<html><body><a href="guides/post2">Guide</a></body></html>`)
+	})
+
+	mux.HandleFunc("/blog/guides/post2", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprintln(w, `<html><body><a href="comments.html">Comments</a></body></html>`)
+	})
+
+	mux.HandleFunc("/blog/guides/comments.html", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprintln(w, `<html><body><h1>Comments</h1></body></html>`)
+	})
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	crawler := NewWebCrawler(ts.URL+"/blog/post1", nil, 3)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	results, err := crawler.Crawl(ctx)
+	if err != nil {
+		t.Fatalf("Crawl failed: %v", err)
+	}
+
+	foundComments := false
+	bogusComments := false
+	for _, u := range results {
+		if strings.HasSuffix(u, "/blog/guides/comments.html") {
+			foundComments = true
+		}
+		if strings.HasSuffix(u, "/blog/comments.html") {
+			bogusComments = true
+		}
+	}
+	if !foundComments {
+		t.Errorf("Expected relative link on /blog/guides/post2 to resolve against that page (/blog/guides/comments.html), got: %v", results)
+	}
+	if bogusComments {
+		t.Errorf("Relative link must not be resolved against the entry URL (/blog/comments.html is wrong), got: %v", results)
+	}
+}
+
 func TestWebCrawler_ContextCancel(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(100 * time.Millisecond)

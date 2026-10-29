@@ -29,7 +29,10 @@ func TestUnrestrictedFileUpload_Execute(t *testing.T) {
 	}
 
 	if len(result) == 0 {
-		t.Log("Expected results, got none")
+		t.Fatalf("Expected results, got none")
+	}
+	if result[0].Status != "vulnerable" {
+		t.Fatalf("Expected vulnerable status, got: %s", result[0].Status)
 	}
 }
 
@@ -57,7 +60,38 @@ func TestUnrestrictedFileUpload_Execute_HTTPError(t *testing.T) {
 	module := NewUnrestrictedFileUpload("http://example.com")
 	ctx := context.Background()
 	res, _ := module.Execute(ctx)
-	if len(res) > 0 {
-		t.Fatalf("Expected no results on 500 error, got %d", len(res))
+	if len(res) != 1 {
+		t.Fatalf("Expected single inconclusive summary result, got %d", len(res))
+	}
+	if res[0].Status != "inconclusive" {
+		t.Fatalf("Expected inconclusive status on 500 error, got: %s", res[0].Status)
+	}
+}
+
+func TestUnrestrictedFileUpload_Execute_RejectionBodyOn200(t *testing.T) {
+	// A 200 with a differently-worded rejection body must not be judged
+	// vulnerable; only the inconclusive summary remains.
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewBufferString(`{"success":false,"message":"file extension rejected"}`)),
+				Header:     make(http.Header),
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewUnrestrictedFileUpload("http://example.com")
+	ctx := context.Background()
+	res, err := module.Execute(ctx)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	for _, r := range res {
+		if r.Status == "vulnerable" {
+			t.Fatalf("Expected no vulnerable findings on rejection body, got %#v", res)
+		}
 	}
 }

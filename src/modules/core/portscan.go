@@ -2,10 +2,12 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sort"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -35,7 +37,6 @@ func NewPortScanner(target string, ports []int) *PortScanner {
 		results: make(map[int]portResult),
 	}
 }
-
 
 // SetThreads sets the number of concurrent scanning threads (default: 100)
 func (ps *PortScanner) SetThreads(count int) {
@@ -94,14 +95,20 @@ func (ps *PortScanner) scanPort(ctx context.Context, port int) portResult {
 	addr := net.JoinHostPort(ps.Target, fmt.Sprintf("%d", port))
 
 	if ctx.Err() != nil {
-		return portResult{Port: port, State: "closed", Banner: "context cancelled"}
+		// Ports in flight at cancellation must not be recorded as "closed";
+		// report a neutral state instead.
+		return portResult{Port: port, State: "skipped"}
 	}
 
 	dialer := net.Dialer{Timeout: ps.Timeout}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		if ctx.Err() != nil {
-			return portResult{Port: port, State: "closed", Banner: "context cancelled"}
+			return portResult{Port: port, State: "skipped"}
+		}
+		if errors.Is(err, syscall.ECONNREFUSED) {
+			// Immediate RST means the host is reachable and the port is closed.
+			return portResult{Port: port, State: "closed"}
 		}
 		return portResult{Port: port, State: "filtered"}
 	}

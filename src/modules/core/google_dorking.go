@@ -43,9 +43,10 @@ func (m *GoogleDorking) SetThreads(count int) {
 }
 
 var dorks = []string{
-	"ext:sql OR ext:db OR ext:sqlite OR ext:dump",
-	"ext:env OR ext:log OR ext:yml OR ext:json",
+	"filetype:sql OR filetype:db OR filetype:sqlite OR filetype:dump",
+	"filetype:env OR filetype:log OR filetype:yml OR filetype:json",
 	"intitle:\"index of\"",
+	"intitle:\"index of\" (\".env\" OR \".sql\" OR \".bak\")",
 	"inurl:admin OR inurl:login",
 }
 
@@ -107,34 +108,67 @@ func (m *GoogleDorking) testDork(ctx context.Context, query string) {
 
 	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
 	if err != nil {
+		m.addResult("Dork request could not be built: "+err.Error(), statusFromEvidence(EvidenceWeak, false))
 		return
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
 
 	resp, err := m.Client.Do(req)
 	if err != nil {
+		m.addResult("Search engine request failed for dork "+query+": "+err.Error(), statusFromEvidence(EvidenceWeak, false))
 		return
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		m.addResult(fmt.Sprintf("Search engine returned status %d for dork: %s", resp.StatusCode, query), statusFromEvidence(EvidenceWeak, false))
+		return
+	}
+
 	bodyBytes, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	if err != nil {
+		m.addResult("Search engine response read failed for dork "+query+": "+err.Error(), statusFromEvidence(EvidenceWeak, false))
 		return
 	}
 
 	bodyStr := string(bodyBytes)
 
-	// If DuckDuckGo returns results (look for class result__url or similar)
-	if strings.Contains(bodyStr, "result__url") && !strings.Contains(bodyStr, "No results.") {
-		m.Mu.Lock()
-		m.RecordPoC(req, nil, "Search engine found results for dork: "+query)
-		m.results = append(m.results, GoogleDorkingResult{
-			Target: m.Target,
-			Status: "found",
-			Detail: "Search engine found results for dork: " + query,
-		})
-		m.Mu.Unlock()
+	// Bot-challenge pages look like clean "no results" runs if not detected:
+	// report them as inconclusive instead of silently empty.
+	challengeMarkers := []string{"anomaly-modal", "challenge-form", "Unfortunately, bots use DuckDuckGo too"}
+	for _, marker := range challengeMarkers {
+		if strings.Contains(bodyStr, marker) {
+			m.addResult("Search engine bot challenge detected for dork: "+query, statusFromEvidence(EvidenceWeak, false))
+			return
+		}
 	}
+
+	// Result links present means exposures were found; a snippet that merely
+	// contains the text "No results." must not downgrade a real result page.
+	if strings.Contains(bodyStr, "result__url") {
+		m.addResult("Search engine found results for dork: "+query, statusFromEvidence(EvidenceConfirmed, false))
+		return
+	}
+
+	// "secure" is only reportable when the engine explicitly said there were no
+	// results; anything else is an unrecognised page layout.
+	if strings.Contains(bodyStr, "No results.") {
+		m.addResult("No results found for dork: "+query, statusFromEvidence(EvidenceConfirmed, true))
+		return
+	}
+
+	m.addResult("Unrecognised search engine response layout for dork "+query+"; results could not be classified.", statusFromEvidence(EvidenceWeak, false))
+}
+
+func (m *GoogleDorking) addResult(detail, status string) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	m.RecordPoC(nil, nil, detail)
+	m.results = append(m.results, GoogleDorkingResult{
+		Target: m.Target,
+		Status: status,
+		Detail: detail,
+	})
 }
 
 func init() {

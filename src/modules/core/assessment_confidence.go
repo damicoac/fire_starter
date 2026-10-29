@@ -39,9 +39,16 @@ func meetsThreshold(value float64, threshold float64) bool {
 	return value >= threshold
 }
 
-func statusFromEvidence(tier EvidenceTier, hasNegativeEvidence bool) string {
-	if hasNegativeEvidence {
-		return "secure"
+// statusFromEvidence maps an evidence tier and negative signal to a status.
+// A negative signal only yields "secure" when it is confirmed
+// (EvidenceConfirmed); weaker tiers with a negative signal remain
+// "inconclusive" because the evidence cannot rule out a false negative.
+func statusFromEvidence(tier EvidenceTier, hasConfirmingNegative bool) string {
+	if hasConfirmingNegative {
+		if tier == EvidenceConfirmed {
+			return "secure"
+		}
+		return "inconclusive"
 	}
 	if tier == EvidenceConfirmed {
 		return "vulnerable"
@@ -57,18 +64,24 @@ func formatEvidenceDetail(tier EvidenceTier, summary string) string {
 }
 
 // EvaluateDifferentialEvidence compares responses from true and false conditions against a baseline.
+// Bodies are normalized (lowercased, whitespace-stripped) so volatile tokens such as
+// CSRF fields or timestamps do not force every comparison to diverge.
 // Returns EvidenceConfirmed if one condition matches the baseline while the other diverges.
-// If no baseline is available, returns EvidenceStrong if trueBody != falseBody.
-// Otherwise returns EvidenceWeak.
-func EvaluateDifferentialEvidence(trueBody, falseBody, baseBody string) EvidenceTier {
-	if trueBody == "" || falseBody == "" {
+// If no baseline is available (hasBaseline == false), returns EvidenceStrong when the
+// conditions differ. An empty baseline body with hasBaseline == true is a real
+// (empty) baseline, not a missing one. Otherwise returns EvidenceWeak.
+func EvaluateDifferentialEvidence(trueBody, falseBody, baseBody string, hasBaseline bool) EvidenceTier {
+	trueNorm := normalizedCompactLower(trueBody)
+	falseNorm := normalizedCompactLower(falseBody)
+	if trueNorm == "" || falseNorm == "" {
 		return EvidenceWeak
 	}
-	if trueBody == falseBody {
+	if trueNorm == falseNorm {
 		return EvidenceWeak
 	}
-	if baseBody != "" {
-		if (trueBody == baseBody && falseBody != baseBody) || (trueBody != baseBody && falseBody == baseBody) {
+	if hasBaseline {
+		baseNorm := normalizedCompactLower(baseBody)
+		if (trueNorm == baseNorm && falseNorm != baseNorm) || (trueNorm != baseNorm && falseNorm == baseNorm) {
 			return EvidenceConfirmed
 		}
 		// If both conditions differ from baseline, page responses may be volatile/dynamic

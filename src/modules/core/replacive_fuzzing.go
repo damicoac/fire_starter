@@ -2,10 +2,15 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -59,6 +64,36 @@ func (m *ReplaciveFuzzing) Execute(ctx context.Context) ([]ReplaciveFuzzingResul
 		return m.results, err
 	}
 
+	// Benign baseline: without it, a transient 500 blip or a pre-broken endpoint that
+	// 500s universally would be reported as payload-caused crashes.
+	baselineReq, err := http.NewRequestWithContext(ctx, "GET", m.Target, nil)
+	if err != nil {
+		m.Mu.Lock()
+		m.results = append(m.results, ReplaciveFuzzingResult{
+			Target: m.Target,
+			Status: statusFromEvidence(EvidenceWeak, false),
+			Detail: formatEvidenceDetail(EvidenceWeak, fmt.Sprintf("Baseline request could not be built: %v", err)),
+		})
+		m.Mu.Unlock()
+		return m.results, nil
+	}
+	baselineResp, err := m.Client.Do(baselineReq)
+	if err != nil {
+		m.Mu.Lock()
+		m.results = append(m.results, ReplaciveFuzzingResult{
+			Target: m.Target,
+			Status: statusFromEvidence(EvidenceWeak, false),
+			Detail: formatEvidenceDetail(EvidenceWeak, fmt.Sprintf("Baseline request failed; fuzzing results cannot be attributed: %v", err)),
+		})
+		m.Mu.Unlock()
+		return m.results, nil
+	}
+	baselineStatus := baselineResp.StatusCode
+	baselineResp.Body.Close()
+	// A healthy baseline (2xx/3xx/4xx) makes a payload-time 5xx attributable to the
+	// payload; a 5xx baseline means the endpoint is already broken.
+	baselineHealthy := baselineStatus >= http.StatusOK && baselineStatus < http.StatusInternalServerError
+
 	jobs := make(chan string, len(fuzzingStrings))
 	for _, p := range fuzzingStrings {
 		jobs <- p
@@ -67,7 +102,7 @@ func (m *ReplaciveFuzzing) Execute(ctx context.Context) ([]ReplaciveFuzzingResul
 
 	var wg sync.WaitGroup
 
-	for i := 0; i < m.MaxThreads; i++ {
+	for range m.MaxThreads {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -76,7 +111,7 @@ func (m *ReplaciveFuzzing) Execute(ctx context.Context) ([]ReplaciveFuzzingResul
 				case <-ctx.Done():
 					return
 				default:
-					m.testPayload(ctx, parsedURL, payload)
+					m.testPayload(ctx, parsedURL, payload, baselineHealthy)
 				}
 			}
 		}()
@@ -90,6 +125,20 @@ func (m *ReplaciveFuzzing) Execute(ctx context.Context) ([]ReplaciveFuzzingResul
 
 	select {
 	case <-done:
+		if len(m.results) == 0 {
+			m.Mu.Lock()
+			detail := "No fuzzing payload triggered a payload-specific server error or connection crash."
+			if !baselineHealthy {
+				detail = "Baseline endpoint already returns a server error; payload-specific 5xx judging was disabled."
+			}
+			m.RecordPoC(nil, nil, detail)
+			m.results = append(m.results, ReplaciveFuzzingResult{
+				Target: m.Target,
+				Status: statusFromEvidence(EvidenceWeak, false),
+				Detail: formatEvidenceDetail(EvidenceWeak, detail),
+			})
+			m.Mu.Unlock()
+		}
 		return m.results, nil
 	case <-ctx.Done():
 		<-done
@@ -97,7 +146,24 @@ func (m *ReplaciveFuzzing) Execute(ctx context.Context) ([]ReplaciveFuzzingResul
 	}
 }
 
-func (m *ReplaciveFuzzing) testPayload(ctx context.Context, u *url.URL, payload string) {
+// replaciveIsCrashIndicator reports whether a transport error looks like the target process
+// or worker crashed mid-response (connection reset, broken pipe, truncated body).
+// Timeouts are deliberately excluded: they indicate slowness or overload, not a crash.
+func replaciveIsCrashIndicator(err error) bool {
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "unexpected eof")
+}
+
+func (m *ReplaciveFuzzing) testPayload(ctx context.Context, u *url.URL, payload string, baselineHealthy bool) {
 	query := u.Query()
 	testURL := *u
 
@@ -117,17 +183,71 @@ func (m *ReplaciveFuzzing) testPayload(ctx context.Context, u *url.URL, payload 
 
 	resp, err := m.Client.Do(req)
 	if err != nil {
+		// A connection reset / truncated response under the payload is crash evidence
+		// (the baseline request succeeded, so the transport itself was healthy).
+		if replaciveIsCrashIndicator(err) {
+			m.Mu.Lock()
+			detail := "Fuzzing payload caused a connection-level crash (connection reset/truncated response): " + payload
+			m.RecordPoC(req, nil, detail)
+			m.results = append(m.results, ReplaciveFuzzingResult{
+				Target: m.Target,
+				Status: statusFromEvidence(EvidenceConfirmed, false),
+				Detail: detail,
+			})
+			m.Mu.Unlock()
+		}
 		return
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusInternalServerError {
+	// 5xx evidence requires a healthy baseline so a pre-broken endpoint or transient
+	// blip is not reported as payload-caused; 502/504 additionally indicate a killed
+	// backend worker rather than application input validation.
+	switch {
+	case resp.StatusCode == http.StatusInternalServerError && baselineHealthy:
 		m.Mu.Lock()
-		m.RecordPoC(req, nil, "Fuzzing payload caused HTTP 500 Internal Server Error: "+payload)
+		detail := "Fuzzing payload caused HTTP 500 Internal Server Error (baseline responded normally): " + payload
+		m.RecordPoC(req, nil, detail)
 		m.results = append(m.results, ReplaciveFuzzingResult{
 			Target: m.Target,
-			Status: "vulnerable",
-			Detail: "Fuzzing payload caused HTTP 500 Internal Server Error: " + payload,
+			Status: statusFromEvidence(EvidenceConfirmed, false),
+			Detail: detail,
+		})
+		m.Mu.Unlock()
+	case (resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusGatewayTimeout) && baselineHealthy:
+		// A single 502/504 can be a transient upstream blip; re-issue the
+		// payload once and require the failure to reproduce before calling it
+		// a confirmed worker crash.
+		reproducible := false
+		retryReq, retryErr := http.NewRequestWithContext(ctx, "GET", testURL.String(), nil)
+		if retryErr == nil {
+			retryResp, doErr := m.Client.Do(retryReq)
+			if doErr == nil {
+				if retryResp.StatusCode == http.StatusBadGateway || retryResp.StatusCode == http.StatusGatewayTimeout {
+					reproducible = true
+				}
+				retryResp.Body.Close()
+			} else if replaciveIsCrashIndicator(doErr) {
+				// The connection died on the retry: the backend failed again
+				// under the same payload, which is reproduction evidence.
+				reproducible = true
+			}
+		}
+		m.Mu.Lock()
+		var detail string
+		var evidence EvidenceTier
+		if reproducible {
+			evidence = EvidenceConfirmed
+			detail = fmt.Sprintf("Fuzzing payload caused HTTP %d from the backend on two consecutive requests, indicating a worker crash: %s", resp.StatusCode, payload)
+		} else {
+			evidence = EvidenceStrong
+			detail = fmt.Sprintf("Fuzzing payload caused a single HTTP %d from the backend (not reproduced on re-issue); reported as inconclusive: %s", resp.StatusCode, payload)
+		}
+		m.RecordPoC(req, nil, detail)
+		m.results = append(m.results, ReplaciveFuzzingResult{
+			Target: m.Target,
+			Status: statusFromEvidence(evidence, false),
+			Detail: detail,
 		})
 		m.Mu.Unlock()
 	}

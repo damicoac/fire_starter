@@ -28,6 +28,17 @@ func TestSQLValidator_IsVulnerable_ErrorBased(t *testing.T) {
 	if v.IsVulnerable(nil, body, payload, 0, "") {
 		t.Error("Expected error-based detection to return false")
 	}
+
+	// Case 3: Error marker already present in the baseline body is not evidence
+	// of injection (broken query / generic error page).
+	baseBody := "Warning: mysql connection failed at startup"
+	body = "Warning: mysql error occurred while handling the request"
+	if v.IsVulnerable(nil, body, payload, 0, baseBody) {
+		t.Error("Expected error marker present in baseline to not be flagged")
+	}
+	if !v.IsVulnerable(nil, body, payload, 0, "") {
+		t.Error("Expected same marker without baseline to be flagged")
+	}
 }
 
 func TestSQLValidator_IsVulnerable_TimeBased(t *testing.T) {
@@ -42,6 +53,22 @@ func TestSQLValidator_IsVulnerable_TimeBased(t *testing.T) {
 	// Case 2: Duration below threshold
 	if v.IsVulnerable(nil, "", payload, 500*time.Millisecond, "") {
 		t.Error("Expected time-based detection to return false")
+	}
+}
+
+func TestSQLValidator_IsVulnerable_TimeBased_PositiveBaseline(t *testing.T) {
+	// Production path: minThreshold = BaselineDuration + Threshold.
+	v := &SQLValidator{Threshold: 4 * time.Second, BaselineDuration: 1 * time.Second}
+	payload := SQLPayload{Type: SQLCmdTimeBased}
+
+	// 1s baseline + 5s duration reaches the 5s minimum threshold.
+	if !v.IsVulnerable(nil, "", payload, 5*time.Second, "") {
+		t.Error("Expected 5s duration over 1s baseline to return true")
+	}
+
+	// Baseline + 0.5s is far below the baseline-adjusted threshold.
+	if v.IsVulnerable(nil, "", payload, 1500*time.Millisecond, "") {
+		t.Error("Expected 1.5s duration over 1s baseline to return false")
 	}
 }
 
@@ -249,5 +276,100 @@ func TestSQLInjectionTesting_Execute_ValidBaseRecord_Detected(t *testing.T) {
 
 	if !foundBooleanBlind {
 		t.Errorf("Expected boolean-blind vulnerability to be confirmed on valid base record")
+	}
+}
+
+func TestSQLInjectionTesting_Execute_TimeBased_Confirmed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("id")
+		if strings.Contains(q, "SLEEP") {
+			time.Sleep(300 * time.Millisecond)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer server.Close()
+
+	m := NewSQLInjectionTesting(server.URL + "/?id=1")
+	m.SetThreshold(100 * time.Millisecond)
+
+	results, err := m.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	found := false
+	for _, res := range results {
+		if res.Status == "vulnerable" && strings.Contains(res.Detail, "time_blind") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Expected confirmed time-based injection, got %+v", results)
+	}
+}
+
+func TestSQLInjectionTesting_Execute_TimeBased_Unconfirmed(t *testing.T) {
+	var sleepRequests int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("id")
+		// Only the first SLEEP request is slow; the confirming repeat is fast,
+		// so the delay cannot be reproduced and must not be reported.
+		if strings.Contains(q, "SLEEP") && atomic.AddInt64(&sleepRequests, 1) == 1 {
+			time.Sleep(300 * time.Millisecond)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer server.Close()
+
+	m := NewSQLInjectionTesting(server.URL + "/?id=1")
+	m.SetThreshold(100 * time.Millisecond)
+
+	results, err := m.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if len(results) != 0 {
+		t.Fatalf("Expected no findings for a non-reproducible delay, got %+v", results)
+	}
+}
+
+func TestSQLInjectionTesting_Execute_ErrorMarkerInBaseline_NoFalsePositive(t *testing.T) {
+	// A page that already contains an SQL error marker on every request (broken
+	// query, generic error page) must not be flagged by error-based payloads.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "SQL syntax error: unexpected token (page shows this notice on every request)")
+	}))
+	defer server.Close()
+
+	m := NewSQLInjectionTesting(server.URL + "/?id=1")
+	results, err := m.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if len(results) != 0 {
+		t.Fatalf("Expected no findings when the error marker is already in the baseline, got %+v", results)
+	}
+}
+
+func TestSQLInjectionTesting_Execute_TransportFailure_Inconclusive(t *testing.T) {
+	// Unreachable target: every baseline probe fails, so the run must emit an
+	// inconclusive row instead of a silently empty (clean-looking) result.
+	m := NewSQLInjectionTesting("http://127.0.0.1:1")
+
+	results, err := m.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("Expected exactly 1 inconclusive result for an unreachable target, got %+v", results)
+	}
+	if results[0].Status != "inconclusive" {
+		t.Errorf("Expected status inconclusive, got %q", results[0].Status)
 	}
 }

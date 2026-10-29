@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -55,22 +56,55 @@ func (m *JsonHijackingTest) Execute(ctx context.Context) ([]JsonHijackingTestRes
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
+	bodyBytes, truncated, err := ReadBoundedBodyWithTruncation(resp.Body, MaxResponseBodyBytes)
 	if err != nil {
-		return m.results, err
-	}
-
-	bodyStr := strings.TrimSpace(string(bodyBytes))
-
-	// If it returns a top-level array, it might be vulnerable to JSON Hijacking
-	if strings.HasPrefix(bodyStr, "[") && strings.HasSuffix(bodyStr, "]") {
-		m.RecordPoC(req, nil, "Potential JSON Hijacking vulnerability: Endpoint returns a top-level JSON array without requiring specific CSRF protection headers.")
+		m.Mu.Lock()
 		m.results = append(m.results, JsonHijackingTestResult{
 			Target: m.Target,
-			Status: "vulnerable",
-			Detail: "Potential JSON Hijacking vulnerability: Endpoint returns a top-level JSON array without requiring specific CSRF protection headers.",
+			Status: "inconclusive",
+			Detail: fmt.Sprintf("Failed to read response body: %v", err),
 		})
+		m.Mu.Unlock()
+		return m.results, nil
 	}
+	if truncated {
+		m.Mu.Lock()
+		m.results = append(m.results, JsonHijackingTestResult{
+			Target: m.Target,
+			Status: "inconclusive",
+			Detail: fmt.Sprintf("Response body exceeded %d bytes and was truncated; JSON hijacking could not be assessed.", MaxResponseBodyBytes),
+		})
+		m.Mu.Unlock()
+		return m.results, nil
+	}
+
+	// Only a 2xx application/json response can represent the victim's
+	// authenticated data; anything else (401 arrays, HTML pages, health
+	// endpoints on other content types) cannot establish the hijacking
+	// precondition.
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices ||
+		!strings.Contains(contentType, "application/json") {
+		return m.results, nil
+	}
+
+	var topLevels []json.RawMessage
+	if err := json.Unmarshal(bodyBytes, &topLevels); err != nil {
+		return m.results, nil
+	}
+	// `null` unmarshals into a nil slice and `[]` into an empty one: neither
+	// exposes any records, so there is nothing to hijack.
+	if len(topLevels) == 0 {
+		return m.results, nil
+	}
+
+	// If it returns a top-level array, it might be vulnerable to JSON Hijacking
+	m.RecordPoC(req, nil, "Potential JSON Hijacking vulnerability: Endpoint returns a top-level JSON array without requiring specific CSRF protection headers.")
+	m.results = append(m.results, JsonHijackingTestResult{
+		Target: m.Target,
+		Status: "vulnerable",
+		Detail: "Potential JSON Hijacking vulnerability: Endpoint returns a top-level JSON array without requiring specific CSRF protection headers.",
+	})
 
 	return m.results, nil
 }

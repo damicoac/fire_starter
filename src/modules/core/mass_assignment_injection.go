@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -54,8 +53,6 @@ const (
 	massAssignmentVerifyRetries = 2
 )
 
-var massAssignmentSeen sync.Map
-
 func (m *MassAssignmentInjection) Execute(ctx context.Context) ([]MassAssignmentInjectionResult, error) {
 	m.results = make([]MassAssignmentInjectionResult, 0)
 
@@ -67,7 +64,15 @@ func (m *MassAssignmentInjection) Execute(ctx context.Context) ([]MassAssignment
 	}
 
 	baselineStatus, baselineBody, baselineErr := m.sendJSON(ctx, baselinePayload)
-	if baselineErr != nil || baselineStatus < http.StatusOK || baselineStatus >= http.StatusMultipleChoices {
+	if baselineErr != nil {
+		return m.results, baselineErr
+	}
+	if baselineStatus < http.StatusOK || baselineStatus >= http.StatusMultipleChoices {
+		m.results = append(m.results, MassAssignmentInjectionResult{
+			Target: m.Target,
+			Status: statusFromEvidence(EvidenceWeak, false),
+			Detail: "no usable 2xx baseline",
+		})
 		return m.results, nil
 	}
 
@@ -79,7 +84,7 @@ func (m *MassAssignmentInjection) Execute(ctx context.Context) ([]MassAssignment
 	}
 	controlStatus, controlBody, controlErr := m.sendJSON(ctx, controlPayload)
 	if controlErr != nil {
-		return m.results, nil
+		return m.results, controlErr
 	}
 
 	echoesUnknownFields := controlStatus >= http.StatusOK && controlStatus < http.StatusMultipleChoices && strings.Contains(normalizedCompactLower(controlBody), "\"firestarter_probe_control\":\""+strings.ToLower(marker)+"\"")
@@ -89,6 +94,7 @@ func (m *MassAssignmentInjection) Execute(ctx context.Context) ([]MassAssignment
 	bestTier := EvidenceWeak
 	bestSummary := ""
 	seenLocal := map[string]bool{}
+	probeFailures := 0
 
 	for _, payloadTemplate := range assignmentPayloads {
 		if requestsUsed >= massAssignmentRequestBudget {
@@ -99,9 +105,7 @@ func (m *MassAssignmentInjection) Execute(ctx context.Context) ([]MassAssignment
 		statusCode, responseBody, err := m.sendJSON(ctx, mutantPayload)
 		requestsUsed++
 		if err != nil {
-			continue
-		}
-		if containsValidationRejection(responseBody) {
+			probeFailures++
 			continue
 		}
 		if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
@@ -110,6 +114,7 @@ func (m *MassAssignmentInjection) Execute(ctx context.Context) ([]MassAssignment
 
 		verifyStatus, verifyBody, hasVerification := m.verifyPersistedState(ctx, marker, &requestsUsed)
 		if !hasVerification {
+			probeFailures++
 			if hasPrivilegedFieldEcho(responseBody) || significantlyDiffersFromBaseline(baselineBody, responseBody) {
 				bestTier, bestSummary = pickStrongerEvidence(bestTier, bestSummary, EvidenceWeak, "Mutation probe produced weak anomalous behavior but verification read could not be completed within retry/budget limits.")
 			}
@@ -124,45 +129,22 @@ func (m *MassAssignmentInjection) Execute(ctx context.Context) ([]MassAssignment
 		}
 
 		if !strings.Contains(strings.ToLower(verifyBody), strings.ToLower(marker)) {
-			persistedFields := privilegedFieldsPersisted(verifyBody, mutantPayload)
-			if len(persistedFields) > 0 {
-				for _, field := range persistedFields {
-					dedupKey := m.Target + "|" + marker + "|" + field
-					if seenLocal[dedupKey] {
-						continue
-					}
-					if _, loaded := massAssignmentSeen.LoadOrStore(dedupKey, true); loaded {
-						continue
-					}
-					seenLocal[dedupKey] = true
-					summary := "Verified privileged field persistence in target object state on field " + field + "."
-					detail := formatEvidenceDetail(EvidenceConfirmed, summary)
-					m.Mu.Lock()
-					m.RecordPoC(nil, nil, summary)
-					m.results = append(m.results, MassAssignmentInjectionResult{
-						Target: m.Target,
-						Status: statusFromEvidence(EvidenceConfirmed, false),
-						Detail: detail,
-					})
-					m.Mu.Unlock()
-				}
-				continue
-			}
 			if hasPrivilegedFieldEcho(responseBody) || significantlyDiffersFromBaseline(baselineBody, responseBody) {
 				bestTier, bestSummary = pickStrongerEvidence(bestTier, bestSummary, EvidenceStrong, "Mutation probe changed response behavior, but verification read did not correlate to the target object marker.")
 			}
 			continue
 		}
 
-		persistedFields := privilegedFieldsPersisted(verifyBody, mutantPayload)
+		persistedFields := privilegedFieldsPersisted(verifyBody, marker, mutantPayload)
 		if len(persistedFields) == 0 {
-			hadAnomalousSignal := hasPrivilegedFieldEcho(responseBody) || echoesUnknownFields || significantlyDiffersFromBaseline(baselineBody, responseBody)
-			if hadAnomalousSignal {
-				foundExplicitNegativeEvidence = true
-				if hasPrivilegedFieldEcho(responseBody) || echoesUnknownFields {
-					sawReflectionOnlySignal = true
-				}
-				bestTier, bestSummary = pickStrongerEvidence(bestTier, bestSummary, EvidenceStrong, "Privileged fields were echoed or response shape changed, but verification read showed no privileged-field persistence for the correlated object.")
+			// A successful verification read on the correlated object that shows no
+			// privileged persistence is direct negative evidence. Reflection-only
+			// signals (echoed privileged fields, unknown fields accepted) downgrade
+			// the classification; response-shape deltas are ignored as noise.
+			foundExplicitNegativeEvidence = true
+			if hasPrivilegedFieldEcho(responseBody) || echoesUnknownFields {
+				sawReflectionOnlySignal = true
+				bestTier, bestSummary = pickStrongerEvidence(bestTier, bestSummary, EvidenceStrong, "Privileged fields were echoed or unknown fields were accepted, but verification read showed no privileged-field persistence for the correlated object.")
 			}
 			continue
 		}
@@ -170,9 +152,6 @@ func (m *MassAssignmentInjection) Execute(ctx context.Context) ([]MassAssignment
 		for _, field := range persistedFields {
 			dedupKey := m.Target + "|" + marker + "|" + field
 			if seenLocal[dedupKey] {
-				continue
-			}
-			if _, loaded := massAssignmentSeen.LoadOrStore(dedupKey, true); loaded {
 				continue
 			}
 			seenLocal[dedupKey] = true
@@ -211,7 +190,7 @@ func (m *MassAssignmentInjection) Execute(ctx context.Context) ([]MassAssignment
 		m.results = append(m.results, MassAssignmentInjectionResult{
 			Target: m.Target,
 			Status: statusFromEvidence(EvidenceWeak, true),
-			Detail: formatEvidenceDetail(EvidenceConfirmed, summary),
+			Detail: formatEvidenceDetail(EvidenceWeak, summary),
 		})
 		return m.results, nil
 	}
@@ -221,6 +200,15 @@ func (m *MassAssignmentInjection) Execute(ctx context.Context) ([]MassAssignment
 			Target: m.Target,
 			Status: statusFromEvidence(bestTier, false),
 			Detail: formatEvidenceDetail(bestTier, bestSummary),
+		})
+	}
+
+	if len(m.results) == 0 && bestSummary == "" && probeFailures > 0 {
+		summary := fmt.Sprintf("%d mutation/verification probe(s) failed; privileged-field persistence could not be assessed.", probeFailures)
+		m.results = append(m.results, MassAssignmentInjectionResult{
+			Target: m.Target,
+			Status: statusFromEvidence(EvidenceWeak, false),
+			Detail: formatEvidenceDetail(EvidenceWeak, summary),
 		})
 	}
 
@@ -357,48 +345,82 @@ func hasPrivilegedFieldEcho(responseBody string) bool {
 	return false
 }
 
-func privilegedFieldsPersisted(responseBody string, mutantPayload map[string]any) []string {
-	normalized := normalizedCompactLower(responseBody)
+// privilegedFieldsPersisted parses the verification body as JSON and reports
+// privileged fields that persisted inside the JSON object carrying the probe
+// marker (matched against username/correlation_marker). Privileged state in
+// unrelated objects (feature lists, docs, other users) is ignored.
+func privilegedFieldsPersisted(responseBody string, marker string, mutantPayload map[string]any) []string {
+	var root any
+	if err := json.Unmarshal([]byte(responseBody), &root); err != nil {
+		return nil
+	}
+
 	persisted := make([]string, 0)
 	seen := map[string]bool{}
 
-	addIfPersisted := func(field string, indicators []string) {
-		if seen[field] {
-			return
-		}
-		for _, indicator := range indicators {
-			if strings.Contains(normalized, indicator) {
-				persisted = append(persisted, field)
-				seen[field] = true
-				return
+	var walk func(node any)
+	walk = func(node any) {
+		switch typed := node.(type) {
+		case map[string]any:
+			if objectCarriesMarker(typed, marker) {
+				collectPersistedFields(typed, mutantPayload, &persisted, seen)
 			}
+			for _, value := range typed {
+				walk(value)
+			}
+		case []any:
+			for _, item := range typed {
+				walk(item)
+			}
+		}
+	}
+	walk(root)
+	return persisted
+}
+
+func objectCarriesMarker(obj map[string]any, marker string) bool {
+	for _, key := range []string{"username", "correlation_marker"} {
+		if value, ok := obj[key].(string); ok && strings.EqualFold(value, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func collectPersistedFields(obj map[string]any, mutantPayload map[string]any, persisted *[]string, seen map[string]bool) {
+	addIfPersisted := func(field string, present bool) {
+		if present && !seen[field] {
+			seen[field] = true
+			*persisted = append(*persisted, field)
 		}
 	}
 
 	if value, ok := mutantPayload["is_admin"].(bool); ok && value {
-		addIfPersisted("is_admin", []string{"\"is_admin\":true"})
+		present, _ := obj["is_admin"].(bool)
+		addIfPersisted("is_admin", present)
 	}
 	if value, ok := mutantPayload["isAdmin"].(bool); ok && value {
-		addIfPersisted("isAdmin", []string{"\"isadmin\":true", "\"is_admin\":true"})
+		presentCamel, _ := obj["isAdmin"].(bool)
+		presentSnake, _ := obj["is_admin"].(bool)
+		addIfPersisted("isAdmin", presentCamel || presentSnake)
 	}
 	if value, ok := mutantPayload["role"].(string); ok && strings.EqualFold(value, "admin") {
-		addIfPersisted("role", []string{"\"role\":\"admin\""})
+		role, _ := obj["role"].(string)
+		addIfPersisted("role", strings.EqualFold(role, "admin"))
 	}
 	if value, ok := mutantPayload["permissions"].(string); ok && strings.EqualFold(value, "all") {
-		addIfPersisted("permissions", []string{"\"permissions\":\"all\""})
+		permissions, _ := obj["permissions"].(string)
+		addIfPersisted("permissions", strings.EqualFold(permissions, "all"))
 	}
 	if userObj, ok := mutantPayload["user"].(map[string]any); ok {
-		if value, ok := userObj["is_admin"].(bool); ok && value {
-			addIfPersisted("user.is_admin", []string{"\"is_admin\":true"})
+		if payloadValue, ok := userObj["is_admin"].(bool); ok && payloadValue {
+			nested, _ := obj["user"].(map[string]any)
+			if nested != nil {
+				present, _ := nested["is_admin"].(bool)
+				addIfPersisted("user.is_admin", present)
+			}
 		}
 	}
-
-	return persisted
-}
-
-func containsValidationRejection(responseBody string) bool {
-	rejectionTokens := []string{"invalid", "forbidden", "denied", "unauthorized", "not allowed", "validation"}
-	return containsAnyToken(responseBody, rejectionTokens)
 }
 
 func significantlyDiffersFromBaseline(baselineBody string, responseBody string) bool {

@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -59,6 +60,31 @@ func TestPathTraversalAttack_ContentMatch(t *testing.T) {
 
 	if !found {
 		t.Errorf("Expected path traversal vulnerability to be found via content match")
+	}
+}
+
+// TestPathTraversalAttack_NoBaselineSkipsJudging pins the missing-baseline
+// guard: when every baseline probe fails on transport errors, no vector may
+// be judged against the zero-value baseline (which disables the soft-404
+// gate) — the run yields a single inconclusive row instead.
+func TestPathTraversalAttack_NoBaselineSkipsJudging(t *testing.T) {
+	module := NewPathTraversalAttack("http://example.com")
+	module.Client = &http.Client{Transport: &customTransport{roundTrip: func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("connection refused by mock")
+	}}}
+
+	result, err := module.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected exactly 1 inconclusive row when all baselines fail, got %d: %+v", len(result), result)
+	}
+	if result[0].Status != "inconclusive" {
+		t.Fatalf("expected inconclusive status when all baselines fail, got %q (%s)", result[0].Status, result[0].Detail)
+	}
+	if result[0].Status == "vulnerable" {
+		t.Fatalf("no vector may be judged without a baseline: %+v", result[0])
 	}
 }
 

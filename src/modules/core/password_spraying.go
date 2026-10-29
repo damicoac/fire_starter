@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -19,15 +20,23 @@ type PasswordSprayingResult struct {
 // PasswordSpraying executes the password_spraying security technique.
 type PasswordSpraying struct {
 	BaseModule
-	Target  string
-	results []PasswordSprayingResult
+	Target          string
+	results         []PasswordSprayingResult
+	lockoutDetected bool
+	aborted         bool
 }
 
 // NewPasswordSpraying creates a new instance.
 func NewPasswordSpraying(target string) *PasswordSpraying {
+	client := NewHTTPClient(10 * time.Second)
+	// Do not follow redirects: login flows signal success/failure via 302
+	// Location, and following them would hide the redirect target.
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
 	return &PasswordSpraying{
 		BaseModule: BaseModule{
-			Client:     NewHTTPClient(10 * time.Second),
+			Client:     client,
 			MaxThreads: 5,
 		},
 		Target: EnsureHTTPPrefix(target),
@@ -47,21 +56,24 @@ var sprayUsernames = []string{
 
 const sprayPassword = "Password1!"
 
-func (m *PasswordSpraying) getBaselineAuthBypass(ctx context.Context) (bool, int) {
+func (m *PasswordSpraying) getBaselineAuthBypass(ctx context.Context) (bool, int, string, error) {
 	body := "username=invalid_user_12345&password=invalid_password_12345"
 	req, err := http.NewRequestWithContext(ctx, "POST", m.Target, strings.NewReader(body))
 	if err != nil {
-		return false, 0
+		return false, 0, "", err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := m.Client.Do(req)
 	if err != nil {
-		return false, 0
+		return false, 0, "", err
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
+	bodyBytes, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
+	if err != nil {
+		return false, 0, "", err
+	}
 
 	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusFound || resp.StatusCode == http.StatusSeeOther {
 		location := resp.Header.Get("Location")
@@ -79,17 +91,27 @@ func (m *PasswordSpraying) getBaselineAuthBypass(ctx context.Context) (bool, int
 		}
 
 		if (len(resp.Cookies()) > 0 || location != "") && !isLikelyError {
-			return true, len(bodyBytes)
+			return true, len(bodyBytes), location, nil
 		}
-		return false, len(bodyBytes)
+		return false, len(bodyBytes), location, nil
 	}
-	return false, len(bodyBytes)
+	return false, len(bodyBytes), "", nil
 }
 
 func (m *PasswordSpraying) Execute(ctx context.Context) ([]PasswordSprayingResult, error) {
 	m.results = make([]PasswordSprayingResult, 0)
+	m.lockoutDetected = false
+	m.aborted = false
 
-	baselineAuthBypass, baselineLen := m.getBaselineAuthBypass(ctx)
+	baselineAuthBypass, baselineLen, baselineLocation, err := m.getBaselineAuthBypass(ctx)
+	if err != nil {
+		m.results = append(m.results, PasswordSprayingResult{
+			Target: m.Target,
+			Status: "inconclusive",
+			Detail: "Baseline authentication probe failed: " + err.Error(),
+		})
+		return m.results, nil
+	}
 
 	jobs := make(chan string, len(sprayUsernames))
 	for _, u := range sprayUsernames {
@@ -99,16 +121,22 @@ func (m *PasswordSpraying) Execute(ctx context.Context) ([]PasswordSprayingResul
 
 	var wg sync.WaitGroup
 
-	for i := 0; i < m.MaxThreads; i++ {
+	for range m.MaxThreads {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for username := range jobs {
+				m.Mu.Lock()
+				aborted := m.aborted
+				m.Mu.Unlock()
+				if aborted {
+					continue
+				}
 				select {
 				case <-ctx.Done():
 					return
 				default:
-					m.testUsername(ctx, username, baselineAuthBypass, baselineLen)
+					m.testUsername(ctx, username, baselineAuthBypass, baselineLen, baselineLocation)
 				}
 			}
 		}()
@@ -122,14 +150,44 @@ func (m *PasswordSpraying) Execute(ctx context.Context) ([]PasswordSprayingResul
 
 	select {
 	case <-done:
-		return m.results, nil
 	case <-ctx.Done():
 		<-done
+		m.appendLockoutInconclusive()
 		return m.results, ctx.Err()
+	}
+
+	m.appendLockoutInconclusive()
+	return m.results, nil
+}
+
+func (m *PasswordSpraying) appendLockoutInconclusive() {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	if m.lockoutDetected {
+		m.results = append(m.results, PasswordSprayingResult{
+			Target: m.Target,
+			Status: "inconclusive",
+			Detail: "Account lockout or rate limiting detected during spraying; remaining usernames skipped.",
+		})
 	}
 }
 
-func (m *PasswordSpraying) testUsername(ctx context.Context, username string, baselineAuthBypass bool, baselineLen int) {
+// sameRedirectPath reports whether two Location values refer to the same
+// redirect target, comparing parsed, slash-normalized paths so "/login" vs
+// "/login/" and absolute-vs-relative forms of the same path compare equal.
+func sameRedirectPath(a, b string) bool {
+	if strings.EqualFold(a, b) {
+		return true
+	}
+	pa, errA := url.Parse(strings.TrimSpace(a))
+	pb, errB := url.Parse(strings.TrimSpace(b))
+	if errA != nil || errB != nil {
+		return false
+	}
+	return "/"+strings.Trim(pa.Path, "/") == "/"+strings.Trim(pb.Path, "/")
+}
+
+func (m *PasswordSpraying) testUsername(ctx context.Context, username string, baselineAuthBypass bool, baselineLen int, baselineLocation string) {
 	body := "username=" + username + "&password=" + sprayPassword
 	req, err := http.NewRequestWithContext(ctx, "POST", m.Target, strings.NewReader(body))
 	if err != nil {
@@ -153,8 +211,39 @@ func (m *PasswordSpraying) testUsername(ctx context.Context, username string, ba
 			isLikelyError = true
 		}
 
-		bodyBytes, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
+		bodyBytes, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
+		if err != nil {
+			return
+		}
 		bodyStr := strings.ToLower(string(bodyBytes))
+
+		// Lockout / rate-limit pages must never be judged as successful logins;
+		// abort the remaining spray jobs once detected. The bare word "attempt"
+		// also appears on ordinary failure pages, so it only counts as a lockout
+		// signal alongside the stronger lockout/throttling markers.
+		isLockout := strings.Contains(bodyStr, "locked") ||
+			strings.Contains(bodyStr, "throttl") ||
+			strings.Contains(bodyStr, "too many")
+		if !isLockout && strings.Contains(bodyStr, "attempt") &&
+			(strings.Contains(bodyStr, "too many") || strings.Contains(bodyStr, "maximum") ||
+				strings.Contains(bodyStr, "locked") || strings.Contains(bodyStr, "throttl")) {
+			isLockout = true
+		}
+		if isLockout {
+			m.Mu.Lock()
+			m.lockoutDetected = true
+			m.aborted = true
+			m.Mu.Unlock()
+			return
+		}
+
+		// A redirect counts as a successful login only when it goes somewhere
+		// other than the baseline's (failed-login) redirect target. Paths are
+		// compared normalized so "/login" vs "/login/" and absolute-vs-relative
+		// forms of the same path compare equal.
+		if location != "" && sameRedirectPath(location, baselineLocation) {
+			isLikelyError = true
+		}
 
 		if resp.StatusCode == http.StatusOK {
 			if strings.Contains(bodyStr, "invalid") || strings.Contains(bodyStr, "incorrect") || strings.Contains(bodyStr, "wrong") || strings.Contains(bodyStr, "failed") {

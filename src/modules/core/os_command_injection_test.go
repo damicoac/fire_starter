@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -91,9 +92,15 @@ func TestOSCommandInjection_Comprehensive(t *testing.T) {
 }
 
 func TestOSCommandInjection_FalsePositive_TimeBased(t *testing.T) {
-	// Mock a server that is ALWAYS slow, regardless of payload
+	// Baseline requests are fast, but BOTH "sleep 5" and the "sleep 0"
+	// fast-check payload are slow: a plain slow server, not command execution.
+	// With a fast baseline the time-based judge triggers on "sleep 5", and the
+	// fast-rejection branch (baseline-adjusted threshold) must reject it.
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(300 * time.Millisecond)
+		cmd := r.URL.Query().Get("cmd")
+		if strings.Contains(cmd, "sleep") {
+			time.Sleep(300 * time.Millisecond)
+		}
 		fmt.Fprint(w, "Slow Server")
 	}))
 	defer ts.Close()
@@ -115,12 +122,50 @@ func TestOSCommandInjection_FalsePositive_TimeBased(t *testing.T) {
 	}
 }
 
+// TestOSCommandInjection_EchoPageNoFalsePositive pins the per-vector canary
+// fix: a page that reflects any parameter value must not report the reflected
+// "echo VULNERABLE" payload as command execution.
+func TestOSCommandInjection_EchoPageNoFalsePositive(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cmd := r.URL.Query().Get("cmd")
+		fmt.Fprintf(w, "you searched for: %s", cmd) // echoes any input verbatim
+	}))
+	defer ts.Close()
+
+	ctx := context.Background()
+	m := NewOSCommandInjection(ts.URL)
+	m.MaxThreads = 1
+
+	results, err := m.Execute(ctx)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if len(results) != 0 {
+		t.Fatalf("reflecting page must yield 0 findings, got %d: %+v", len(results), results)
+	}
+}
+
 func TestOSCommandInjection_Execute_CanceledContext(t *testing.T) {
 	module := NewOSCommandInjection("http://example.com")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	_, _ = module.Execute(ctx)
+	results, err := module.Execute(ctx)
+	if err == nil {
+		// Cancellation before the baseline produces an inconclusive row
+		// instead of an error; either way the run must not report findings.
+		if len(results) == 0 {
+			t.Fatalf("expected context.Canceled or an inconclusive row, got neither: %d results", len(results))
+		}
+		for _, r := range results {
+			if r.Status == "vulnerable" {
+				t.Fatalf("canceled run must not report vulnerable findings: %+v", r)
+			}
+		}
+	} else if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
 }
 
 func TestOSCommandInjection_Execute_InvalidURL(t *testing.T) {
@@ -144,5 +189,14 @@ func TestOSCommandInjection_Execute_HTTPError(t *testing.T) {
 
 	module := NewOSCommandInjection("http://example.com")
 	ctx := context.Background()
-	_, _ = module.Execute(ctx)
+	results, err := module.Execute(ctx)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	for _, res := range results {
+		if res.Status == "vulnerable" {
+			t.Fatalf("unexpected vulnerable finding on uniform-500 target: %+v", res)
+		}
+	}
 }

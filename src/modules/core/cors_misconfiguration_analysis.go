@@ -21,6 +21,13 @@ type CorsMisconfigurationAnalysis struct {
 	BaseModule
 	Target  string
 	results []CorsMisconfigurationAnalysisResult
+
+	// per-run probe bookkeeping (guarded by m.Mu)
+	probeCount            int
+	probeFailures         int
+	probeFailMsg          string
+	getFailureReported    bool
+	wildcardCredsReported bool
 }
 
 // NewCorsMisconfigurationAnalysis creates a new instance.
@@ -43,6 +50,13 @@ func (m *CorsMisconfigurationAnalysis) SetThreads(count int) {
 
 func (m *CorsMisconfigurationAnalysis) Execute(ctx context.Context) ([]CorsMisconfigurationAnalysisResult, error) {
 	m.results = make([]CorsMisconfigurationAnalysisResult, 0)
+	m.Mu.Lock()
+	m.probeCount = 0
+	m.probeFailures = 0
+	m.probeFailMsg = ""
+	m.getFailureReported = false
+	m.wildcardCredsReported = false
+	m.Mu.Unlock()
 
 	originsToTest := []string{
 		"https://evil.com",
@@ -89,13 +103,7 @@ func (m *CorsMisconfigurationAnalysis) Execute(ctx context.Context) ([]CorsMisco
 	select {
 	case <-done:
 		m.Mu.Lock()
-		if len(m.results) == 0 {
-			m.results = append(m.results, CorsMisconfigurationAnalysisResult{
-				Target: m.Target,
-				Status: "safe",
-				Detail: "No CORS misconfiguration detected. All tested malicious origins were rejected.",
-			})
-		}
+		m.summarize()
 		res := make([]CorsMisconfigurationAnalysisResult, len(m.results))
 		copy(res, m.results)
 		m.Mu.Unlock()
@@ -103,18 +111,50 @@ func (m *CorsMisconfigurationAnalysis) Execute(ctx context.Context) ([]CorsMisco
 	case <-ctx.Done():
 		<-done
 		m.Mu.Lock()
-		if len(m.results) == 0 {
-			m.results = append(m.results, CorsMisconfigurationAnalysisResult{
-				Target: m.Target,
-				Status: "safe",
-				Detail: "No CORS misconfiguration detected. All tested malicious origins were rejected.",
-			})
-		}
+		m.summarize()
 		res := make([]CorsMisconfigurationAnalysisResult, len(m.results))
 		copy(res, m.results)
 		m.Mu.Unlock()
 		return res, ctx.Err()
 	}
+}
+
+// summarize appends a closing row so an unreachable target is never reported
+// as a fabricated negative ("safe"). Callers must hold m.Mu.
+func (m *CorsMisconfigurationAnalysis) summarize() {
+	if len(m.results) > 0 {
+		return
+	}
+	if m.probeCount == 0 || m.probeFailures >= m.probeCount {
+		detail := "All origin probes failed; CORS configuration could not be evaluated."
+		if m.probeFailMsg != "" {
+			detail += " Last error: " + m.probeFailMsg
+		}
+		m.results = append(m.results, CorsMisconfigurationAnalysisResult{
+			Target: m.Target,
+			Status: "inconclusive",
+			Detail: detail,
+		})
+		return
+	}
+	if m.probeFailures > 0 {
+		// Some probes failed: "all origins rejected" cannot be confirmed.
+		detail := "Some origin probes failed; CORS configuration could not be fully evaluated."
+		if m.probeFailMsg != "" {
+			detail += " Last error: " + m.probeFailMsg
+		}
+		m.results = append(m.results, CorsMisconfigurationAnalysisResult{
+			Target: m.Target,
+			Status: "inconclusive",
+			Detail: detail,
+		})
+		return
+	}
+	m.results = append(m.results, CorsMisconfigurationAnalysisResult{
+		Target: m.Target,
+		Status: "secure",
+		Detail: "All tested malicious origins were rejected.",
+	})
 }
 
 func (m *CorsMisconfigurationAnalysis) testOrigin(ctx context.Context, origin string) {
@@ -127,15 +167,92 @@ func (m *CorsMisconfigurationAnalysis) testOrigin(ctx context.Context, origin st
 
 	resp, err := m.Client.Do(req)
 	if err != nil {
+		m.Mu.Lock()
+		m.probeFailures++
+		if m.probeFailMsg == "" {
+			m.probeFailMsg = err.Error()
+		}
+		m.Mu.Unlock()
 		return
 	}
-	defer resp.Body.Close()
+
+	m.Mu.Lock()
+	m.probeCount++
+	m.Mu.Unlock()
 
 	allowOrigin := resp.Header.Get("Access-Control-Allow-Origin")
 	allowCreds := strings.ToLower(resp.Header.Get("Access-Control-Allow-Credentials"))
+	resp.Body.Close()
 
-	// Vulnerable if it reflects our malicious origin and allows credentials
-	if allowOrigin == origin || allowOrigin == "*" {
+	reflected := allowOrigin == origin || allowOrigin == "*"
+	if !reflected {
+		return
+	}
+
+	// Preflight reflection alone is not exploitable: confirm the same origin is
+	// allowed on the actual cross-origin GET before calling this vulnerable.
+	getReq, err := http.NewRequestWithContext(ctx, "GET", m.Target, nil)
+	if err != nil {
+		return
+	}
+	getReq.Header.Set("Origin", origin)
+	getResp, err := m.Client.Do(getReq)
+	if err != nil {
+		m.Mu.Lock()
+		m.probeFailures++
+		if m.probeFailMsg == "" {
+			m.probeFailMsg = err.Error()
+		}
+		// The reflecting preflight could not be confirmed on the actual GET:
+		// record one inconclusive row for the run instead of silently dropping
+		// the signal.
+		if !m.getFailureReported {
+			m.getFailureReported = true
+			m.results = append(m.results, CorsMisconfigurationAnalysisResult{
+				Target: m.Target,
+				Status: "inconclusive",
+				Detail: "Origin reflection observed on the OPTIONS preflight, but the confirming cross-origin GET failed; CORS status could not be verified. Last error: " + err.Error(),
+			})
+		}
+		m.Mu.Unlock()
+		return
+	}
+	defer getResp.Body.Close()
+
+	getAllowOrigin := getResp.Header.Get("Access-Control-Allow-Origin")
+	if getAllowOrigin != allowOrigin {
+		// Server reflects on preflight only; the GET the browser actually
+		// issues is not allowed, so no readable cross-origin access exists.
+		return
+	}
+
+	switch {
+	case allowOrigin == "*":
+		if allowCreds == "true" {
+			// Browsers refuse to send credentials with a wildcard origin:
+			// not exploitable for credentialed reads. Report once per run.
+			m.Mu.Lock()
+			if !m.wildcardCredsReported {
+				m.wildcardCredsReported = true
+				m.results = append(m.results, CorsMisconfigurationAnalysisResult{
+					Target: m.Target,
+					Status: "inconclusive",
+					Detail: "Access-Control-Allow-Origin '*' with Access-Control-Allow-Credentials: true; browsers reject credentials for wildcard origins so this is not exploitable for credentialed reads.",
+				})
+			}
+			m.Mu.Unlock()
+		}
+	case allowOrigin == "null":
+		m.Mu.Lock()
+		m.RecordPoC(req, nil, "CORS misconfiguration: Allows 'null' Origin")
+		m.results = append(m.results, CorsMisconfigurationAnalysisResult{
+			Target: m.Target,
+			Status: "vulnerable",
+			Detail: "CORS misconfiguration: Allows 'null' Origin",
+		})
+		m.Mu.Unlock()
+	default:
+		// Credentialed access requires an exact reflected origin (not '*').
 		if allowCreds == "true" {
 			m.Mu.Lock()
 			m.RecordPoC(req, nil, "CORS misconfiguration: Allows Origin '"+origin+"' with Credentials")
@@ -143,15 +260,6 @@ func (m *CorsMisconfigurationAnalysis) testOrigin(ctx context.Context, origin st
 				Target: m.Target,
 				Status: "vulnerable",
 				Detail: "CORS misconfiguration: Allows Origin '" + origin + "' with Credentials",
-			})
-			m.Mu.Unlock()
-		} else if allowOrigin == "null" {
-			m.Mu.Lock()
-			m.RecordPoC(req, nil, "CORS misconfiguration: Allows 'null' Origin")
-			m.results = append(m.results, CorsMisconfigurationAnalysisResult{
-				Target: m.Target,
-				Status: "vulnerable",
-				Detail: "CORS misconfiguration: Allows 'null' Origin",
 			})
 			m.Mu.Unlock()
 		}

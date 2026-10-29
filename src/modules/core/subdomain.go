@@ -1,7 +1,5 @@
 package core
 
-
-
 // getDefaultWordlist returns a common subdomain wordlist for brute-force enumeration
 func getDefaultWordlist() []string {
 	return []string{

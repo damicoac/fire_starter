@@ -51,33 +51,121 @@ func TestComponentVersionAnalyzer(t *testing.T) {
 	foundAspNet := false
 	foundPackageJson := false
 	foundEnvFalsePositive := false
+	foundScriptSource := false
 
 	for _, res := range results {
-		if res.Status == "vulnerable" && strings.Contains(res.Detail, "Apache/2.4.41") {
+		if res.Status == "inconclusive" && strings.Contains(res.Detail, "Apache/2.4.41") {
 			foundServer = true
 		}
-		if res.Status == "vulnerable" && strings.Contains(res.Detail, "Found X-AspNet-Version header: 4.0.30319") {
+		if res.Status == "inconclusive" && strings.Contains(res.Detail, "Found X-AspNet-Version header: 4.0.30319") {
 			foundAspNet = true
 		}
-		if res.Status == "vulnerable" && strings.Contains(res.Detail, "Found exposed configuration file: /package.json") {
+		if res.Status == "vulnerable" && strings.Contains(res.Detail, "Found exposed configuration file: /package.json (name=test-app, version=1.0.0)") {
 			foundPackageJson = true
 		}
-		if res.Status == "vulnerable" && strings.Contains(res.Detail, "Found exposed configuration file: /.env") {
+		if strings.Contains(res.Detail, "Found exposed configuration file: /.env") {
 			foundEnvFalsePositive = true
+		}
+		if res.Status == "inconclusive" && strings.Contains(res.Detail, "Found script source: /js/jquery-1.12.4.min.js") {
+			foundScriptSource = true
 		}
 	}
 
 	if !foundServer {
-		t.Errorf("Expected to find Apache server version in headers")
+		t.Errorf("Expected to find Apache server version in headers (inconclusive)")
 	}
 	if !foundAspNet {
-		t.Errorf("Expected to find X-AspNet-Version in headers")
+		t.Errorf("Expected to find X-AspNet-Version in headers (inconclusive)")
+	}
+	if !foundScriptSource {
+		t.Errorf("Expected to find script source discovery (inconclusive)")
 	}
 	if !foundPackageJson {
-		t.Errorf("Expected to find exposed /package.json file")
+		t.Errorf("Expected to find exposed /package.json file with parsed version (vulnerable)")
 	}
 	if foundEnvFalsePositive {
 		t.Errorf("Did not expect to find exposed /.env file because content signature should not match")
+	}
+}
+
+func TestComponentVersionAnalyzer_ReadmeSignature(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/README.md" {
+			w.WriteHeader(http.StatusOK)
+			// Contains "#" characters but no markdown heading.
+			_, _ = w.Write([]byte("color: #fff; see a#anchor for more\n"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	analyzer := NewComponentVersionAnalyzer(server.URL)
+	results, err := analyzer.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	for _, res := range results {
+		if strings.Contains(res.Detail, "/README.md") {
+			t.Errorf("README signature matched soft-404 page without markdown heading: %v", res)
+		}
+	}
+}
+
+func TestComponentVersionAnalyzer_RunTwiceIdentical(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server", "Apache/2.4.41")
+		if r.URL.Path == "/package.json" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"name": "test-app", "version": "1.0.0"}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	analyzer := NewComponentVersionAnalyzer(server.URL)
+	first, err := analyzer.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	second, err := analyzer.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+
+	if len(first) == 0 {
+		t.Fatalf("Expected results on first run, got 0")
+	}
+	if len(first) != len(second) {
+		t.Fatalf("Expected identical result counts across runs, got %d then %d", len(first), len(second))
+	}
+	for i := range first {
+		if first[i] != second[i] {
+			t.Errorf("Run 2 result %d differs: %+v vs %+v", i, first[i], second[i])
+		}
+	}
+}
+
+func TestComponentVersionAnalyzer_BaselineFailureInconclusive(t *testing.T) {
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			return nil // simulate transport failure
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	analyzer := NewComponentVersionAnalyzer("http://example.com")
+	results, err := analyzer.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("Expected exactly one inconclusive baseline-failure row, got %d", len(results))
+	}
+	if results[0].Status != "inconclusive" {
+		t.Errorf("Expected inconclusive status on baseline failure, got %s", results[0].Status)
 	}
 }
 
@@ -110,5 +198,16 @@ func TestComponentVersionAnalyzer_Execute_HTTPError(t *testing.T) {
 
 	analyzer := NewComponentVersionAnalyzer("http://example.com")
 	ctx := context.Background()
-	_, _ = analyzer.Execute(ctx)
+	result, err := analyzer.Execute(ctx)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	// A uniform-500 target must not render as a silently clean scan: exactly
+	// one inconclusive row, and never a vulnerable finding.
+	if len(result) != 1 {
+		t.Fatalf("expected exactly 1 inconclusive row on a uniform-500 target, got %d: %+v", len(result), result)
+	}
+	if result[0].Status != "inconclusive" {
+		t.Fatalf("expected inconclusive status on a uniform-500 target, got %q (%s)", result[0].Status, result[0].Detail)
+	}
 }

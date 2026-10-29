@@ -124,7 +124,7 @@ func TestJWTSecurityAudit_Execute_InconclusiveWhenGenericBearerBypass(t *testing
 	}
 }
 
-func TestJWTSecurityAudit_Execute_SecureWhenJWTNoneRejected(t *testing.T) {
+func TestJWTSecurityAudit_Execute_InconclusiveWhenJWTNoneRejected(t *testing.T) {
 	callCount := 0
 	mockTransport := &MockTransport{
 		RoundTripFunc: func(req *http.Request) *http.Response {
@@ -155,8 +155,10 @@ func TestJWTSecurityAudit_Execute_SecureWhenJWTNoneRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
-	if len(result) == 0 || result[0].Status != "secure" {
-		t.Fatalf("expected secure result when forged JWTs are rejected, got %#v", result)
+	// Weak negative evidence cannot confirm security; the framework maps it
+	// to inconclusive (only confirmed negative evidence yields "secure").
+	if len(result) == 0 || result[0].Status != "inconclusive" {
+		t.Fatalf("expected inconclusive result when forged JWTs are rejected, got %#v", result)
 	}
 }
 
@@ -184,6 +186,43 @@ func TestJWTSecurityAudit_Execute_InconclusiveWhenBaselineNotAuthGated(t *testin
 	}
 	if len(result) == 0 || result[0].Status != "inconclusive" {
 		t.Fatalf("expected inconclusive result when baseline is not auth-gated, got %#v", result)
+	}
+}
+
+func TestJWTSecurityAudit_Execute_InconclusiveNamingFailedProbes(t *testing.T) {
+	callCount := 0
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			callCount++
+			headers := make(http.Header)
+			if callCount == 1 {
+				// Baseline succeeds and is auth-gated; every probe afterwards
+				// fails at the transport layer.
+				headers.Add("WWW-Authenticate", "Bearer")
+				return &http.Response{
+					StatusCode: http.StatusUnauthorized,
+					Body:       io.NopCloser(bytes.NewBufferString(`{"error": "unauthorized"}`)),
+					Header:     headers,
+				}
+			}
+			return nil // transport failure
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewJWTSecurityAudit("http://example.com")
+	module.SetThreads(1)
+
+	result, err := module.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if len(result) == 0 || result[0].Status != "inconclusive" {
+		t.Fatalf("expected inconclusive when probes fail, got %#v", result)
+	}
+	if !strings.Contains(result[0].Detail, "no_token") || !strings.Contains(result[0].Detail, "alg_none_1") {
+		t.Fatalf("expected detail to name failed probes, got %q", result[0].Detail)
 	}
 }
 
@@ -216,5 +255,8 @@ func TestJWTSecurityAudit__Execute_HTTPError(t *testing.T) {
 
 	module := NewJWTSecurityAudit("http://example.com")
 	ctx := context.Background()
-	_, _ = module.Execute(ctx)
+	result, _ := module.Execute(ctx)
+	if len(result) == 0 || result[0].Status != "inconclusive" {
+		t.Fatalf("expected inconclusive result when endpoint errors on every request, got %#v", result)
+	}
 }

@@ -78,6 +78,15 @@ func (m *UnrestrictedFileUpload) Execute(ctx context.Context) ([]UnrestrictedFil
 	}
 
 	wg.Wait()
+	if len(m.results) == 0 {
+		m.Mu.Lock()
+		m.results = append(m.results, UnrestrictedFileUploadResult{
+			Target: m.Target,
+			Status: "inconclusive",
+			Detail: "No upload endpoint confirmed acceptance of a dangerous file type on tested payloads.",
+		})
+		m.Mu.Unlock()
+	}
 	return m.results, nil
 }
 
@@ -110,13 +119,22 @@ func (m *UnrestrictedFileUpload) testUpload(ctx context.Context, endpoint, filen
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
+	respBody, readErr := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
+	if readErr != nil {
+		// An unreadable response body must never be judged as an accepted
+		// upload; the run-level summary accounts for it as inconclusive.
+		return
+	}
 
-	// Simple heuristic: if it returns 200/201 and doesn't complain about the file type
+	// If it returns 200/201 and does not reject the file type, report a finding.
+	// The rejection vocabulary covers differently-worded validators
+	// ("file extension rejected", "unsupported file type", "upload failed", ...).
+	rejectionTokens := []string{
+		"invalid", "error", "not allowed", "not permitted", "unsupported",
+		"rejected", "denied", "forbidden", "disallowed", "failed",
+	}
 	if (resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated) &&
-		!bytes.Contains(bytes.ToLower(respBody), []byte("invalid file type")) &&
-		!bytes.Contains(bytes.ToLower(respBody), []byte("error")) &&
-		!bytes.Contains(bytes.ToLower(respBody), []byte("not allowed")) {
+		!containsAnyToken(string(respBody), rejectionTokens) {
 
 		m.Mu.Lock()
 		m.RecordPoC(req, body.Bytes(), fmt.Sprintf("Successfully uploaded dangerous file type (%s) to %s", filename, testURL))

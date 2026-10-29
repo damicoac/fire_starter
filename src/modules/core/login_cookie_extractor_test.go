@@ -15,7 +15,7 @@ func TestLoginCookieExtractor_Execute(t *testing.T) {
 			header.Add("Set-Cookie", "session_id=12345; Path=/; HttpOnly")
 			return &http.Response{
 				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(bytes.NewBufferString(`{"status": "ok"}`)),
+				Body:       io.NopCloser(bytes.NewBufferString(`{"status": "ok", "message": "Welcome back, admin"}`)),
 				Header:     header,
 			}
 		},

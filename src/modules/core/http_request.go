@@ -16,6 +16,7 @@ type HTTPRequestModule struct {
 	Method  string
 	Body    string
 	Headers map[string]string
+	log     func(string)
 }
 
 func NewHTTPRequestModule(target, method, body string, headers map[string]string) *HTTPRequestModule {
@@ -44,12 +45,24 @@ func (m *HTTPRequestModule) Execute(ctx context.Context) (map[string]any, error)
 		return nil, err
 	}
 
+	callerSuppliedCookie := false
+	for k := range m.Headers {
+		if strings.EqualFold(k, "Cookie") {
+			callerSuppliedCookie = true
+		}
+	}
+
 	for k, v := range m.Headers {
 		req.Header.Set(k, v)
 	}
 
 	if cookies := m.BaseModule.GetCookies(); cookies != "" {
-		req.Header.Set("Cookie", cookies)
+		if callerSuppliedCookie {
+			// Merge session cookies without discarding the caller's Cookie header.
+			req.Header.Add("Cookie", cookies)
+		} else {
+			req.Header.Set("Cookie", cookies)
+		}
 	}
 
 	resp, err := m.BaseModule.Client.Do(req)
@@ -58,18 +71,26 @@ func (m *HTTPRequestModule) Execute(ctx context.Context) (map[string]any, error)
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
+	respBody, truncated, err := ReadBoundedBodyWithTruncation(resp.Body, MaxResponseBodyBytes)
+	if err != nil {
+		return nil, err
+	}
 
 	respHeaders := make(map[string]string)
 	for k, v := range resp.Header {
 		respHeaders[k] = strings.Join(v, ", ")
 	}
 
-	return map[string]any{
+	result := map[string]any{
 		"status_code": resp.StatusCode,
 		"headers":     respHeaders,
 		"body":        string(respBody),
-	}, nil
+		"truncated":   truncated,
+	}
+	if m.log != nil {
+		m.log("HTTPRequest completed.")
+	}
+	return result, nil
 }
 
 func init() {
@@ -89,8 +110,8 @@ func init() {
 		onLog(fmt.Sprintf("Starting HTTPRequest on: %s %s", method, target))
 
 		tester := NewHTTPRequestModule(target, method, body, headers)
+		tester.log = onLog
 
-		onLog("HTTPRequest completed.")
 		return ModuleWrapper{
 			Module: tester,
 			ExecuteFunc: func(ctx context.Context) (any, error) {

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -68,9 +69,11 @@ func (m *SubdomainTakeoverAnalysis) Execute(ctx context.Context) ([]SubdomainTak
 	}
 	close(jobs)
 
+	var resolvedCount int64
+	var failureCount int64
 	var wg sync.WaitGroup
 
-	for i := 0; i < m.MaxThreads; i++ {
+	for range m.MaxThreads {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -79,7 +82,11 @@ func (m *SubdomainTakeoverAnalysis) Execute(ctx context.Context) ([]SubdomainTak
 				case <-ctx.Done():
 					return
 				default:
-					m.testSubdomain(ctx, job)
+					if m.testSubdomain(ctx, job) {
+						atomic.AddInt64(&resolvedCount, 1)
+					} else {
+						atomic.AddInt64(&failureCount, 1)
+					}
 				}
 			}
 		}()
@@ -93,52 +100,80 @@ func (m *SubdomainTakeoverAnalysis) Execute(ctx context.Context) ([]SubdomainTak
 
 	select {
 	case <-done:
-		return m.results, nil
 	case <-ctx.Done():
 		<-done
+		m.appendInconclusiveIfUnresolved(resolvedCount, failureCount)
 		return m.results, ctx.Err()
 	}
+
+	m.appendInconclusiveIfUnresolved(resolvedCount, failureCount)
+	return m.results, nil
 }
 
-func (m *SubdomainTakeoverAnalysis) testSubdomain(ctx context.Context, sub string) {
+func (m *SubdomainTakeoverAnalysis) appendInconclusiveIfUnresolved(resolvedCount, failureCount int64) {
+	if resolvedCount > 0 || failureCount == 0 {
+		return
+	}
+	m.Mu.Lock()
+	m.results = append(m.results, SubdomainTakeoverAnalysisResult{
+		Target: m.Target,
+		Status: "inconclusive",
+		Detail: fmt.Sprintf("No subdomain could be resolved (%d DNS lookups failed); takeover status unknown.", failureCount),
+	})
+	m.Mu.Unlock()
+}
+
+func (m *SubdomainTakeoverAnalysis) testSubdomain(ctx context.Context, sub string) bool {
 	lookup := m.LookupCNAME
 	if lookup == nil {
 		lookup = defaultLookupCNAME
 	}
 	cname, err := lookup(ctx, sub)
 	if err != nil {
-		return
+		return false
 	}
 
 	for cnameSig, errorSig := range takeoverSignatures {
 		if strings.Contains(cname, cnameSig) {
-			// Actually fetch the page to see if it's available for takeover
-			req, err := http.NewRequestWithContext(ctx, "GET", "http://"+sub, nil)
-			if err != nil {
-				return
-			}
-			resp, err := m.Client.Do(req)
-			if err != nil {
-				return
-			}
-			defer resp.Body.Close()
-
-			bodyBytes, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
-			bodyStr := string(bodyBytes)
-
-			if strings.Contains(bodyStr, errorSig) {
-				m.Mu.Lock()
-				m.RecordPoC(req, nil, "Subdomain "+sub+" is vulnerable to takeover via "+cname)
-				m.results = append(m.results, SubdomainTakeoverAnalysisResult{
-					Target: m.Target,
-					Status: "vulnerable",
-					Detail: "Subdomain " + sub + " is vulnerable to takeover via " + cname,
-				})
-				m.Mu.Unlock()
-				return
+			// Actually fetch the page to see if it's available for takeover.
+			// Try HTTPS first (GitHub Pages/Heroku are HTTPS-only), fall back to HTTP.
+			if !m.probeTakeover(ctx, sub, "https", cname, errorSig) {
+				m.probeTakeover(ctx, sub, "http", cname, errorSig)
 			}
 		}
 	}
+	return true
+}
+
+func (m *SubdomainTakeoverAnalysis) probeTakeover(ctx context.Context, sub, scheme, cname, errorSig string) bool {
+	req, err := http.NewRequestWithContext(ctx, "GET", scheme+"://"+sub, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := m.Client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
+	if err != nil {
+		// An unreadable body proves nothing; report "not verified" so the
+		// http:// fallback scheme still runs.
+		return false
+	}
+
+	if strings.Contains(string(bodyBytes), errorSig) {
+		m.Mu.Lock()
+		m.RecordPoC(req, nil, "Subdomain "+sub+" is vulnerable to takeover via "+cname)
+		m.results = append(m.results, SubdomainTakeoverAnalysisResult{
+			Target: m.Target,
+			Status: "vulnerable",
+			Detail: "Subdomain " + sub + " is vulnerable to takeover via " + cname,
+		})
+		m.Mu.Unlock()
+	}
+	return true
 }
 
 func init() {

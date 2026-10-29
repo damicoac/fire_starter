@@ -9,8 +9,11 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -53,13 +56,31 @@ const MaxResponseBodyBytes = 2 * 1024 * 1024 // 2 MB maximum bound to prevent me
 
 // ReadBoundedBody reads up to maxBytes from r to prevent OOM memory exhaustion on unbounded streams or huge payloads.
 func ReadBoundedBody(r io.Reader, maxBytes int64) ([]byte, error) {
+	data, _, err := ReadBoundedBodyWithTruncation(r, maxBytes)
+	return data, err
+}
+
+// ReadBoundedBodyWithTruncation behaves like ReadBoundedBody and additionally
+// reports whether the reader was cut off at maxBytes, so callers can
+// distinguish a genuinely short body from a silently truncated one.
+func ReadBoundedBodyWithTruncation(r io.Reader, maxBytes int64) ([]byte, bool, error) {
 	if r == nil {
-		return nil, nil
+		return nil, false, nil
 	}
 	if maxBytes <= 0 {
 		maxBytes = MaxResponseBodyBytes
 	}
-	return io.ReadAll(io.LimitReader(r, maxBytes))
+	data, err := io.ReadAll(io.LimitReader(r, maxBytes))
+	if err != nil {
+		return data, false, err
+	}
+	if int64(len(data)) == maxBytes {
+		var probe [1]byte
+		if n, _ := r.Read(probe[:]); n > 0 {
+			return data, true, nil
+		}
+	}
+	return data, false, nil
 }
 
 type BaseModule struct {
@@ -128,8 +149,6 @@ func (m *OOBManager) StartOOBReceiver(listenAddr string) error {
 	if err != nil {
 		return err
 	}
-	m.Listener = l
-	m.Interactions = make(map[string][]OOBInteraction)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := strings.Trim(r.URL.Path, "/")
 		if id != "" {
@@ -146,34 +165,51 @@ func (m *OOBManager) StartOOBReceiver(listenAddr string) error {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "OK")
 	})
+	m.Mu.Lock()
+	m.Listener = l
+	m.Interactions = make(map[string][]OOBInteraction)
 	m.Server = &http.Server{Handler: handler}
+	server := m.Server
+	m.Mu.Unlock()
 
 	go func() {
-		_ = m.Server.Serve(l)
+		_ = server.Serve(l)
 	}()
 	return nil
 }
 
 func (m *OOBManager) StopOOBReceiver() {
-	if m.Server != nil {
+	// Snapshot and clear under the lock, then shut down outside of it:
+	// Shutdown waits for in-flight handlers which themselves need m.Mu.
+	m.Mu.Lock()
+	server, listener := m.Server, m.Listener
+	m.Server, m.Listener = nil, nil
+	m.Mu.Unlock()
+
+	if server != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		_ = m.Server.Shutdown(ctx)
-		m.Server = nil
+		_ = server.Shutdown(ctx)
 	}
-	if m.Listener != nil {
-		_ = m.Listener.Close()
-		m.Listener = nil
+	if listener != nil {
+		_ = listener.Close()
 	}
 }
 
 func (m *OOBManager) GenerateOOBPayload() (string, string) {
-	id := fmt.Sprintf("%d", time.Now().UnixNano())
+	m.Mu.Lock()
 	host := m.PublicHost
 	if host == "" && m.Listener != nil {
 		host = m.Listener.Addr().String()
 	}
+	m.Mu.Unlock()
 
+	// No resolvable OOB host: a degenerate "/<id>" payload would produce a
+	// malformed URL, so report the absence explicitly.
+	if host == "" {
+		return "", ""
+	}
+	id := fmt.Sprintf("%d", time.Now().UnixNano())
 	return fmt.Sprintf("%s/%s", host, id), id
 }
 
@@ -198,8 +234,9 @@ func (b *BaseModule) DiscoverVectors(u *url.URL, body io.Reader, contentType str
 		var err error
 		bodyBytes, err = ReadBoundedBody(body, MaxResponseBodyBytes)
 		if err != nil {
-			// Since we can't return an error, we proceed with whatever was read
-			fmt.Printf("Warning: failed to fully read request body: %v\n", err)
+			// Since we can't return an error, record the failure via the PoC
+			// trail instead of silently proceeding.
+			b.RecordPoC(nil, nil, fmt.Sprintf("DiscoverVectors failed to read request body: %v", err))
 		}
 	}
 
@@ -292,11 +329,20 @@ func (b *BaseModule) discoverJSONVectors(data any, path []string) []InputVector 
 	switch v := data.(type) {
 	case map[string]any:
 		for k, val := range v {
-			vectors = append(vectors, b.discoverJSONVectors(val, append(path, k))...)
+			// Copy the path slice before appending: reusing `path`'s backing
+			// array via append aliases sibling branches and corrupts stored
+			// JSONPaths at depth >= 4.
+			np := make([]string, len(path), len(path)+1)
+			copy(np, path)
+			np = append(np, k)
+			vectors = append(vectors, b.discoverJSONVectors(val, np)...)
 		}
 	case []any:
 		if len(v) > 0 {
-			vectors = append(vectors, b.discoverJSONVectors(v[0], append(path, "0"))...)
+			np := make([]string, len(path), len(path)+1)
+			copy(np, path)
+			np = append(np, "0")
+			vectors = append(vectors, b.discoverJSONVectors(v[0], np)...)
 		}
 	case string, float64, bool:
 		vectors = append(vectors, InputVector{
@@ -359,6 +405,28 @@ func (b *BaseModule) setJSONValue(data any, path []string, value string) (any, e
 	return nil, fmt.Errorf("path not found or not a container")
 }
 
+// rawValuesWithPayload replaces the value of key with payload in values and
+// returns the encoded query/body string. Payloads that already contain
+// percent-encoding are spliced verbatim so they are not double-escaped
+// ("..%2f" must reach the wire as "..%2f", not "..%252f").
+func rawValuesWithPayload(values url.Values, key, payload string) string {
+	if !strings.Contains(payload, "%") {
+		values.Set(key, payload)
+		return values.Encode()
+	}
+	values.Del(key)
+	pairs := make([]string, 0, len(values)+1)
+	for k, vs := range values {
+		escapedKey := url.QueryEscape(k)
+		for _, v := range vs {
+			pairs = append(pairs, escapedKey+"="+url.QueryEscape(v))
+		}
+	}
+	pairs = append(pairs, url.QueryEscape(key)+"="+payload)
+	sort.Strings(pairs)
+	return strings.Join(pairs, "&")
+}
+
 // BuildRequestWithVector constructs an HTTP request injecting the payload into the specified vector.
 func (b *BaseModule) BuildRequestWithVector(ctx context.Context, method string, u *url.URL, vector InputVector, payload string) (*http.Request, error) {
 	b.Mu.Lock()
@@ -384,30 +452,33 @@ func (b *BaseModule) BuildRequestWithVector(ctx context.Context, method string, 
 
 	switch vector.Type {
 	case VectorQueryParam:
-		q := newU.Query()
-		q.Set(vector.Key, payload)
-		newU.RawQuery = q.Encode()
+		newU.RawQuery = rawValuesWithPayload(newU.Query(), vector.Key, payload)
 		req, err = http.NewRequestWithContext(ctx, method, newU.String(), body)
 
 	case VectorFormBody:
 		var values url.Values
 		if len(origBody) > 0 {
-			values, _ = url.ParseQuery(string(origBody))
+			var parseErr error
+			values, parseErr = url.ParseQuery(string(origBody))
+			if parseErr != nil {
+				// Sending a body containing only the payload would corrupt
+				// differential judging; fail the vector instead.
+				return nil, fmt.Errorf("failed to parse original form body for vector %q: %w", vector.Key, parseErr)
+			}
 		} else {
 			values = url.Values{}
 		}
-		values.Set(vector.Key, payload)
-		req, err = http.NewRequestWithContext(ctx, method, newU.String(), strings.NewReader(values.Encode()))
+		req, err = http.NewRequestWithContext(ctx, method, newU.String(), strings.NewReader(rawValuesWithPayload(values, vector.Key, payload)))
 
 	case VectorJSONBody:
 		var newBodyBytes []byte
 		if len(origBody) > 0 {
-			newBodyBytes, err = b.MutateJSON(origBody, vector.JSONPath, payload)
-			if err != nil {
-				// fallback if mutate fails
-				bodyMap := make(map[string]any)
-				bodyMap[vector.Key] = payload
-				newBodyBytes, _ = json.Marshal(bodyMap)
+			var mutateErr error
+			newBodyBytes, mutateErr = b.MutateJSON(origBody, vector.JSONPath, payload)
+			if mutateErr != nil {
+				// Replacing the whole body with a fabricated flat object would
+				// send a request the target never issued; fail instead.
+				return nil, fmt.Errorf("failed to mutate JSON body for vector %q: %w", vector.Key, mutateErr)
 			}
 		} else {
 			bodyMap := make(map[string]any)
@@ -424,11 +495,25 @@ func (b *BaseModule) BuildRequestWithVector(ctx context.Context, method string, 
 		if _, err := fmt.Sscanf(vector.Key, "path[%d]", &idx); err != nil {
 			return nil, fmt.Errorf("invalid path segment key format: %s", vector.Key)
 		}
-		segments := strings.Split(strings.TrimLeft(newU.Path, "/"), "/")
-		if idx >= 0 && idx < len(segments) {
-			segments[idx] = payload
+		segments := strings.Split(strings.Trim(u.EscapedPath(), "/"), "/")
+		if idx < 0 || idx >= len(segments) {
+			// Silently skipping the mutation would judge an unmutated request.
+			return nil, fmt.Errorf("path segment index out of range: %s", vector.Key)
 		}
-		newU.Path = "/" + strings.Join(segments, "/")
+		if strings.Contains(payload, "%") {
+			// Payload is already percent-encoded; keep it verbatim so
+			// url.URL.String() does not re-escape '%' to "%25".
+			segments[idx] = payload
+		} else {
+			segments[idx] = (&url.URL{Path: payload}).EscapedPath()
+		}
+		rawPath := "/" + strings.Join(segments, "/")
+		decoded, decodeErr := url.PathUnescape(rawPath)
+		if decodeErr != nil {
+			return nil, fmt.Errorf("invalid encoded path payload for vector %q: %w", vector.Key, decodeErr)
+		}
+		newU.Path = decoded
+		newU.RawPath = rawPath
 		req, err = http.NewRequestWithContext(ctx, method, newU.String(), body)
 
 	default:
@@ -476,8 +561,16 @@ func (b *BaseModule) BuildRequestWithVector(ctx context.Context, method string, 
 	return req, nil
 }
 
-func (b *BaseModule) DiscoverReflection(ctx context.Context, u *url.URL, vector InputVector) []ReflectionContext {
-	probe := "PROBE" + time.Now().Format("05.000")
+var reflectionProbeCounter uint64
+
+// DiscoverReflection sends a canary probe through the given vector and reports
+// where it was reflected. Build, transport, and read failures are returned as
+// errors so callers can downgrade to "inconclusive" instead of treating the
+// vector as unreflected.
+func (b *BaseModule) DiscoverReflection(ctx context.Context, u *url.URL, vector InputVector) ([]ReflectionContext, error) {
+	// Atomic suffix prevents probe collisions between requests issued within
+	// the same millisecond.
+	probe := fmt.Sprintf("PROBE%d.%s", atomic.AddUint64(&reflectionProbeCounter, 1), time.Now().Format("05.000"))
 
 	method := "GET"
 	if vector.Type == VectorFormBody || vector.Type == VectorJSONBody {
@@ -485,8 +578,11 @@ func (b *BaseModule) DiscoverReflection(ctx context.Context, u *url.URL, vector 
 	}
 
 	req, err := b.BuildRequestWithVector(ctx, method, u, vector, probe)
-	if err != nil || req == nil {
-		return nil
+	if err != nil {
+		return nil, fmt.Errorf("failed to build reflection probe request: %w", err)
+	}
+	if req == nil {
+		return nil, fmt.Errorf("reflection probe request build returned nil")
 	}
 
 	client := b.Client
@@ -496,17 +592,24 @@ func (b *BaseModule) DiscoverReflection(ctx context.Context, u *url.URL, vector 
 
 	cookies := b.GetCookies()
 	if cookies != "" {
-		req.Header.Set("Cookie", cookies)
+		if vector.Type == VectorHeader && strings.HasPrefix(strings.ToLower(vector.Key), "cookie:") {
+			// Merge session cookies around the vector cookie instead of
+			// overwriting the probe: overwriting discarded the injected
+			// payload and produced empty reflections on authenticated targets.
+			req.Header.Set("Cookie", mergeCookieHeaders(req.Header.Get("Cookie"), cookies))
+		} else {
+			req.Header.Set("Cookie", cookies)
+		}
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("reflection probe request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	bodyBytes, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("failed to read reflection probe response: %w", err)
 	}
 
 	body := string(bodyBytes)
@@ -527,35 +630,92 @@ func (b *BaseModule) DiscoverReflection(ctx context.Context, u *url.URL, vector 
 		start = absoluteIdx + len(probe)
 	}
 
-	return reflections
+	return reflections, nil
 }
 
+// mergeCookieHeaders merges session cookies into a Cookie header without
+// displacing cookies already present (the vector probe wins its own name).
+func mergeCookieHeaders(existing, session string) string {
+	if existing == "" {
+		return session
+	}
+	if session == "" {
+		return existing
+	}
+	present := make(map[string]bool)
+	for _, part := range strings.Split(existing, ";") {
+		name := strings.TrimSpace(part)
+		if i := strings.Index(name, "="); i >= 0 {
+			name = name[:i]
+		}
+		present[strings.ToLower(name)] = true
+	}
+	var extra []string
+	for _, part := range strings.Split(session, ";") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		name := part
+		if i := strings.Index(part, "="); i >= 0 {
+			name = part[:i]
+		}
+		if !present[strings.ToLower(name)] {
+			present[strings.ToLower(name)] = true
+			extra = append(extra, part)
+		}
+	}
+	if len(extra) == 0 {
+		return existing
+	}
+	return existing + "; " + strings.Join(extra, "; ")
+}
+
+var (
+	// attributeValueSpanRe matches `name="value"` / `name='value'` spans so the
+	// reflection position can be checked against the quoted value region
+	// instead of relying on raw quote parity (apostrophes in text such as
+	// title='It's' previously caused misclassification).
+	attributeValueSpanRe = regexp.MustCompile(`[^\s"'>=]+\s*=\s*("[^"]*"|'[^']*')`)
+	// unquotedAttrTailRe matches an attribute whose unquoted value is open at
+	// the end of the inspected prefix (e.g. `<a href=PROBE`).
+	unquotedAttrTailRe = regexp.MustCompile(`[^\s"'>=]+\s*=\s*[^\s"'<>]*$`)
+	// openQuotedAttrTailRe matches an attribute whose quoted value is still
+	// open at the end of the inspected prefix (e.g. `<input value='PROBE`).
+	openQuotedAttrTailRe = regexp.MustCompile(`[^\s"'>=]+\s*=\s*("[^"]*|'[^']*)$`)
+)
+
 func (b *BaseModule) analyzeContext(body string, idx int, probe string) ReflectionType {
-	// Very simple context analysis
 	// Look back for tags or attributes
 	preceding := body[:idx]
+	lower := strings.ToLower(preceding)
 
-	// Check if we are inside a <script> tag
-	scriptStart := strings.LastIndex(strings.ToLower(preceding), "<script")
-	scriptEnd := strings.LastIndex(strings.ToLower(preceding), "</script>")
+	// Check if we are inside a <script> tag. Require a real tag boundary
+	// (whitespace, '>', or '/') after "<script" so occurrences inside JS
+	// strings like `var s = "<script"` do not force ContextScript.
+	scriptStart := strings.LastIndex(lower, "<script")
+	scriptEnd := strings.LastIndex(lower, "</script>")
 	if scriptStart > scriptEnd {
-		return ContextScript
+		tail := lower[scriptStart+len("<script"):]
+		if tail == "" || tail[0] == '>' || tail[0] == '/' || tail[0] == ' ' || tail[0] == '\t' || tail[0] == '\n' || tail[0] == '\r' {
+			return ContextScript
+		}
 	}
 
-	// Check if we are inside an attribute (e.g., value='PROBE')
+	// Check if we are inside an attribute (e.g., value='PROBE').
 	// Find the last '<'
 	tagStart := strings.LastIndex(preceding, "<")
 	tagEnd := strings.LastIndex(preceding, ">")
 	if tagStart > tagEnd {
-		// We are inside a tag. Check if we are inside quotes.
-		// This is a very rough heuristic.
-		inQuotes := false
-		for i := tagStart; i < len(preceding); i++ {
-			if body[i] == '"' || body[i] == '\'' {
-				inQuotes = !inQuotes
+		tag := preceding[tagStart:]
+		rel := idx - tagStart
+		for _, loc := range attributeValueSpanRe.FindAllStringSubmatchIndex(tag, -1) {
+			// Group 2 is the quoted value including the quotes.
+			if len(loc) >= 4 && rel >= loc[2] && rel < loc[3] {
+				return ContextAttribute
 			}
 		}
-		if inQuotes {
+		if unquotedAttrTailRe.MatchString(tag[:rel]) || openQuotedAttrTailRe.MatchString(tag[:rel]) {
 			return ContextAttribute
 		}
 	}
@@ -566,7 +726,8 @@ func (b *BaseModule) analyzeContext(body string, idx int, probe string) Reflecti
 func NewBaseModule() *BaseModule {
 	return &BaseModule{
 		Client: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout:   10 * time.Second,
+			Transport: getDefaultTransport(),
 		},
 		MaxThreads: 10,
 		PoCs:       make([]ProofOfConcept, 0),

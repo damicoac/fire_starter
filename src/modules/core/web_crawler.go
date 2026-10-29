@@ -110,7 +110,7 @@ func (c *WebCrawler) Crawl(ctx context.Context) ([]string, error) {
 
 				client := c.Client
 				if client == nil {
-					client = http.DefaultClient
+					client = &http.Client{Timeout: 10 * time.Second}
 				}
 
 				resp, err := client.Do(req)
@@ -131,6 +131,12 @@ func (c *WebCrawler) Crawl(ctx context.Context) ([]string, error) {
 				mu.Unlock()
 
 				if depth >= c.MaxDepth {
+					return
+				}
+
+				// Resolve relative links against the page being crawled, not the entry URL.
+				pageURL, err := url.Parse(targetURL)
+				if err != nil {
 					return
 				}
 
@@ -156,7 +162,7 @@ func (c *WebCrawler) Crawl(ctx context.Context) ([]string, error) {
 						}
 
 						if link != "" {
-							parsedLink, err := baseURL.Parse(link)
+							parsedLink, err := pageURL.Parse(link)
 							if err == nil {
 								parsedLink.Fragment = ""
 								resolved := parsedLink.String()

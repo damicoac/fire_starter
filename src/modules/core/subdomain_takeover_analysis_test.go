@@ -33,8 +33,12 @@ func TestSubdomainTakeoverAnalysis_Execute(t *testing.T) {
 		t.Fatalf("Execute failed: %v", err)
 	}
 
-	if result == nil {
-		t.Log("Expected result, got nil")
+	// Every lookup failed: no vulnerable findings, one inconclusive summary row.
+	if len(result) != 1 {
+		t.Fatalf("Expected exactly 1 result on all-lookups-failed path, got %d", len(result))
+	}
+	if result[0].Status != "inconclusive" {
+		t.Errorf("Expected inconclusive status when no subdomain resolved, got %q", result[0].Status)
 	}
 }
 
@@ -65,8 +69,11 @@ func TestSubdomainTakeoverAnalysis_Execute_VulnerableTakeover(t *testing.T) {
 		t.Fatalf("Execute failed: %v", err)
 	}
 
-	if len(results) == 0 {
-		t.Errorf("Expected vulnerable takeover result to be recorded")
+	if len(results) != 1 {
+		t.Fatalf("Expected exactly 1 vulnerable takeover result, got %d", len(results))
+	}
+	if results[0].Status != "vulnerable" {
+		t.Errorf("Expected vulnerable status, got %q", results[0].Status)
 	}
 }
 
@@ -78,7 +85,10 @@ func TestSubdomainTakeoverAnalysis__Execute_CanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	_, _ = module.Execute(ctx)
+	results, _ := module.Execute(ctx)
+	if len(results) != 0 {
+		t.Errorf("Expected 0 results on canceled context, got %d", len(results))
+	}
 }
 
 func TestSubdomainTakeoverAnalysis__Execute_InvalidURL(t *testing.T) {
@@ -87,7 +97,12 @@ func TestSubdomainTakeoverAnalysis__Execute_InvalidURL(t *testing.T) {
 		return "", errors.New("no cname")
 	}
 	ctx := context.Background()
-	_, _ = module.Execute(ctx)
+	results, _ := module.Execute(ctx)
+	for _, r := range results {
+		if r.Status == "vulnerable" {
+			t.Errorf("Unexpected vulnerable result on invalid URL error path: %+v", r)
+		}
+	}
 }
 
 func TestSubdomainTakeoverAnalysis__Execute_HTTPError(t *testing.T) {
@@ -108,5 +123,10 @@ func TestSubdomainTakeoverAnalysis__Execute_HTTPError(t *testing.T) {
 		return "", errors.New("no cname")
 	}
 	ctx := context.Background()
-	_, _ = module.Execute(ctx)
+	results, _ := module.Execute(ctx)
+	for _, r := range results {
+		if r.Status == "vulnerable" {
+			t.Errorf("Unexpected vulnerable result on HTTP error path: %+v", r)
+		}
+	}
 }

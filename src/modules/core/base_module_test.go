@@ -147,14 +147,20 @@ func TestDiscoverReflection(t *testing.T) {
 
 	// Test Query Param
 	vector := InputVector{Type: VectorQueryParam, Key: "q", Value: "test"}
-	reflections := b.DiscoverReflection(context.Background(), u, vector)
+	reflections, err := b.DiscoverReflection(context.Background(), u, vector)
+	if err != nil {
+		t.Fatalf("unexpected reflection probe error: %v", err)
+	}
 	if len(reflections) != 3 {
 		t.Errorf("Expected 3 reflections for query param, got %d", len(reflections))
 	}
 
 	// Test Form Body
 	vector2 := InputVector{Type: VectorFormBody, Key: "q", Value: "test"}
-	reflections2 := b.DiscoverReflection(context.Background(), u, vector2)
+	reflections2, err := b.DiscoverReflection(context.Background(), u, vector2)
+	if err != nil {
+		t.Fatalf("unexpected reflection probe error: %v", err)
+	}
 	if len(reflections2) != 3 {
 		t.Errorf("Expected 3 reflections for form body, got %d", len(reflections2))
 	}
@@ -395,4 +401,173 @@ func TestBaseModule_ConcurrentVectorAndBuildRequest(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+func TestDiscoverReflectionCookieVectorPreservesProbeAndSession(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprintf(w, "<html><body>Cookie: %s</body></html>", r.Header.Get("Cookie"))
+	}))
+	defer ts.Close()
+
+	b := &BaseModule{Client: ts.Client()}
+	b.SetCookies("sid=abc123")
+
+	u, _ := url.Parse(ts.URL)
+	vector := InputVector{Type: VectorHeader, Key: "Cookie:sess", Value: "orig"}
+
+	reflections, err := b.DiscoverReflection(context.Background(), u, vector)
+	if err != nil {
+		t.Fatalf("unexpected reflection probe error: %v", err)
+	}
+	if len(reflections) == 0 {
+		t.Fatal("expected probe reflection for cookie vector, got none (probe was overwritten by session cookies?)")
+	}
+
+	// Re-run with a raw request to inspect the merged Cookie header contents.
+	req, err := b.BuildRequestWithVector(context.Background(), "GET", u, vector, "PROBEMARKER")
+	if err != nil {
+		t.Fatalf("BuildRequestWithVector failed: %v", err)
+	}
+	cookie := req.Header.Get("Cookie")
+	if !strings.Contains(cookie, "sess=PROBEMARKER") {
+		t.Errorf("expected vector cookie in Cookie header, got %q", cookie)
+	}
+	// Session cookies must survive alongside the vector cookie.
+	req.Header.Set("Cookie", mergeCookieHeaders(req.Header.Get("Cookie"), "sid=abc123"))
+	cookie = req.Header.Get("Cookie")
+	if !strings.Contains(cookie, "sid=abc123") {
+		t.Errorf("expected session cookie merged into Cookie header, got %q", cookie)
+	}
+	if !strings.Contains(cookie, "sess=PROBEMARKER") {
+		t.Errorf("expected vector cookie to survive merge, got %q", cookie)
+	}
+}
+
+func TestDiscoverJSONVectorsNoAliasing(t *testing.T) {
+	b := &BaseModule{}
+	// Depth >= 4 with sibling keys at the deepest level: the previous
+	// append(path, k) aliasing corrupted sibling JSONPaths.
+	body := `{"a":{"x":{"p":{"q1":"1","q2":"2","q3":"3","q4":"4"}}}}`
+	u, _ := url.Parse("http://example.com")
+	vectors, _ := b.DiscoverVectors(u, strings.NewReader(body), "application/json", nil)
+
+	expected := map[string]bool{
+		"a.x.p.q1": false,
+		"a.x.p.q2": false,
+		"a.x.p.q3": false,
+		"a.x.p.q4": false,
+	}
+	if len(vectors) != len(expected) {
+		t.Fatalf("expected %d JSON vectors, got %d: %#v", len(expected), len(vectors), vectors)
+	}
+	for _, v := range vectors {
+		if v.Type != VectorJSONBody {
+			t.Errorf("unexpected vector type %v", v.Type)
+			continue
+		}
+		seen, ok := expected[v.Key]
+		if !ok {
+			t.Errorf("unexpected corrupted JSONPath key %q", v.Key)
+			continue
+		}
+		if seen {
+			t.Errorf("duplicate JSON vector key %q (aliasing bug)", v.Key)
+		}
+		expected[v.Key] = true
+	}
+	for k, seen := range expected {
+		if !seen {
+			t.Errorf("missing JSON vector key %q", k)
+		}
+	}
+}
+
+func TestBuildRequestWithVectorPreservesEncodedPayloads(t *testing.T) {
+	b := &BaseModule{}
+
+	// Query vector: pre-encoded payload must not be double-escaped.
+	u, _ := url.Parse("http://example.com/api?id=1")
+	vec := InputVector{Type: VectorQueryParam, Key: "q", Value: ""}
+	req, err := b.BuildRequestWithVector(context.Background(), "GET", u, vec, "..%2f..%2fadmin")
+	if err != nil {
+		t.Fatalf("query vector build failed: %v", err)
+	}
+	if got := req.URL.RawQuery; !strings.Contains(got, "q=..%2f..%2fadmin") {
+		t.Errorf("expected raw pre-encoded query payload, got %q", got)
+	}
+	if strings.Contains(req.URL.String(), "%252f") {
+		t.Errorf("payload was double-encoded: %s", req.URL.String())
+	}
+
+	// Ordinary payloads still get encoded exactly once.
+	req, err = b.BuildRequestWithVector(context.Background(), "GET", u, vec, "hello world")
+	if err != nil {
+		t.Fatalf("plain query vector build failed: %v", err)
+	}
+	if got := req.URL.RawQuery; !strings.Contains(got, "q=hello+world") {
+		t.Errorf("expected plain payload encoded once, got %q", got)
+	}
+
+	// Path vector: pre-encoded payload must reach the wire verbatim.
+	u2, _ := url.Parse("http://example.com/api/v1/resource")
+	vec2 := InputVector{Type: VectorPathSegment, Key: "path[1]", Value: "v1"}
+	req, err = b.BuildRequestWithVector(context.Background(), "GET", u2, vec2, "..%2fadmin")
+	if err != nil {
+		t.Fatalf("path vector build failed: %v", err)
+	}
+	if got := req.URL.EscapedPath(); !strings.Contains(got, "..%2fadmin") {
+		t.Errorf("expected raw pre-encoded path payload, got %q", got)
+	}
+	if strings.Contains(req.URL.EscapedPath(), "%252f") {
+		t.Errorf("path payload was double-encoded: %s", req.URL.EscapedPath())
+	}
+}
+
+func TestBuildRequestWithVectorRejectsCorruptingInputs(t *testing.T) {
+	b := &BaseModule{}
+	b.OriginalBody = []byte("a=%zz&b=%zz") // invalid percent-escapes fail url.ParseQuery
+	b.OriginalHeaders = http.Header{}
+
+	u, _ := url.Parse("http://example.com")
+	vec := InputVector{Type: VectorFormBody, Key: "q", Value: ""}
+	if _, err := b.BuildRequestWithVector(context.Background(), "POST", u, vec, "payload"); err == nil {
+		t.Error("expected error for unparseable original form body")
+	}
+
+	b.OriginalBody = []byte(`{"user":{"name":"bob"}}`)
+	jsonVec := InputVector{Type: VectorJSONBody, Key: "user.missing", Value: "", JSONPath: []string{"user", "missing"}}
+	if _, err := b.BuildRequestWithVector(context.Background(), "POST", u, jsonVec, "payload"); err == nil {
+		t.Error("expected error for JSON mutation failure")
+	}
+
+	u2, _ := url.Parse("http://example.com/only")
+	pathVec := InputVector{Type: VectorPathSegment, Key: "path[5]", Value: "seg"}
+	if _, err := b.BuildRequestWithVector(context.Background(), "GET", u2, pathVec, "payload"); err == nil {
+		t.Error("expected error for out-of-range path segment index")
+	}
+}
+
+func TestDiscoverReflectionErrorOnTransportFailure(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	urlOf := ts.URL
+	ts.Close()
+
+	b := &BaseModule{Client: &http.Client{Timeout: 2 * time.Second}}
+	u, _ := url.Parse(urlOf)
+	reflections, err := b.DiscoverReflection(context.Background(), u, InputVector{Type: VectorQueryParam, Key: "q", Value: ""})
+	if err == nil {
+		t.Fatal("expected transport error from DiscoverReflection")
+	}
+	if reflections != nil {
+		t.Errorf("expected nil reflections on error, got %#v", reflections)
+	}
+}
+
+func TestGenerateOOBPayloadWithoutHost(t *testing.T) {
+	m := &OOBManager{}
+	payload, id := m.GenerateOOBPayload()
+	if payload != "" || id != "" {
+		t.Errorf("expected empty payload/id when no OOB host is available, got %q/%q", payload, id)
+	}
 }

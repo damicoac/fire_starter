@@ -1,6 +1,9 @@
 package core
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestNewGoogleDorkingForAPIs(t *testing.T) {
 	d := NewGoogleDorkingForAPIs("https://api.example.com/v1/users")
@@ -13,9 +16,35 @@ func TestGoogleDorkingForAPIsGenerate(t *testing.T) {
 	d := NewGoogleDorkingForAPIs("example.com")
 	results := d.Generate()
 
-	if len(results) != 16 {
-		t.Fatalf("expected 16 generated dorks, got %d", len(results))
+	if len(results) != 8 {
+		t.Fatalf("expected 8 generated dorks, got %d", len(results))
 	}
+	for _, r := range results {
+		if strings.Contains(r.Query, "site:*.") {
+			t.Errorf("wildcard site: operator is unsupported by Google: %s", r.Query)
+		}
+		if !strings.HasPrefix(r.Query, "site:example.com") {
+			t.Errorf("expected site: prefix with concrete domain, got %s", r.Query)
+		}
+	}
+}
+
+func TestGoogleDorkingForAPIs_StripsPort(t *testing.T) {
+	d := NewGoogleDorkingForAPIs("http://example.com:8080/api")
+	if d.Target != "example.com" {
+		t.Fatalf("expected port stripped from target, got %s", d.Target)
+	}
+	results := d.Generate()
+	for _, r := range results {
+		if strings.Contains(r.Query, ":8080") {
+			t.Errorf("port leaked into query: %s", r.Query)
+		}
+	}
+}
+
+func TestGoogleDorkingForAPIsGenerateFields(t *testing.T) {
+	d := NewGoogleDorkingForAPIs("example.com")
+	results := d.Generate()
 
 	for _, r := range results {
 		if r.Query == "" {

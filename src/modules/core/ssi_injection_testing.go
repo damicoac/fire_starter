@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -23,6 +24,9 @@ type SsiInjectionTesting struct {
 	BaseModule
 	Target  string
 	results []SsiInjectionTestingResult
+
+	attemptedProbes int64
+	failedProbes    int64
 }
 
 // NewSsiInjectionTesting creates a new instance.
@@ -48,10 +52,15 @@ var ssiPayloads = []string{
 	`<!--#set var="testvar" value="ssi_vuln_1337" --><!--#echo var="testvar" -->`,
 }
 
-var idRegex = regexp.MustCompile(`uid=\d+\(.*\) gid=\d+\(.*\)`)
+// idRegex matches an `id` command output line. The character classes are
+// bounded so prose that merely contains "uid=1000(alice) ... gid=1000(users)"
+// far apart on the same line does not match.
+var idRegex = regexp.MustCompile(`uid=\d+\([^)\r\n]{0,64}\)\s+gid=\d+\([^)\r\n]{0,64}\)`)
 
 func (m *SsiInjectionTesting) Execute(ctx context.Context) ([]SsiInjectionTestingResult, error) {
+	m.Mu.Lock()
 	m.results = make([]SsiInjectionTestingResult, 0)
+	m.Mu.Unlock()
 
 	parsedURL, err := url.Parse(m.Target)
 	if err != nil {
@@ -66,7 +75,7 @@ func (m *SsiInjectionTesting) Execute(ctx context.Context) ([]SsiInjectionTestin
 
 	var wg sync.WaitGroup
 
-	for i := 0; i < m.MaxThreads; i++ {
+	for range m.MaxThreads {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -89,14 +98,37 @@ func (m *SsiInjectionTesting) Execute(ctx context.Context) ([]SsiInjectionTestin
 
 	select {
 	case <-done:
+		m.appendInconclusiveIfAllProbesFailed()
 		return m.results, nil
 	case <-ctx.Done():
 		<-done
+		m.appendInconclusiveIfAllProbesFailed()
 		return m.results, ctx.Err()
 	}
 }
 
+// appendInconclusiveIfAllProbesFailed emits an inconclusive summary row when
+// every probe ended in a transport failure, so an unreachable target is never
+// reported as a clean scan.
+func (m *SsiInjectionTesting) appendInconclusiveIfAllProbesFailed() {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	if len(m.results) > 0 {
+		return
+	}
+	attempted := atomic.LoadInt64(&m.attemptedProbes)
+	if attempted > 0 && atomic.LoadInt64(&m.failedProbes) >= attempted {
+		m.results = append(m.results, SsiInjectionTestingResult{
+			Target: m.Target,
+			Status: statusFromEvidence(EvidenceWeak, false),
+			Detail: formatEvidenceDetail(EvidenceWeak, "All SSI probes failed with transport errors or HTTP error responses; target reachability could not be established."),
+		})
+	}
+}
+
 func (m *SsiInjectionTesting) testPayload(ctx context.Context, u *url.URL, payload string) {
+	atomic.AddInt64(&m.attemptedProbes, 1)
+
 	query := u.Query()
 	hasParams := len(query) > 0
 
@@ -116,31 +148,71 @@ func (m *SsiInjectionTesting) testPayload(ctx context.Context, u *url.URL, paylo
 
 	req, err := http.NewRequestWithContext(ctx, "GET", testURL.String(), nil)
 	if err != nil {
+		atomic.AddInt64(&m.failedProbes, 1)
 		return
 	}
 
 	resp, err := m.Client.Do(req)
 	if err != nil {
+		atomic.AddInt64(&m.failedProbes, 1)
 		return
 	}
 	defer resp.Body.Close()
 
+	// A 4xx/5xx response means the server rejected the document outright, so it
+	// counts as an unusable probe; judging still proceeds in case the error body
+	// leaks marker content (results short-circuit the summary below).
+	if resp.StatusCode >= http.StatusBadRequest {
+		atomic.AddInt64(&m.failedProbes, 1)
+	}
+
 	bodyBytes, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	if err != nil {
+		atomic.AddInt64(&m.failedProbes, 1)
 		return
 	}
 
 	bodyStr := string(bodyBytes)
 
-	// Signatures for SSI execution
+	// Payload-free fetch of the same URL serves as a baseline: a page that
+	// already carries the markers (docs quoting `id` output, code samples)
+	// cannot be claimed via payload reflection.
+	baseReq, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+	if err != nil {
+		atomic.AddInt64(&m.failedProbes, 1)
+		return
+	}
+	baseResp, err := m.Client.Do(baseReq)
+	if err != nil {
+		atomic.AddInt64(&m.failedProbes, 1)
+		return
+	}
+	baseBytes, err := ReadBoundedBody(baseResp.Body, MaxResponseBodyBytes)
+	baseResp.Body.Close()
+	if err != nil {
+		atomic.AddInt64(&m.failedProbes, 1)
+		return
+	}
+	baseStr := string(baseBytes)
+	if idRegex.MatchString(baseStr) || strings.Contains(baseStr, "ssi_vuln_1337") {
+		return
+	}
+
+	// Signatures for SSI execution. An HTML-escaped (or otherwise encoded)
+	// echo of the marker is inert: escaping also transforms `testvar`, so both
+	// must be absent for the marker to prove server-side execution.
 	if idRegex.MatchString(bodyStr) ||
-		(strings.Contains(bodyStr, "ssi_vuln_1337") && !strings.Contains(bodyStr, payload)) {
+		(strings.Contains(bodyStr, "ssi_vuln_1337") &&
+			!strings.Contains(bodyStr, "testvar") &&
+			!strings.Contains(bodyStr, payload)) {
 		m.Mu.Lock()
-		m.RecordPoC(req, nil, "SSI Injection detected. Command executed successfully with payload: "+payload)
+		summary := "SSI Injection detected. Command executed successfully with payload: " + payload
+		detail := formatEvidenceDetail(EvidenceConfirmed, summary)
+		m.RecordPoC(req, nil, detail)
 		m.results = append(m.results, SsiInjectionTestingResult{
 			Target: m.Target,
-			Status: "vulnerable",
-			Detail: "SSI Injection detected. Command executed successfully with payload: " + payload,
+			Status: statusFromEvidence(EvidenceConfirmed, false),
+			Detail: detail,
 		})
 		m.Mu.Unlock()
 	}

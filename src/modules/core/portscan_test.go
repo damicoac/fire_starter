@@ -20,7 +20,6 @@ func TestNewPortScanner(t *testing.T) {
 	}
 }
 
-
 func TestSetThreads(t *testing.T) {
 	scanner := NewPortScanner("127.0.0.1", []int{80})
 	scanner.SetThreads(50)
@@ -82,4 +81,48 @@ func TestPortScanner_Execute_InvalidURL(t *testing.T) {
 	scanner := NewPortScanner("invalid-url-:foo", []int{80})
 	ctx := context.Background()
 	_, _ = scanner.Scan(ctx)
+}
+
+// TestPortScanner_Scan_ClosedPortRefused pins the closed-vs-filtered semantics:
+// an immediate ECONNREFUSED from a reachable host must classify as "closed",
+// not as "filtered".
+func TestPortScanner_Scan_ClosedPortRefused(t *testing.T) {
+	// Grab a port, then release it so nothing is listening on it.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Failed to reserve listener: %v", err)
+	}
+	closedPort := ln.Addr().(*net.TCPAddr).Port
+	if err := ln.Close(); err != nil {
+		t.Fatalf("Failed to release listener: %v", err)
+	}
+
+	scanner := NewPortScanner("127.0.0.1", []int{closedPort})
+	results, err := scanner.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan failed: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("Expected 1 result, got %d: %+v", len(results), results)
+	}
+	if results[0].State != "closed" {
+		t.Errorf("Expected state %q for connection-refused port, got %q", "closed", results[0].State)
+	}
+}
+
+// TestPortScanner_ScanPort_CancelledContext pins that ports in flight at
+// cancellation report a neutral state instead of being recorded as "closed".
+func TestPortScanner_ScanPort_CancelledContext(t *testing.T) {
+	scanner := NewPortScanner("127.0.0.1", []int{59999})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result := scanner.scanPort(ctx, 59999)
+	if result.State != "skipped" {
+		t.Errorf("Expected neutral state %q for port in flight at cancellation, got %q", "skipped", result.State)
+	}
+	if result.Banner != "" {
+		t.Errorf("Expected empty banner for a skipped port, got %q", result.Banner)
+	}
 }

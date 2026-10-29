@@ -19,6 +19,8 @@ type DOMBasedXSSAnalysisResult struct {
 	Match     string `json:"match"`
 	Sink      string `json:"sink"`
 	Source    string `json:"source,omitempty"`
+	Status    string `json:"status"`
+	Detail    string `json:"detail,omitempty"`
 }
 
 // DOMBasedXSSAnalysis executes the dom_based_xss_analysis security technique.
@@ -56,11 +58,20 @@ var (
 	sourcesRegex = regexp.MustCompile(`(?i)\b(location\.hash|location\.search|location\.pathname|document\.referrer|window\.name|document\.cookie|postMessage)\b`)
 	// Extract script src
 	scriptSrcRegex = regexp.MustCompile(`(?i)<script[^>]+src=["']([^"']+)["']`)
+	// Extract inline <script> blocks so prose outside script data is never
+	// treated as JavaScript.
+	scriptBlockRegex = regexp.MustCompile(`(?is)<script\b[^>]*>(.*?)</script>`)
 )
+
+// domXSSSinkSourceWindow is the maximum character distance between a sink and
+// a source for them to be treated as the same data flow.
+const domXSSSinkSourceWindow = 200
 
 // Execute performs the module's core tasks concurrently.
 func (m *DOMBasedXSSAnalysis) Execute(ctx context.Context) ([]DOMBasedXSSAnalysisResult, error) {
+	m.Mu.Lock()
 	m.results = make([]DOMBasedXSSAnalysisResult, 0)
+	m.Mu.Unlock()
 
 	// Step 1: Fetch the target page to find scripts
 	req, err := http.NewRequestWithContext(ctx, "GET", m.Target, nil)
@@ -81,8 +92,8 @@ func (m *DOMBasedXSSAnalysis) Execute(ctx context.Context) ([]DOMBasedXSSAnalysi
 
 	htmlContent := string(body)
 
-	// Analyze inline scripts (rough approximation by analyzing the whole HTML)
-	m.analyzeContent(m.Target, htmlContent)
+	// Analyze inline scripts (only inside real <script> blocks).
+	m.analyzeHTML(m.Target, htmlContent, 0)
 
 	// Step 2: Extract external script URLs
 	matches := scriptSrcRegex.FindAllStringSubmatch(htmlContent, -1)
@@ -126,7 +137,7 @@ func (m *DOMBasedXSSAnalysis) Execute(ctx context.Context) ([]DOMBasedXSSAnalysi
 
 	var wg sync.WaitGroup
 
-	for i := 0; i < m.MaxThreads; i++ {
+	for range m.MaxThreads {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -159,56 +170,202 @@ func (m *DOMBasedXSSAnalysis) Execute(ctx context.Context) ([]DOMBasedXSSAnalysi
 func (m *DOMBasedXSSAnalysis) fetchAndAnalyzeScript(ctx context.Context, scriptURL string) {
 	req, err := http.NewRequestWithContext(ctx, "GET", scriptURL, nil)
 	if err != nil {
+		m.addInconclusive(scriptURL, fmt.Sprintf("Script request could not be built for %s: %v", scriptURL, err))
 		return
 	}
 
 	resp, err := m.Client.Do(req)
 	if err != nil {
+		m.addInconclusive(scriptURL, fmt.Sprintf("Script fetch failed for %s: %v", scriptURL, err))
 		return
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return
-	}
-
 	body, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	if err != nil {
+		m.addInconclusive(scriptURL, fmt.Sprintf("Script body read failed for %s: %v", scriptURL, err))
 		return
 	}
 
-	m.analyzeContent(scriptURL, string(body))
+	if resp.StatusCode != http.StatusOK {
+		m.addInconclusive(scriptURL, fmt.Sprintf("Script fetch returned HTTP %d for %s; analysis skipped.", resp.StatusCode, scriptURL))
+		return
+	}
+
+	m.analyzeJS(scriptURL, string(body), 0)
 }
 
-func (m *DOMBasedXSSAnalysis) analyzeContent(sourceURL, content string) {
-	lines := strings.Split(content, "\n")
+// analyzeHTML extracts inline <script> blocks from HTML content and analyzes
+// each as JavaScript. Prose outside script blocks is never matched, which
+// removes the false positives the earlier page-wide regex pass produced.
+func (m *DOMBasedXSSAnalysis) analyzeHTML(sourceURL, content string, baseLine int) {
+	for _, loc := range scriptBlockRegex.FindAllStringSubmatchIndex(content, -1) {
+		lineOffset := baseLine + strings.Count(content[:loc[2]], "\n")
+		m.analyzeJS(sourceURL, content[loc[2]:loc[3]], lineOffset)
+	}
+}
+
+// analyzeJS scans JavaScript content for source/sink pairs on the same line
+// within a bounded character window. Comments and string literals are stripped
+// first (positions are preserved), and sinks must appear in call or
+// assignment syntax.
+func (m *DOMBasedXSSAnalysis) analyzeJS(sourceURL, content string, baseLine int) {
+	stripped := stripJSCommentsAndStrings(content)
+	lines := strings.Split(stripped, "\n")
 	for i, line := range lines {
-		// Optimization: only check if line length is reasonable
-		if len(line) > 1000 {
-			line = line[:1000] // truncate very long lines
+		sourceMatches := sourcesRegex.FindAllStringIndex(line, -1)
+		if len(sourceMatches) == 0 {
+			continue
 		}
-
-		sinkMatch := sinksRegex.FindString(line)
-		if sinkMatch != "" {
-			sourceMatch := sourcesRegex.FindString(line)
-
-			// To avoid massive false positives (since innerHTML is everywhere),
-			// only flag as vulnerable if BOTH a sink and a controllable source are found on the same line.
-			if sourceMatch != "" {
-				m.Mu.Lock()
-				m.RecordPoC(nil, nil, "DOM XSS Sink ("+sinkMatch+") and Source ("+sourceMatch+") found on the same line.")
-				m.results = append(m.results, DOMBasedXSSAnalysisResult{
-					Target:    m.Target,
-					ScriptURL: sourceURL,
-					Line:      i + 1,
-					Match:     strings.TrimSpace(line),
-					Sink:      sinkMatch,
-					Source:    sourceMatch,
-				})
-				m.Mu.Unlock()
+		seen := make(map[string]bool)
+		for _, sinkLoc := range sinksRegex.FindAllStringIndex(line, -1) {
+			if !domXSSSinkHasCallOrAssign(line, sinkLoc[1]) {
+				continue
+			}
+			sink := line[sinkLoc[0]:sinkLoc[1]]
+			for _, srcLoc := range sourceMatches {
+				source := line[srcLoc[0]:srcLoc[1]]
+				abs := sinkLoc[0] - srcLoc[0]
+				if abs < 0 {
+					abs = -abs
+				}
+				if abs > domXSSSinkSourceWindow {
+					continue
+				}
+				key := sink + "|" + source
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				m.addFinding(sourceURL, baseLine+i+1, boundedSnippet(line, sinkLoc[0], srcLoc[0]), sink, source)
 			}
 		}
 	}
+}
+
+// domXSSSinkHasCallOrAssign requires call syntax (`eval(`) or an assignment
+// (`x.innerHTML = ...`) directly after the sink name, so mentions inside
+// identifiers, comments, or prose do not count.
+func domXSSSinkHasCallOrAssign(line string, matchEnd int) bool {
+	rest := strings.TrimLeft(line[matchEnd:], " \t")
+	return len(rest) > 0 && (rest[0] == '(' || rest[0] == '=' || rest[0] == '+')
+}
+
+func boundedSnippet(line string, positions ...int) string {
+	lo, hi := len(line), 0
+	for _, p := range positions {
+		if p < lo {
+			lo = p
+		}
+		if p > hi {
+			hi = p
+		}
+	}
+	start := lo - 80
+	if start < 0 {
+		start = 0
+	}
+	end := hi + 80
+	if end > len(line) {
+		end = len(line)
+	}
+	return strings.TrimSpace(line[start:end])
+}
+
+// stripJSCommentsAndStrings replaces comment and string-literal content with
+// spaces (preserving byte offsets and newlines) so identifiers mentioned
+// inside strings or comments are no longer treated as code.
+func stripJSCommentsAndStrings(content string) string {
+	var b strings.Builder
+	b.Grow(len(content))
+	inLine, inBlock := false, false
+	var inStr byte
+	escaped := false
+
+	for i := 0; i < len(content); i++ {
+		c := content[i]
+		switch {
+		case inLine:
+			if c == '\n' {
+				inLine = false
+				b.WriteByte(c)
+			} else {
+				b.WriteByte(' ')
+			}
+		case inBlock:
+			if c == '*' && i+1 < len(content) && content[i+1] == '/' {
+				inBlock = false
+				b.WriteString("  ")
+				i++
+			} else {
+				b.WriteByte(' ')
+			}
+		case inStr != 0:
+			switch {
+			case escaped:
+				escaped = false
+				b.WriteByte(' ')
+			case c == '\\':
+				escaped = true
+				b.WriteByte(' ')
+			case c == inStr:
+				inStr = 0
+				b.WriteByte(c)
+			default:
+				b.WriteByte(' ')
+			}
+		case c == '/' && i+1 < len(content) && content[i+1] == '/':
+			inLine = true
+			b.WriteString("  ")
+			i++
+		case c == '/' && i+1 < len(content) && content[i+1] == '*':
+			inBlock = true
+			b.WriteString("  ")
+			i++
+		case c == '\'' || c == '"' || c == '`':
+			inStr = c
+			b.WriteByte(c)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+// addFinding records a confirmed DOM source/sink pair.
+func (m *DOMBasedXSSAnalysis) addFinding(sourceURL string, line int, match, sink, source string) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	detail := fmt.Sprintf("DOM sink %s consumes controllable source %s at %s line %d", sink, source, sourceURL, line)
+	m.RecordPoC(nil, nil, detail)
+	m.results = append(m.results, DOMBasedXSSAnalysisResult{
+		Target:    m.Target,
+		ScriptURL: sourceURL,
+		Line:      line,
+		Match:     match,
+		Sink:      sink,
+		Source:    source,
+		Status:    statusFromEvidence(EvidenceConfirmed, false),
+		Detail:    formatEvidenceDetail(EvidenceConfirmed, detail),
+	})
+}
+
+// addInconclusive records an inconclusive row for a fetch failure
+// (deduplicated by detail so repeated failures do not flood the report).
+func (m *DOMBasedXSSAnalysis) addInconclusive(scriptURL, detail string) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	for _, r := range m.results {
+		if r.Status == "inconclusive" && r.Detail == formatEvidenceDetail(EvidenceWeak, detail) {
+			return
+		}
+	}
+	m.results = append(m.results, DOMBasedXSSAnalysisResult{
+		Target:    m.Target,
+		ScriptURL: scriptURL,
+		Status:    statusFromEvidence(EvidenceWeak, false),
+		Detail:    formatEvidenceDetail(EvidenceWeak, detail),
+	})
 }
 
 func init() {

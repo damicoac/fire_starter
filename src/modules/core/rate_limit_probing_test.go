@@ -75,6 +75,57 @@ func TestRateLimitProbing_Execute_SecureWhenCorroboratedThrottleDetected(t *test
 	}
 }
 
+func TestRateLimitProbing_Execute_SecureWhenFullyThrottled(t *testing.T) {
+	// A limiter that 429s the entire burst (successCount == 0) used to fall through to
+	// the "unstable" bucket; throttle domination plus recovery corroboration must win.
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			headers := make(http.Header)
+			headers.Set("Retry-After", "1")
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Body:       io.NopCloser(bytes.NewBufferString(`{"error": "rate limited"}`)),
+				Header:     headers,
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewRateLimitProbing("http://example.com")
+	module.SetThreads(1)
+
+	results, err := module.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if len(results) == 0 || results[0].Status != "secure" {
+		t.Fatalf("expected secure status for fully-throttled burst, got %#v", results)
+	}
+}
+
+func TestRateLimitProbing_Execute_InconclusiveWhenBaselineFails(t *testing.T) {
+	// nil response from RoundTrip surfaces as a transport error in Client.Do.
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			return nil
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewRateLimitProbing("http://example.com")
+	module.SetThreads(1)
+
+	results, err := module.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if len(results) != 1 || results[0].Status != "inconclusive" {
+		t.Fatalf("expected single inconclusive result when baseline fails, got %#v", results)
+	}
+}
+
 func TestRateLimitProbing_Execute_InconclusiveWhenAuthProtected(t *testing.T) {
 	mockTransport := &MockTransport{
 		RoundTripFunc: func(req *http.Request) *http.Response {
@@ -161,5 +212,16 @@ func TestRateLimitProbing__Execute_HTTPError(t *testing.T) {
 
 	module := NewRateLimitProbing("http://example.com")
 	ctx := context.Background()
-	_, _ = module.Execute(ctx)
+	results, err := module.Execute(ctx)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	// A uniform-500 target yields an unstable burst: exactly one summary row
+	// and it must be inconclusive, never vulnerable or secure.
+	if len(results) != 1 {
+		t.Fatalf("expected exactly 1 summary result on a uniform-500 target, got %d: %+v", len(results), results)
+	}
+	if results[0].Status != "inconclusive" {
+		t.Fatalf("expected inconclusive status on a uniform-500 target, got %q (%s)", results[0].Status, results[0].Detail)
+	}
 }

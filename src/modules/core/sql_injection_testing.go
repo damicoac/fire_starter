@@ -44,6 +44,11 @@ type SQLInjectionTesting struct {
 	Target    string
 	Threshold time.Duration
 	results   []SQLInjectionTestingResult
+	// timeMu serializes time-based probes and the baselines measured against
+	// them so one vector's sleep cannot inflate another vector's duration.
+	timeMu sync.Mutex
+	// probeFailures counts transport/read failures; guarded by Mu.
+	probeFailures int
 }
 
 // NewSQLInjectionTesting creates a new instance of SQLInjectionTesting.
@@ -82,7 +87,8 @@ var sqlErrors = []string{
 	"unclosed quotation mark after the character string",
 	"quoted string not properly terminated",
 	"pg_query(): query failed: error:",
-	"sqlite3.error:",
+	"sqlite3.operationalerror:",
+	"sqlite3.programmingerror:",
 	"syntax error or access violation",
 	"sql syntax error",
 	"mysql_fetch_array()",
@@ -94,22 +100,31 @@ type SQLValidator struct {
 	BaselineDuration time.Duration
 }
 
+// timeThreshold returns the minimum duration a time-based probe must exceed to be
+// considered a candidate: the configured threshold above the measured baseline
+// duration (or the raw threshold when no positive baseline was captured).
+func (v *SQLValidator) timeThreshold() time.Duration {
+	if v.BaselineDuration > 0 {
+		return v.BaselineDuration + v.Threshold
+	}
+	return v.Threshold
+}
+
 func (v *SQLValidator) IsVulnerable(resp *http.Response, body string, payload SQLPayload, duration time.Duration, baseBody string) bool {
 	bodyLower := strings.ToLower(body)
 
 	switch payload.Type {
 	case SQLCmdError:
+		// A marker already present in the baseline body is not evidence of
+		// injection (broken query, generic 500 page with a stack trace).
+		baseLower := strings.ToLower(baseBody)
 		for _, sqlErr := range sqlErrors {
-			if strings.Contains(bodyLower, sqlErr) {
+			if strings.Contains(bodyLower, sqlErr) && !strings.Contains(baseLower, sqlErr) {
 				return true
 			}
 		}
 	case SQLCmdTimeBased:
-		minThreshold := v.Threshold
-		if v.BaselineDuration > 0 {
-			minThreshold = v.BaselineDuration + v.Threshold
-		}
-		if duration >= minThreshold {
+		if duration >= v.timeThreshold() {
 			return true
 		}
 	case SQLCmdBoolean:
@@ -135,18 +150,39 @@ var defaultSQLPayloads = []SQLPayload{
 }
 
 // getCombinedSQLPayloads combines static default payloads with dynamic PolyglotGenerator payloads.
+// Always-true polyglots are mapped to boolean-blind payloads paired with a false variant so
+// they are judged by differential analysis instead of error markers they never emit.
+// The result is deduplicated by normalized payload value and built once per scan.
 func getCombinedSQLPayloads() []SQLPayload {
 	payloads := append([]SQLPayload(nil), defaultSQLPayloads...)
 	polyGen := generator.NewPolyglotGenerator()
 
-	// Ingest universal and WAF bypass polyglots
+	// Universal and WAF-bypass polyglots are always-true conditions; pair each with a
+	// false variant for differential judging. Polyglots without a derivable false
+	// condition keep their original classification.
 	for _, poly := range polyGen.GenerateUniversalPolyglots() {
+		if verify, ok := sqlTrueToFalseVariant(poly.Payload); ok {
+			payloads = append(payloads, SQLPayload{
+				Value:       poly.Payload,
+				VerifyValue: verify,
+				Type:        SQLCmdBoolean,
+			})
+			continue
+		}
 		payloads = append(payloads, SQLPayload{
 			Value: poly.Payload,
 			Type:  SQLCmdError,
 		})
 	}
 	for _, poly := range polyGen.GenerateWAFBypassPolyglots() {
+		if verify, ok := sqlTrueToFalseVariant(poly.Payload); ok {
+			payloads = append(payloads, SQLPayload{
+				Value:       poly.Payload,
+				VerifyValue: verify,
+				Type:        SQLCmdBoolean,
+			})
+			continue
+		}
 		payloads = append(payloads, SQLPayload{
 			Value: poly.Payload,
 			Type:  SQLCmdBoolean,
@@ -164,12 +200,35 @@ func getCombinedSQLPayloads() []SQLPayload {
 		})
 	}
 
-	return payloads
+	seen := make(map[string]struct{}, len(payloads))
+	deduped := payloads[:0]
+	for _, p := range payloads {
+		key := strings.ToLower(strings.TrimSpace(p.Value))
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		deduped = append(deduped, p)
+	}
+	return deduped
+}
+
+// sqlTrueToFalseVariant derives the false condition for an always-true polyglot by
+// flipping the last comparison operand (e.g. "1/**/AND/**/1=1--" → "1/**/AND/**/1=2--").
+func sqlTrueToFalseVariant(payload string) (string, bool) {
+	idx := strings.LastIndex(payload, "1")
+	if idx < 0 {
+		return "", false
+	}
+	return payload[:idx] + "2" + payload[idx+1:], true
 }
 
 // Execute performs the module's core tasks concurrently using discovery.
 func (m *SQLInjectionTesting) Execute(ctx context.Context) ([]SQLInjectionTestingResult, error) {
+	m.Mu.Lock()
 	m.results = make([]SQLInjectionTestingResult, 0)
+	m.probeFailures = 0
+	m.Mu.Unlock()
 
 	parsedURL, err := url.Parse(m.Target)
 	if err != nil {
@@ -188,14 +247,21 @@ func (m *SQLInjectionTesting) Execute(ctx context.Context) ([]SQLInjectionTestin
 		)
 	}
 
+	payloads := getCombinedSQLPayloads()
+
 	var wg sync.WaitGroup
 	semaphore := make(chan struct{}, m.MaxThreads)
+	baselineFailures := 0
 	for _, vector := range vectors {
-		// Get base response for differential analysis
+		// Get base response for differential analysis. Time-based probes hold
+		// timeMu, so the baseline must be measured under the same lock.
+		m.timeMu.Lock()
 		baseBody, baseDuration, err := m.getBaseResponse(ctx, parsedURL, vector)
+		m.timeMu.Unlock()
 		if err != nil {
 			// Log and continue with other vectors
 			log.Warnf("Warning: failed to get base response for vector %s: %v", vector.Key, err)
+			baselineFailures++
 			continue
 		}
 
@@ -204,7 +270,6 @@ func (m *SQLInjectionTesting) Execute(ctx context.Context) ([]SQLInjectionTestin
 			BaselineDuration: baseDuration,
 		}
 
-		payloads := getCombinedSQLPayloads()
 		for _, payload := range payloads {
 			wg.Add(1)
 			go func(v InputVector, p SQLPayload, base string) {
@@ -223,6 +288,24 @@ func (m *SQLInjectionTesting) Execute(ctx context.Context) ([]SQLInjectionTestin
 	}
 
 	wg.Wait()
+
+	// Never render an all-failed scan as a clean result.
+	m.Mu.Lock()
+	empty := len(m.results) == 0
+	probeFailures := m.probeFailures
+	m.Mu.Unlock()
+	if empty && probeFailures+baselineFailures > 0 {
+		detail := formatEvidenceDetail(EvidenceWeak, fmt.Sprintf(
+			"No SQL injection probe completed successfully: %d baseline failures, %d probe transport/read failures",
+			baselineFailures, probeFailures))
+		m.Mu.Lock()
+		m.results = append(m.results, SQLInjectionTestingResult{
+			Target: m.Target,
+			Status: statusFromEvidence(EvidenceWeak, false),
+			Detail: detail,
+		})
+		m.Mu.Unlock()
+	}
 	return m.results, nil
 }
 
@@ -300,56 +383,113 @@ func (m *SQLInjectionTesting) createRequest(ctx context.Context, u *url.URL, vec
 }
 
 func (m *SQLInjectionTesting) testVector(ctx context.Context, u *url.URL, vector InputVector, payload SQLPayload, baseBody string, validator *SQLValidator) {
+	// Serialize time-based probes so concurrent SLEEP/WAITFOR/pg_sleep payloads
+	// cannot inflate each other's measured duration.
+	if payload.Type == SQLCmdTimeBased {
+		m.timeMu.Lock()
+		defer m.timeMu.Unlock()
+	}
+
 	start := time.Now()
 	req, err := m.createRequest(ctx, u, vector, payload.Value)
 	if err != nil {
+		m.recordProbeFailure()
 		return
 	}
 
 	resp, err := m.Client.Do(req)
 	if err != nil {
+		m.recordProbeFailure()
 		return
 	}
 	defer resp.Body.Close()
 
 	duration := time.Since(start)
-	bodyBytes, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
+	bodyBytes, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
+	if err != nil {
+		m.recordProbeFailure()
+		return
+	}
 	body := string(bodyBytes)
 
-	if validator.IsVulnerable(resp, body, payload, duration, baseBody) {
-		// Double check if it's boolean blind
-		if payload.Type == SQLCmdBoolean {
-			if payload.VerifyValue == "" {
-				return // Do not flag boolean-blind as vulnerable without differential verification payload
-			}
-			reqVerify, err := m.createRequest(ctx, u, vector, payload.VerifyValue)
-			if err != nil {
-				return
-			}
-			respVerify, err := m.Client.Do(reqVerify)
-			if err != nil {
-				return
-			}
-			defer respVerify.Body.Close()
-			bodyVerifyBytes, _ := ReadBoundedBody(respVerify.Body, MaxResponseBodyBytes)
-			bodyVerify := string(bodyVerifyBytes)
+	if !validator.IsVulnerable(resp, body, payload, duration, baseBody) {
+		return
+	}
 
-			// True payload produces a different response than False payload (VerifyValue)
-			if bodyVerify != body {
-				tier := EvaluateDifferentialEvidence(body, bodyVerify, baseBody)
-				if tier == EvidenceConfirmed || tier == EvidenceStrong {
-					detail := fmt.Sprintf("Differential analysis confirmed boolean-blind injection. DB: %s", payload.DB)
-					m.RecordPoC(req, nil, detail)
-					m.addResult(vector, payload, "vulnerable", detail)
-				}
-			}
+	switch payload.Type {
+	case SQLCmdBoolean:
+		if payload.VerifyValue == "" {
+			return // Do not flag boolean-blind as vulnerable without differential verification payload
+		}
+		reqVerify, err := m.createRequest(ctx, u, vector, payload.VerifyValue)
+		if err != nil {
+			m.recordProbeFailure()
 			return
-		} else {
-			detail := fmt.Sprintf("SQL injection detected. Type: %s. DB: %s", payload.Type, payload.DB)
+		}
+		respVerify, err := m.Client.Do(reqVerify)
+		if err != nil {
+			m.recordProbeFailure()
+			return
+		}
+		defer respVerify.Body.Close()
+		bodyVerifyBytes, err := ReadBoundedBody(respVerify.Body, MaxResponseBodyBytes)
+		if err != nil {
+			m.recordProbeFailure()
+			return
+		}
+		bodyVerify := string(bodyVerifyBytes)
+
+		// True payload produces a different response than False payload (VerifyValue)
+		if bodyVerify == body {
+			return
+		}
+		tier := EvaluateDifferentialEvidence(body, bodyVerify, baseBody, baseBody != "")
+		if tier == EvidenceConfirmed {
+			detail := fmt.Sprintf("Differential analysis confirmed boolean-blind injection. DB: %s", payload.DB)
 			m.RecordPoC(req, nil, detail)
 			m.addResult(vector, payload, "vulnerable", detail)
+		} else if tier == EvidenceStrong {
+			detail := fmt.Sprintf("Boolean-blind injection suspected but baseline confirmation missing. DB: %s", payload.DB)
+			m.addResult(vector, payload, "inconclusive", detail)
 		}
+	case SQLCmdTimeBased:
+		// A single slow sample can be an unrelated transient stall: require a
+		// confirming second request for the same payload to reproduce the delay.
+		confirmStart := time.Now()
+		reqConfirm, err := m.createRequest(ctx, u, vector, payload.Value)
+		if err != nil {
+			m.recordProbeFailure()
+			return
+		}
+		respConfirm, err := m.Client.Do(reqConfirm)
+		if err != nil {
+			m.recordProbeFailure()
+			return
+		}
+		defer respConfirm.Body.Close()
+		if _, err := ReadBoundedBody(respConfirm.Body, MaxResponseBodyBytes); err != nil {
+			m.recordProbeFailure()
+			return
+		}
+		if time.Since(confirmStart) < validator.timeThreshold() {
+			return
+		}
+		detail := fmt.Sprintf("SQL injection detected (delay reproduced by confirming request). Type: %s. DB: %s", payload.Type, payload.DB)
+		m.RecordPoC(req, nil, detail)
+		m.addResult(vector, payload, "vulnerable", detail)
+	default:
+		detail := fmt.Sprintf("SQL injection detected. Type: %s. DB: %s", payload.Type, payload.DB)
+		m.RecordPoC(req, nil, detail)
+		m.addResult(vector, payload, "vulnerable", detail)
 	}
+}
+
+// recordProbeFailure counts a transport/read failure so an all-failed scan can be
+// reported as inconclusive instead of a silently empty (clean-looking) result.
+func (m *SQLInjectionTesting) recordProbeFailure() {
+	m.Mu.Lock()
+	m.probeFailures++
+	m.Mu.Unlock()
 }
 
 func (m *SQLInjectionTesting) addResult(vector InputVector, payload SQLPayload, status string, detail string) {

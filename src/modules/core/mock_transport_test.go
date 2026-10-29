@@ -30,9 +30,5 @@ func (m *MockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 // SetMockTransport overrides http.DefaultTransport with our MockTransport.
 // Returns a cleanup function that restores the original transport.
 func SetMockTransport(transport *MockTransport) func() {
-	originalTransport := DefaultTransport
-	DefaultTransport = transport
-	return func() {
-		DefaultTransport = originalTransport
-	}
+	return SetDefaultTransport(transport)
 }

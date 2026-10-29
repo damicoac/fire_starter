@@ -53,9 +53,11 @@ func (m *GraphqlIntrospection) Execute(ctx context.Context) ([]GraphqlIntrospect
 	}
 
 	query := map[string]string{
-		"query": "\n    query IntrospectionQuery {\n      __schema {\n        queryType { name }\n        mutationType { name }\n        subscriptionType { name }\n      }\n    }\n  ",
+		"query": "\n    query IntrospectionQuery {\n      __schema {\n        queryType { name }\n        mutationType { name }\n        subscriptionType { name }\n        types { name }\n      }\n    }\n  ",
 	}
 	payload, _ := json.Marshal(query)
+
+	probed := false
 
 	for _, endpoint := range endpoints {
 		select {
@@ -72,12 +74,24 @@ func (m *GraphqlIntrospection) Execute(ctx context.Context) ([]GraphqlIntrospect
 			if err != nil {
 				continue
 			}
-			defer resp.Body.Close()
+			bodyBytes, readErr := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
+			resp.Body.Close()
+			if readErr != nil {
+				continue
+			}
+			probed = true
 
-			if resp.StatusCode == 200 {
-				bodyBytes, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
-				bodyStr := string(bodyBytes)
-				if strings.Contains(bodyStr, "__schema") || strings.Contains(bodyStr, "queryType") {
+			if resp.StatusCode == http.StatusOK {
+				var parsed struct {
+					Data struct {
+						Schema struct {
+							Types []json.RawMessage `json:"types"`
+						} `json:"__schema"`
+					} `json:"data"`
+				}
+				// Require real introspection data: a hardened server echoing the
+				// blocked field name in its error body must not count.
+				if err := json.Unmarshal(bodyBytes, &parsed); err == nil && len(parsed.Data.Schema.Types) > 0 {
 					m.Mu.Lock()
 					m.RecordPoC(req, nil, "GraphQL Introspection enabled at "+endpoint)
 					m.results = append(m.results, GraphqlIntrospectionResult{
@@ -90,6 +104,14 @@ func (m *GraphqlIntrospection) Execute(ctx context.Context) ([]GraphqlIntrospect
 				}
 			}
 		}
+	}
+
+	if !probed {
+		m.results = append(m.results, GraphqlIntrospectionResult{
+			Target: m.Target,
+			Status: "inconclusive",
+			Detail: "No GraphQL endpoint produced a readable response; introspection status unknown.",
+		})
 	}
 
 	return m.results, nil

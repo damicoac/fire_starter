@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // TokenEntropyAnalysisResult holds the result of the TokenEntropyAnalysis module execution.
@@ -40,8 +42,12 @@ func (m *TokenEntropyAnalysis) SetThreads(count int) {
 	m.MaxThreads = count
 }
 
+// calcEntropy computes Shannon entropy over runes so that multi-byte
+// characters are not mixed with a byte-based length (which would
+// systematically underestimate entropy).
 func calcEntropy(data string) float64 {
-	if len(data) == 0 {
+	length := utf8.RuneCountInString(data)
+	if length == 0 {
 		return 0
 	}
 	counts := make(map[rune]int)
@@ -49,12 +55,24 @@ func calcEntropy(data string) float64 {
 		counts[char]++
 	}
 	entropy := 0.0
-	length := float64(len(data))
 	for _, count := range counts {
-		prob := float64(count) / length
+		prob := float64(count) / float64(length)
 		entropy -= prob * math.Log2(prob)
 	}
 	return entropy
+}
+
+// sessionLikeCookie reports whether the cookie name looks session- or
+// authentication-related; only those carry token entropy worth judging.
+func sessionLikeCookie(name string) bool {
+	lower := strings.ToLower(name)
+	markers := []string{"session", "auth", "token", "sid", "remember", "jwt"}
+	for _, marker := range markers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *TokenEntropyAnalysis) Execute(ctx context.Context) ([]TokenEntropyAnalysisResult, error) {
@@ -71,21 +89,41 @@ func (m *TokenEntropyAnalysis) Execute(ctx context.Context) ([]TokenEntropyAnaly
 	}
 	defer resp.Body.Close()
 
-	// Check cookies for low entropy
-	for _, cookie := range resp.Cookies() {
+	cookies := resp.Cookies()
+	for _, cookie := range cookies {
 		entropy := calcEntropy(cookie.Value)
-		// Arbitrary low entropy threshold, and string > 5 chars to avoid tiny values like "1"
-		if len(cookie.Value) > 5 && entropy < 2.5 {
-			m.RecordPoC(req, nil, fmt.Sprintf("Cookie %s has low entropy: %.2f", cookie.Name, entropy))
+		// Gate on session-like names, a realistic token length and a
+		// meaningful threshold so benign cookies (consent flags, short ids,
+		// ordinary words) are not flagged as weak tokens.
+		if sessionLikeCookie(cookie.Name) && len(cookie.Value) >= 16 && entropy < 3.0 {
+			detail := fmt.Sprintf("Cookie %s has low entropy: %.2f", cookie.Name, entropy)
+			m.RecordPoC(req, nil, detail)
 			m.results = append(m.results, TokenEntropyAnalysisResult{
 				Target: m.Target,
-				Status: "vulnerable",
-				Detail: fmt.Sprintf("Cookie %s has low entropy: %.2f", cookie.Name, entropy),
+				Status: statusFromEvidence(EvidenceConfirmed, false),
+				Detail: detail,
 			})
 		}
 	}
 
+	if len(cookies) == 0 {
+		m.addResult("No cookies observed in response; token entropy not assessable", statusFromEvidence(EvidenceWeak, false))
+	} else if len(m.results) == 0 {
+		m.addResult(fmt.Sprintf("%d cookies observed; no low-entropy session cookies detected", len(cookies)), statusFromEvidence(EvidenceConfirmed, true))
+	}
+
 	return m.results, nil
+}
+
+func (m *TokenEntropyAnalysis) addResult(detail, status string) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	m.RecordPoC(nil, nil, detail)
+	m.results = append(m.results, TokenEntropyAnalysisResult{
+		Target: m.Target,
+		Status: status,
+		Detail: detail,
+	})
 }
 
 func init() {

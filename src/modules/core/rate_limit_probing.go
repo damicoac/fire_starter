@@ -47,7 +47,9 @@ type rateProbeSnapshot struct {
 	requestsDone       int
 	successCount       int
 	firstHalfSuccess   int
+	firstHalfDone      int
 	secondHalfSuccess  int
+	secondHalfDone     int
 	status4xxCount     int
 	status5xxCount     int
 	got429             bool
@@ -65,15 +67,26 @@ func (m *RateLimitProbing) Execute(ctx context.Context) ([]RateLimitProbingResul
 
 	baselineReq, err := http.NewRequestWithContext(ctx, "GET", m.Target, nil)
 	if err != nil {
+		m.results = append(m.results, RateLimitProbingResult{
+			Target: m.Target,
+			Status: statusFromEvidence(EvidenceWeak, false),
+			Detail: formatEvidenceDetail(EvidenceWeak, fmt.Sprintf("Baseline request could not be built: %v", err)),
+		})
 		return m.results, nil
 	}
 
 	baselineStatus := 0
 	baselineResp, err := m.Client.Do(baselineReq)
-	if err == nil {
-		baselineStatus = baselineResp.StatusCode
-		baselineResp.Body.Close()
+	if err != nil {
+		m.results = append(m.results, RateLimitProbingResult{
+			Target: m.Target,
+			Status: statusFromEvidence(EvidenceWeak, false),
+			Detail: formatEvidenceDetail(EvidenceWeak, fmt.Sprintf("Baseline request failed; rate-limit behavior cannot be attributed: %v", err)),
+		})
+		return m.results, nil
 	}
+	baselineStatus = baselineResp.StatusCode
+	baselineResp.Body.Close()
 
 	if baselineStatus == http.StatusUnauthorized || baselineStatus == http.StatusForbidden {
 		m.results = append(m.results, RateLimitProbingResult{
@@ -95,14 +108,17 @@ func (m *RateLimitProbing) Execute(ctx context.Context) ([]RateLimitProbingResul
 	recoverySnapshot := m.runRecoveryPhase(ctx)
 
 	burstSuccessRate := safeRatio(burstSnapshot.successCount, burstSnapshot.requestsDone)
-	firstHalfRate := safeRatio(burstSnapshot.firstHalfSuccess, rateLimitBurstRequests/2)
-	secondHalfRate := safeRatio(burstSnapshot.secondHalfSuccess, rateLimitBurstRequests/2)
+	firstHalfRate := safeRatio(burstSnapshot.firstHalfSuccess, burstSnapshot.firstHalfDone)
+	secondHalfRate := safeRatio(burstSnapshot.secondHalfSuccess, burstSnapshot.secondHalfDone)
 	recoveryRate := safeRatio(recoverySnapshot.recoverySuccess, recoverySnapshot.recoveryDone)
 
 	hasBurstDegradation := meetsThreshold(firstHalfRate-secondHalfRate, 0.2)
+	// A limiter that throttled (nearly) the entire burst is direct throttle evidence even
+	// without a first-half vs second-half success delta.
+	hasThrottleDomination := burstSnapshot.requestsDone >= rateLimitBurstRequests/2 && burstSnapshot.got429 && burstSuccessRate <= 0.1
 	hasRecoveryNormalization := recoverySnapshot.recoveryDone >= rateLimitRecoveryRequests/2 && recoveryRate > secondHalfRate+0.2
 	hasMeaningfulThrottleSignal := burstSnapshot.got429 || burstSnapshot.gotRetryAfter
-	hasCorroboratedThrottle := hasMeaningfulThrottleSignal && hasBurstDegradation && (hasRecoveryNormalization || recoverySnapshot.recovery429 || recoverySnapshot.recoveryRetryAfter)
+	hasCorroboratedThrottle := hasMeaningfulThrottleSignal && (hasBurstDegradation || hasThrottleDomination) && (hasRecoveryNormalization || recoverySnapshot.recovery429 || recoverySnapshot.recoveryRetryAfter)
 	hasContradictorySignals := hasMeaningfulThrottleSignal && !hasBurstDegradation && burstSuccessRate > 0.75
 
 	switch {
@@ -113,19 +129,19 @@ func (m *RateLimitProbing) Execute(ctx context.Context) ([]RateLimitProbingResul
 			Status: statusFromEvidence(EvidenceWeak, false),
 			Detail: formatEvidenceDetail(EvidenceWeak, "Authentication controls appeared during probing, making rate-limit attribution inconclusive."),
 		})
-	case burstSnapshot.requestsDone < rateLimitBurstRequests/2 || burstSuccessRate < 0.35:
-		m.RecordPoC(burstSnapshot.lastReq, nil, "Burst probing had unstable responses and did not provide reproducible throughput signals.")
-		m.results = append(m.results, RateLimitProbingResult{
-			Target: m.Target,
-			Status: statusFromEvidence(EvidenceWeak, false),
-			Detail: formatEvidenceDetail(EvidenceWeak, "Burst phase was too unstable for reliable classification."),
-		})
 	case hasCorroboratedThrottle:
 		m.RecordPoC(burstSnapshot.lastReq, nil, "Corroborated throttling behavior detected across burst and recovery phases.")
 		m.results = append(m.results, RateLimitProbingResult{
 			Target: m.Target,
 			Status: statusFromEvidence(EvidenceConfirmed, true),
 			Detail: formatEvidenceDetail(EvidenceConfirmed, "Corroborated rate limiting observed via throttling indicators, burst degradation, and recovery-phase normalization."),
+		})
+	case burstSnapshot.requestsDone < rateLimitBurstRequests/2 || burstSuccessRate < 0.35:
+		m.RecordPoC(burstSnapshot.lastReq, nil, "Burst probing had unstable responses and did not provide reproducible throughput signals.")
+		m.results = append(m.results, RateLimitProbingResult{
+			Target: m.Target,
+			Status: statusFromEvidence(EvidenceWeak, false),
+			Detail: formatEvidenceDetail(EvidenceWeak, "Burst phase was too unstable for reliable classification."),
 		})
 	case hasContradictorySignals:
 		m.RecordPoC(burstSnapshot.lastReq, nil, "Partial throttling indicators were observed without corroborated burst degradation.")
@@ -180,12 +196,19 @@ func (m *RateLimitProbing) runBurstPhase(ctx context.Context) (rateProbeSnapshot
 						continue
 					}
 					statusCode := resp.StatusCode
-					retryAfter := resp.Header.Get("Retry-After") != ""
+					// Retry-After is a throttle signal only on HTTP 429; overloaded backends
+					// commonly attach it to 503 responses.
+					retryAfter := statusCode == http.StatusTooManyRequests && resp.Header.Get("Retry-After") != ""
 					resp.Body.Close()
 
 					m.Mu.Lock()
 					snapshot.requestsDone++
 					snapshot.lastReq = req
+					if idx < rateLimitBurstRequests/2 {
+						snapshot.firstHalfDone++
+					} else {
+						snapshot.secondHalfDone++
+					}
 					if statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices {
 						snapshot.successCount++
 						if idx < rateLimitBurstRequests/2 {
@@ -261,7 +284,7 @@ func (m *RateLimitProbing) runRecoveryPhase(ctx context.Context) rateProbeSnapsh
 		if resp.StatusCode == http.StatusTooManyRequests {
 			snapshot.recovery429 = true
 		}
-		if resp.Header.Get("Retry-After") != "" {
+		if resp.StatusCode == http.StatusTooManyRequests && resp.Header.Get("Retry-After") != "" {
 			snapshot.recoveryRetryAfter = true
 		}
 		resp.Body.Close()

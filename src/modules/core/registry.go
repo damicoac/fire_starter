@@ -2,7 +2,9 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,9 +51,15 @@ var (
 )
 
 func RegisterModule(technique string, factory ModuleFactory) {
+	key := strings.ToLower(strings.TrimSpace(technique))
 	registryMu.Lock()
 	defer registryMu.Unlock()
-	moduleRegistry[strings.ToLower(strings.TrimSpace(technique))] = factory
+	if existing, ok := moduleRegistry[key]; ok && existing != nil {
+		// Duplicate technique keys silently replace the first registration,
+		// hiding programming errors; fail loudly instead.
+		panic(fmt.Sprintf("module technique %q registered more than once", key))
+	}
+	moduleRegistry[key] = factory
 }
 
 func GetModuleFactory(technique string) (ModuleFactory, bool) {
@@ -89,7 +97,24 @@ func PayloadInt(payload map[string]any, key string, fallback int) int {
 	switch val := v.(type) {
 	case int:
 		return val
+	case int64:
+		return int(val)
+	case int32:
+		return int(val)
+	case uint:
+		return int(val)
+	case json.Number:
+		if i, err := val.Int64(); err == nil {
+			return int(i)
+		}
 	case float64:
+		// Clamp out-of-range values instead of letting the conversion wrap.
+		if val < math.MinInt32 {
+			return math.MinInt32
+		}
+		if val > math.MaxInt32 {
+			return math.MaxInt32
+		}
 		return int(val)
 	case string:
 		if i, err := strconv.Atoi(val); err == nil {

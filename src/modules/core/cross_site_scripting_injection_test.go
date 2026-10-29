@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"context"
+	"html"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -32,16 +33,64 @@ func TestXSSValidator(t *testing.T) {
 			false,
 		},
 		{
+			"HTML Context Failure (comment)",
+			"<!-- <script>alert(1)</script> -->",
+			XSSPayload{"<script>alert(1)</script>", ContextHTML},
+			false,
+		},
+		{
+			"HTML Context Failure (textarea)",
+			"<textarea><script>alert(1)</script></textarea>",
+			XSSPayload{"<script>alert(1)</script>", ContextHTML},
+			false,
+		},
+		{
+			"HTML Context Failure (title)",
+			"<title><script>alert(1)</script></title>",
+			XSSPayload{"<script>alert(1)</script>", ContextHTML},
+			false,
+		},
+		{
+			"HTML Context Failure (open quoted attribute)",
+			`<a href="/next?q=<script>alert(1)</script>">`,
+			XSSPayload{"<script>alert(1)</script>", ContextHTML},
+			false,
+		},
+		{
+			"HTML Context Failure (script data)",
+			`<script>var s = "<script>alert(1)</script>";</script>`,
+			XSSPayload{"<script>alert(1)</script>", ContextHTML},
+			false,
+		},
+		{
 			"Attribute Context Success",
 			"<input value=\"\"><script>alert(1)</script>\">",
 			XSSPayload{"\"><script>alert(1)</script>", ContextAttribute},
 			true,
 		},
 		{
+			"Attribute Context Success (unquoted attribute)",
+			`<a href=/next?q="><script>alert(1)</script>">`,
+			XSSPayload{"\"><script>alert(1)</script>", ContextAttribute},
+			true,
+		},
+		{
+			"Attribute Context Failure (script data)",
+			`<script>var s = "\"><script>alert(1)</script>";</script>`,
+			XSSPayload{"\"><script>alert(1)</script>", ContextAttribute},
+			false,
+		},
+		{
 			"Script Context Success",
 			"<script>var x = ''-alert(1)-'';</script>",
 			XSSPayload{"'-alert(1)-'", ContextScript},
 			true,
+		},
+		{
+			"Script Context Failure (HTML text)",
+			"<div>'-alert(1)-'</div>",
+			XSSPayload{"'-alert(1)-'", ContextScript},
+			false,
 		},
 	}
 
@@ -55,16 +104,13 @@ func TestXSSValidator(t *testing.T) {
 }
 
 func TestCrossSiteScriptingInjection_Execute(t *testing.T) {
-	// Create a mock server that reflects parameters
+	// Create a mock server that reflects parameters unescaped in HTML context.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Discover which parameter has the probe or payload
 		q := r.URL.Query()
 
-		// If it's a probe (from DiscoverReflection)
 		for _, vals := range q {
 			for _, val := range vals {
 				if strings.HasPrefix(val, "PROBE") {
-					// Reflect the probe in HTML context
 					w.Header().Set("Content-Type", "text/html")
 					_, _ = w.Write([]byte("<div>" + val + "</div>"))
 					return
@@ -72,9 +118,7 @@ func TestCrossSiteScriptingInjection_Execute(t *testing.T) {
 			}
 		}
 
-		// If it's a payload (from testContextPayload)
 		if val := q.Get("q"); val != "" {
-			// Mock vulnerability: reflect back unescaped
 			w.Header().Set("Content-Type", "text/html")
 			_, _ = w.Write([]byte("<div>" + val + "</div>"))
 			return
@@ -95,7 +139,7 @@ func TestCrossSiteScriptingInjection_Execute(t *testing.T) {
 	for _, res := range results {
 		if res.Status == "vulnerable" {
 			found = true
-			if !strings.Contains(res.Detail, "vulnerable") && !strings.Contains(res.Detail, "XSS found") {
+			if !strings.Contains(res.Detail, "XSS found") {
 				t.Errorf("Unexpected detail: %s", res.Detail)
 			}
 		}
@@ -103,6 +147,78 @@ func TestCrossSiteScriptingInjection_Execute(t *testing.T) {
 
 	if !found {
 		t.Error("Expected to find XSS vulnerability, but none found")
+	}
+}
+
+// TestCrossSiteScriptingInjection_Execute_Escaped pins the plan's HTML-escaping
+// server case: escaped reflection must yield zero vulnerable results.
+func TestCrossSiteScriptingInjection_Execute_Escaped(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		w.Header().Set("Content-Type", "text/html")
+
+		for _, vals := range q {
+			for _, val := range vals {
+				_, _ = w.Write([]byte("<div>" + html.EscapeString(val) + "</div>"))
+				return
+			}
+		}
+		_, _ = w.Write([]byte("<div>Safe</div>"))
+	}))
+	defer server.Close()
+
+	m := NewCrossSiteScriptingInjection(server.URL + "?q=test")
+	results, err := m.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	for _, res := range results {
+		if res.Status == "vulnerable" {
+			t.Errorf("Escaped reflection must not be reported vulnerable: %s", res.Detail)
+		}
+	}
+}
+
+// TestCrossSiteScriptingInjection_Execute_JSONContentType pins the plan's JSON
+// endpoint case: raw markup inside JSON must not be judged vulnerable; the
+// content-type gate yields an inconclusive row instead.
+func TestCrossSiteScriptingInjection_Execute_JSONContentType(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+
+		for _, vals := range q {
+			for _, val := range vals {
+				_, _ = w.Write([]byte(`{"echo":"` + val + `"}`))
+				return
+			}
+		}
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer server.Close()
+
+	m := NewCrossSiteScriptingInjection(server.URL + "?q=test")
+	results, err := m.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	vulnerable := false
+	inconclusive := false
+	for _, res := range results {
+		switch res.Status {
+		case "vulnerable":
+			vulnerable = true
+		case "inconclusive":
+			inconclusive = true
+		}
+	}
+	if vulnerable {
+		t.Error("Raw markup inside JSON must not be reported vulnerable")
+	}
+	if !inconclusive {
+		t.Error("Expected an inconclusive row for the non-HTML content-type gate")
 	}
 }
 

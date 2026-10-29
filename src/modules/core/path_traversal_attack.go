@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -29,6 +30,13 @@ type PathValidator struct {
 
 // Validate checks if the response indicates a successful path traversal.
 func (v *PathValidator) Validate(resp *http.Response, body string, payload string) (bool, string) {
+	// A response identical to the nonexistent-file baseline in both status and
+	// body size carries no new information; judging it would flag soft-404
+	// pages and pre-existing published content as traversal successes.
+	if resp != nil && resp.StatusCode == v.Baseline.statusCode && len(body) == v.Baseline.bodySize {
+		return false, ""
+	}
+
 	// Content matching
 	if strings.Contains(body, "root:x:0:0:") {
 		return true, "Path traversal successful via content match (/etc/passwd) with payload: " + payload
@@ -83,24 +91,34 @@ var traversalPayloads = []string{
 	"../../../etc/passwd%00",
 }
 
-func (m *PathTraversalAttack) getBaseline(ctx context.Context, u *url.URL, vectors []InputVector) map[string]baselineInfo {
+func (m *PathTraversalAttack) getBaseline(ctx context.Context, u *url.URL, vectors []InputVector) (map[string]baselineInfo, error) {
 	baselines := make(map[string]baselineInfo)
+	var firstErr error
 	for _, v := range vectors {
 		// Non-existent file check
 		baselinePayload := fmt.Sprintf("nonexistent_%d", time.Now().UnixNano())
-		req := buildRequest(ctx, &m.BaseModule, u, v, baselinePayload)
-		if req == nil {
+		req, err := m.newRequestForVector(ctx, u, v, baselinePayload)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 
 		resp, err := m.Client.Do(req)
 		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 
 		body, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 		resp.Body.Close()
 		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 
@@ -109,22 +127,49 @@ func (m *PathTraversalAttack) getBaseline(ctx context.Context, u *url.URL, vecto
 			bodySize:   len(body),
 		}
 	}
-	return baselines
+	return baselines, firstErr
 }
 
-func buildRequest(ctx context.Context, b *BaseModule, u *url.URL, vector InputVector, payload string) *http.Request {
+// newRequestForVector builds a probe request for a vector. The synthetic
+// path_append vector cannot go through BuildRequestWithVector (its key is not
+// a "path[i]" segment and the payload must reach the wire verbatim), so it is
+// constructed as a raw URL string instead.
+func (m *PathTraversalAttack) newRequestForVector(ctx context.Context, u *url.URL, vector InputVector, payload string) (*http.Request, error) {
+	if vector.Type == VectorPathSegment && vector.Key == "path_append" {
+		return http.NewRequestWithContext(ctx, "GET", rawTraversalURL(u, payload), nil)
+	}
+	return buildRequest(ctx, &m.BaseModule, u, vector, payload)
+}
+
+func buildRequest(ctx context.Context, b *BaseModule, u *url.URL, vector InputVector, payload string) (*http.Request, error) {
 	method := "GET"
 	if vector.Type == VectorFormBody || vector.Type == VectorJSONBody {
 		method = "POST"
 	}
-	req, _ := b.BuildRequestWithVector(ctx, method, u, vector, payload)
-	return req
+	return b.BuildRequestWithVector(ctx, method, u, vector, payload)
+}
+
+// rawTraversalURL builds the request URL for the path_append vector as a raw
+// string so payloads that are already percent-encoded ("..%2f") reach the wire
+// single-encoded; assigning them to url.URL.Path makes URL.String() re-escape
+// the percent sign into "%25", which neutralizes the payload.
+func rawTraversalURL(u *url.URL, payload string) string {
+	raw := u.Scheme + "://" + u.Host + u.EscapedPath()
+	if !strings.HasSuffix(raw, "/") {
+		raw += "/"
+	}
+	raw += payload
+	if u.RawQuery != "" {
+		raw += "?" + u.RawQuery
+	}
+	return raw
 }
 
 // Execute performs the path traversal scan.
 func (m *PathTraversalAttack) Execute(ctx context.Context) ([]PathTraversalAttackResult, error) {
 	var results []PathTraversalAttackResult
 	var mu sync.Mutex
+	var firstErr error
 
 	parsedURL, err := url.Parse(m.Target)
 	if err != nil {
@@ -139,7 +184,10 @@ func (m *PathTraversalAttack) Execute(ctx context.Context) ([]PathTraversalAttac
 	}
 
 	// Step 2: Implement baseline probing
-	baselines := m.getBaseline(ctx, parsedURL, vectors)
+	baselines, baselineErr := m.getBaseline(ctx, parsedURL, vectors)
+	if baselineErr != nil {
+		firstErr = baselineErr
+	}
 
 	jobs := make(chan struct {
 		Vector  InputVector
@@ -157,6 +205,7 @@ func (m *PathTraversalAttack) Execute(ctx context.Context) ([]PathTraversalAttac
 	close(jobs)
 
 	var wg sync.WaitGroup
+	var missingBaselines int64
 	for i := 0; i < m.MaxThreads; i++ {
 		wg.Add(1)
 		go func() {
@@ -166,49 +215,70 @@ func (m *PathTraversalAttack) Execute(ctx context.Context) ([]PathTraversalAttac
 				case <-ctx.Done():
 					return
 				default:
-					res := m.testVector(ctx, parsedURL, job.Vector, job.Payload, baselines[job.Vector.Key])
-					if res != nil {
-						mu.Lock()
-						results = append(results, *res)
-						mu.Unlock()
-					}
 				}
+				// A vector whose baseline capture failed has no map entry;
+				// the zero-value baseline would disable the soft-404 gate, so
+				// the vector must not be judged at all. Count it as a failed
+				// probe instead.
+				baseline, ok := baselines[job.Vector.Key]
+				if !ok {
+					atomic.AddInt64(&missingBaselines, 1)
+					continue
+				}
+				res, err := m.testVector(ctx, parsedURL, job.Vector, job.Payload, baseline)
+				mu.Lock()
+				if err != nil && firstErr == nil {
+					firstErr = err
+				}
+				if res != nil {
+					results = append(results, *res)
+				}
+				mu.Unlock()
 			}
 		}()
 	}
 	wg.Wait()
 
+	totalJobs := len(vectors) * len(traversalPayloads)
+	if totalJobs > 0 && missingBaselines == int64(totalJobs) {
+		// Every vector lost its baseline to transport errors: judging was
+		// skipped entirely, which must not look like a clean scan.
+		detail := "Baseline capture failed for all vectors; traversal judging skipped."
+		if firstErr != nil {
+			detail += " First error: " + firstErr.Error()
+		}
+		results = append(results, PathTraversalAttackResult{
+			Target: m.Target,
+			Status: statusFromEvidence(EvidenceWeak, false),
+			Detail: formatEvidenceDetail(EvidenceWeak, detail),
+		})
+		return results, ctx.Err()
+	}
+
+	// A target where no request ever succeeded must not be reported as a
+	// clean scan; surface the first transport error instead.
+	if len(results) == 0 && firstErr != nil {
+		return results, firstErr
+	}
+
 	return results, nil
 }
 
-func (m *PathTraversalAttack) testVector(ctx context.Context, u *url.URL, vector InputVector, payload string, baseline baselineInfo) *PathTraversalAttackResult {
-	var req *http.Request
-	var err error
-	if vector.Key == "path_append" {
-		newU, parseErr := url.Parse(u.String())
-		if parseErr != nil {
-			return nil
-		}
-		newU.Path = strings.TrimRight(newU.Path, "/") + "/" + payload
-		req, err = http.NewRequestWithContext(ctx, "GET", newU.String(), nil)
-	} else {
-		req = buildRequest(ctx, &m.BaseModule, u, vector, payload)
-		err = nil
-	}
-
-	if err != nil || req == nil {
-		return nil
+func (m *PathTraversalAttack) testVector(ctx context.Context, u *url.URL, vector InputVector, payload string, baseline baselineInfo) (*PathTraversalAttackResult, error) {
+	req, err := m.newRequestForVector(ctx, u, vector, payload)
+	if err != nil {
+		return nil, err
 	}
 
 	resp, err := m.Client.Do(req)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	bodyBytes, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	bodyStr := string(bodyBytes)
 
@@ -220,12 +290,12 @@ func (m *PathTraversalAttack) testVector(ctx context.Context, u *url.URL, vector
 		m.RecordPoC(req, nil, detail)
 		return &PathTraversalAttackResult{
 			Target: m.Target,
-			Status: "vulnerable",
+			Status: statusFromEvidence(EvidenceConfirmed, false),
 			Detail: detail,
-		}
+		}, nil
 	}
 
-	return nil
+	return nil, nil
 }
 
 func init() {

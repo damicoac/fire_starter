@@ -80,6 +80,10 @@ func normalizeDorkTarget(target string) string {
 	if idx := strings.Index(t, "/"); idx >= 0 {
 		t = t[:idx]
 	}
+	// Google's site: operator rejects a trailing :port.
+	if idx := strings.Index(t, ":"); idx >= 0 {
+		t = t[:idx]
+	}
 	return strings.TrimSpace(t)
 }
 
@@ -89,11 +93,9 @@ func targetDomains(target string) []string {
 		return nil
 	}
 
-	domains := []string{t}
-	if strings.Count(t, ".") >= 1 {
-		domains = append(domains, "*."+t)
-	}
-	return domains
+	// "site:*.example.com" is not supported by Google's site: operator;
+	// only the concrete domain is queried.
+	return []string{t}
 }
 
 func init() {

