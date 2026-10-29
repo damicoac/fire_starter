@@ -13,11 +13,11 @@
   "credentials": [
     {
       "username": "admin",
-      "password": "admin123"
+      "password": "<password-here>"
     },
     {
       "username": "analyst",
-      "password": "TempPass!2026"
+      "password": "<password-here>"
     }
   ]
 }

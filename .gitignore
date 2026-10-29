@@ -4,4 +4,9 @@
 .superpowers/
 .antigravitycli
 docs/superpowers/
-.worktrees/
+/fire_starter
+/fire_starter.db*
+/fire_starter_report.md
+tmp_core_check/
+.gemini/
+operation/*.local*.json
