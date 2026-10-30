@@ -516,30 +516,6 @@ func GetVulnerabilitiesByTarget(targetDomain string) ([]VulnInfo, error) {
 	return scanVulnRows(rows)
 }
 
-// GetVulnerabilitiesPaginated retrieves vulnerability findings with limit and offset
-func GetVulnerabilitiesPaginated(limit, offset int) ([]VulnInfo, error) {
-	db, err := getDB()
-	if err != nil {
-		return nil, err
-	}
-	if limit <= 0 {
-		limit = 50
-	}
-	if offset < 0 {
-		offset = 0
-	}
-	rows, err := db.Query(
-		"SELECT id, vuln_id, date_time, target_domain, finding, test_code, exploitable, status, severity FROM vuln ORDER BY id ASC LIMIT ? OFFSET ?",
-		limit, offset,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	return scanVulnRows(rows)
-}
-
 // IsPayloadExecuted checks if a specific tool payload hash was already executed
 func IsPayloadExecuted(payloadHash string) (bool, error) {
 	db, err := getDB()

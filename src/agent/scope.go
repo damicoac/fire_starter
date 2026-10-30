@@ -7,10 +7,9 @@ import (
 )
 
 // ExtractIPsFromTarget resolves a target string (bare IP, hostname, or URL) to
-// the IP addresses it refers to. It is an exported wrapper around the same
-// extraction helper the agent workflow uses when seeding its IP allowlist, so
-// other entry points (e.g. the MCP server bootstrap in cmd/fire_starter) can
-// enforce identical scope rules without duplicating the parsing logic.
+// the IP addresses it refers to, erroring when nothing resolves. It backs
+// LoopbackScopeAllow and ConfigScopeAllow so every scope guard applies
+// identical resolution and deny-on-unresolvable rules.
 func ExtractIPsFromTarget(target string) ([]string, error) {
 	ips := extractIPsFromTarget(target)
 	if len(ips) == 0 {

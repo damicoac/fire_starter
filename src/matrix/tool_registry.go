@@ -14,10 +14,7 @@ func NewToolRegistry(decisions []Decision) *ToolRegistry {
 	tools := make([]ToolDefinition, 0, len(decisions))
 	for _, decision := range decisions {
 		name := toolNameFromDecision(decision)
-		description := fmt.Sprintf(
-			"%s (id %s). Use case: %s. Problem solved: %s. Implements: %s",
-			decision.Technique, decision.Identifier, decision.UseCase, decision.ProblemTheToolSolves, decision.Function,
-		)
+		description := decision.Description()
 
 		tool := ToolDefinition{
 			Name:        name,

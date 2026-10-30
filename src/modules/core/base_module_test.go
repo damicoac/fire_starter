@@ -289,17 +289,12 @@ func TestOOBInfrastructure(t *testing.T) {
 	// though usually it's synchronous in the handler.
 	time.Sleep(10 * time.Millisecond)
 
-	// Check interactions
-	interactions := manager.GetInteractions(id)
-	if len(interactions) != 1 {
-		t.Errorf("Expected 1 interaction, got %d", len(interactions))
-	} else {
-		if interactions[0].ID != id {
-			t.Errorf("Expected interaction ID %s, got %s", id, interactions[0].ID)
-		}
-		if interactions[0].Protocol != "http" {
-			t.Errorf("Expected protocol http, got %s", interactions[0].Protocol)
-		}
+	// Check hits
+	hits := manager.Hits(id)
+	if len(hits) != 1 {
+		t.Errorf("Expected 1 hit, got %d", len(hits))
+	} else if hits[0].Path != "/"+id {
+		t.Errorf("Expected hit path /%s, got %s", id, hits[0].Path)
 	}
 }
 

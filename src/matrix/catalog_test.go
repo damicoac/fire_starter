@@ -38,10 +38,10 @@ func TestCatalog_DecisionsMatchModules(t *testing.T) {
 		technique := strings.ToLower(strings.TrimSpace(d.Technique))
 
 		if _, ok := registered[technique]; !ok {
-			t.Errorf("decision %s (%s): no registered module for technique %q", d.Identifier, d.Name(), d.Technique)
+			t.Errorf("decision %s (%s): no registered module for technique %q", d.Identifier, d.Technique, d.Technique)
 		}
 		if !declared[technique] {
-			t.Errorf("decision %s (%s): technique %q missing from executor registry", d.Identifier, d.Name(), d.Technique)
+			t.Errorf("decision %s (%s): technique %q missing from executor registry", d.Identifier, d.Technique, d.Technique)
 		}
 
 		if identifiers[d.Identifier] {
@@ -50,20 +50,20 @@ func TestCatalog_DecisionsMatchModules(t *testing.T) {
 		identifiers[d.Identifier] = true
 
 		if descriptions[d.Description()] {
-			t.Errorf("decision %s (%s): duplicate description", d.Identifier, d.Name())
+			t.Errorf("decision %s (%s): duplicate description", d.Identifier, d.Technique)
 		}
 		descriptions[d.Description()] = true
 
 		if !validPhase(d.Phase) {
-			t.Errorf("decision %s (%s): invalid phase %q", d.Identifier, d.Name(), d.Phase)
+			t.Errorf("decision %s (%s): invalid phase %q", d.Identifier, d.Technique, d.Phase)
 		}
 
 		desc := strings.ToLower(d.Description())
 		if strings.TrimSpace(desc) == "" {
-			t.Errorf("decision %s (%s): empty description", d.Identifier, d.Name())
+			t.Errorf("decision %s (%s): empty description", d.Identifier, d.Technique)
 		}
 		if !strings.Contains(desc, strings.ToLower(d.Technique)) {
-			t.Errorf("decision %s (%s): description does not contain the technique name", d.Identifier, d.Name())
+			t.Errorf("decision %s (%s): description does not contain the technique name", d.Identifier, d.Technique)
 		}
 	}
 

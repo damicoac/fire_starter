@@ -580,10 +580,10 @@ func TestOOBManager_ExplicitPortEndToEnd(t *testing.T) {
 	_ = resp.Body.Close()
 
 	deadline := time.Now().Add(2 * time.Second)
-	for len(m.GetInteractions(id)) == 0 && time.Now().Before(deadline) {
+	for len(m.Hits(id)) == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	hits := m.GetInteractions(id)
+	hits := m.Hits(id)
 	if len(hits) == 0 {
 		t.Fatal("expected the fetched callback URL to be recorded as a hit")
 	}

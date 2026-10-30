@@ -46,13 +46,8 @@ type DecisionData struct {
 	Decisions []Decision `json:"decisions"`
 }
 
-// Name returns the technique in tool-name form (used for error messages).
-func (d Decision) Name() string {
-	return d.Technique
-}
-
 // Description renders the per-tool LLM description from the decision's own
-// data, mirroring the format built by NewToolRegistry.
+// data; NewToolRegistry uses it for each tool's description.
 func (d Decision) Description() string {
 	return fmt.Sprintf(
 		"%s (id %s). Use case: %s. Problem solved: %s. Implements: %s",

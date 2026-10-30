@@ -217,7 +217,7 @@ func TestInitDBMigratesLegacyVulnerabilityStatuses(t *testing.T) {
 	}
 }
 
-func TestGetVulnerabilitiesByTargetAndPaginated(t *testing.T) {
+func TestGetVulnerabilitiesByTarget(t *testing.T) {
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "test_target_vulns.db")
 
@@ -245,22 +245,6 @@ func TestGetVulnerabilitiesByTargetAndPaginated(t *testing.T) {
 	}
 	if len(byTargetAPI) != 1 || byTargetAPI[0].VulnID != "v1" {
 		t.Fatalf("Expected 1 finding for example.com/api, got %#v", byTargetAPI)
-	}
-
-	paginated, err := GetVulnerabilitiesPaginated(2, 0)
-	if err != nil {
-		t.Fatalf("GetVulnerabilitiesPaginated failed: %v", err)
-	}
-	if len(paginated) != 2 {
-		t.Fatalf("Expected 2 paginated findings, got %d", len(paginated))
-	}
-
-	page2, err := GetVulnerabilitiesPaginated(2, 2)
-	if err != nil {
-		t.Fatalf("GetVulnerabilitiesPaginated offset failed: %v", err)
-	}
-	if len(page2) != 1 {
-		t.Fatalf("Expected 1 finding on page 2, got %d", len(page2))
 	}
 }
 

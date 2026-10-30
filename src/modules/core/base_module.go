@@ -316,16 +316,6 @@ func (m *OOBManager) GenerateOOBPayload() (string, string) {
 	return fmt.Sprintf("%s/%s", host, id), id
 }
 
-func (m *OOBManager) GetInteractions(id string) []OOBInteraction {
-	m.Mu.Lock()
-	defer m.Mu.Unlock()
-	interactions, ok := m.Interactions[id]
-	if !ok {
-		return []OOBInteraction{}
-	}
-	return interactions
-}
-
 // Hits returns a snapshot of the out-of-band callback hits recorded by this
 // manager. When id is non-empty only hits belonging to that interaction id
 // are returned; an empty id returns every recorded hit.
