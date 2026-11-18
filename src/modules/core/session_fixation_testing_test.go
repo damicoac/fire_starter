@@ -144,6 +144,49 @@ func TestSessionFixationTesting_Execute_NavWordsWithoutSetCookieNotVulnerable(t 
 	}
 }
 
+func TestSessionFixationTesting_Execute_NoFollowupAuthDowngrades(t *testing.T) {
+	// The login POST succeeds (200 + Set-Cookie + success body), but the
+	// follow-up authenticated request carrying the fake session cookie does
+	// NOT return an auth-indicating response: the confirmed finding must be
+	// downgraded — no vulnerable row, one inconclusive summary row. The form
+	// posts to its action URL (/login), not the page URL.
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			if req.Method == "POST" {
+				h := make(http.Header)
+				h.Add("Set-Cookie", "PHPSESSID=newsessionvalue; Path=/; HttpOnly")
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(bytes.NewBufferString(`<html><body>Welcome back, your session is active</body></html>`)),
+					Header:     h,
+				}
+			}
+			// GETs: the login page itself (and the follow-up request, which
+			// lands on the same page) — a password form with no success
+			// markers, so the fake cookie demonstrably grants nothing.
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewBufferString(`<html><form action="/login"><input type="password" name="pass"></form><p>Sign in</p></html>`)),
+				Header:     make(http.Header),
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewSessionFixationTesting("http://example.com")
+	ctx := context.Background()
+	result, _ := module.Execute(ctx)
+	for _, r := range result {
+		if r.Status == "vulnerable" {
+			t.Fatalf("confirmed finding without an auth-indicating follow-up must be downgraded, got %#v", r)
+		}
+	}
+	if len(result) != 1 || result[0].Status != "inconclusive" {
+		t.Fatalf("expected exactly 1 inconclusive summary row after the follow-up downgrade, got %+v", result)
+	}
+}
+
 func TestSessionFixationTesting__Execute_CanceledContext(t *testing.T) {
 	module := NewSessionFixationTesting("http://example.com")
 	ctx, cancel := context.WithCancel(context.Background())

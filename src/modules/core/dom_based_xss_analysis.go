@@ -90,6 +90,12 @@ func (m *DOMBasedXSSAnalysis) Execute(ctx context.Context) ([]DOMBasedXSSAnalysi
 		return nil, fmt.Errorf("failed to read target body: %w", err)
 	}
 
+	// Gate the analysis on HTML content: DOM source/sink scanning of JSON,
+	// CSS, or other non-HTML bodies only produces noise.
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(strings.ToLower(ct), "text/html") {
+		return m.results, nil
+	}
+
 	htmlContent := string(body)
 
 	// Analyze inline scripts (only inside real <script> blocks).
@@ -230,6 +236,13 @@ func (m *DOMBasedXSSAnalysis) analyzeJS(sourceURL, content string, baseLine int)
 					abs = -abs
 				}
 				if abs > domXSSSinkSourceWindow {
+					continue
+				}
+				// Proximity alone is not data flow: the sink's argument
+				// expression must actually reference the source call, so
+				// unrelated same-line mentions are not flagged.
+				argExpr := line[sinkLoc[1]:]
+				if !strings.Contains(strings.ToLower(argExpr), strings.ToLower(source)) {
 					continue
 				}
 				key := sink + "|" + source

@@ -127,7 +127,7 @@ func (m *ErrorMessageAnalysis) Execute(ctx context.Context) ([]ErrorMessageAnaly
 						// baseline without already containing the signature.
 						eligible := status >= 400 && baselineStatus < 400
 						if !eligible && status >= 200 && status < 300 {
-							eligible = bodyStr != baselineBody && !strings.Contains(baselineBody, sigText)
+							eligible = normalizedCompactLower(bodyStr) != normalizedCompactLower(baselineBody) && !strings.Contains(baselineBody, sigText)
 						}
 						if !eligible {
 							continue

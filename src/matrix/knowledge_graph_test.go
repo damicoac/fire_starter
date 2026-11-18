@@ -599,3 +599,156 @@ func TestKnowledgeGraph_SetOnUpdateConcurrentWithMutations(t *testing.T) {
 
 	wg.Wait()
 }
+
+func setupTestDB(t *testing.T) {
+	t.Helper()
+	ResetDBForTest()
+	if _, err := InitDB(filepath.Join(t.TempDir(), "test_fire_starter.db")); err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+}
+
+// TestKnowledgeGraph_StructuralExtractStatusFirst pins the status-first
+// contract: only an explicit "vulnerable" status creates a vulnerability
+// record; negative trigger wording on secure/inconclusive rows must not.
+func TestKnowledgeGraph_StructuralExtractStatusFirst(t *testing.T) {
+	cases := []struct {
+		name          string
+		resultData    string
+		wantVulns     int
+		wantTestCases int
+		wantStatus    string // expected TestCase.Status ("" for candidate default)
+	}{
+		{
+			name:          "secure row with confirmed wording creates nothing",
+			resultData:    `{"status":"secure","detail":"[evidence:confirmed] protected by rate limiting"}`,
+			wantVulns:     0,
+			wantTestCases: 0,
+		},
+		{
+			name:          "inconclusive row with not-exploitable wording creates nothing",
+			resultData:    `{"status":"inconclusive","detail":"blind SSRF could not be confirmed; not exploitable"}`,
+			wantVulns:     0,
+			wantTestCases: 0,
+		},
+		{
+			name:          "vulnerable row creates one record and one candidate case",
+			resultData:    `{"status":"vulnerable","detail":"Reflected XSS at /search via q parameter"}`,
+			wantVulns:     1,
+			wantTestCases: 1,
+		},
+		{
+			name:          "informational row creates test case without vulnerability",
+			resultData:    `{"status":"informational","detail":"Public JSON array response observed at /api/data"}`,
+			wantVulns:     0,
+			wantTestCases: 1,
+			wantStatus:    VulnerabilityStatusInformational,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setupTestDB(t)
+			kg := NewKnowledgeGraph()
+			defer kg.Close()
+
+			kg.StructuralExtract("test_tool", "https://app.example.com", map[string]any{"target": "https://app.example.com"}, tc.resultData)
+
+			target, ok := kg.GetTarget("https://app.example.com")
+			if !ok {
+				// Nothing was extracted: no target needs to exist at all.
+				if tc.wantVulns != 0 || tc.wantTestCases != 0 {
+					t.Fatalf("expected target to exist")
+				}
+				return
+			}
+			if len(target.Vulnerabilities) != tc.wantVulns {
+				t.Errorf("vulnerabilities = %v, want %d", target.Vulnerabilities, tc.wantVulns)
+			}
+			if len(target.TestCases) != tc.wantTestCases {
+				t.Fatalf("test cases = %d, want %d", len(target.TestCases), tc.wantTestCases)
+			}
+			for _, got := range target.TestCases {
+				if got.Status != tc.wantStatus {
+					t.Errorf("test case status = %q, want %q", got.Status, tc.wantStatus)
+				}
+			}
+		})
+	}
+}
+
+// TestKnowledgeGraph_InformationalPersistsWithStatus verifies the AddTestCase
+// informational persistence path writes a DB row with status/severity
+// informational rather than the candidate default.
+func TestKnowledgeGraph_InformationalPersistsWithStatus(t *testing.T) {
+	setupTestDB(t)
+	kg := NewKnowledgeGraph()
+	defer kg.Close()
+
+	kg.StructuralExtract("json_hijacking", "https://app.example.com", nil,
+		`{"status":"informational","detail":"Public JSON array response at /api/data"}`)
+
+	vulns, err := GetVulnerabilities()
+	if err != nil {
+		t.Fatalf("GetVulnerabilities failed: %v", err)
+	}
+	if len(vulns) != 1 {
+		t.Fatalf("expected exactly 1 DB row, got %d", len(vulns))
+	}
+	if vulns[0].Status != VulnerabilityStatusInformational {
+		t.Errorf("DB status = %q, want %q", vulns[0].Status, VulnerabilityStatusInformational)
+	}
+	if vulns[0].Severity != VulnerabilitySeverityInformational {
+		t.Errorf("DB severity = %q, want %q", vulns[0].Severity, VulnerabilitySeverityInformational)
+	}
+	if vulns[0].Finding != "Public JSON array response at /api/data" {
+		t.Errorf("DB finding = %q, want detail text", vulns[0].Finding)
+	}
+}
+
+// TestKnowledgeGraph_RemoveVulnerabilityPrunesExactString pins the helper
+// lifecycle prune: a resolved finding string leaves the graph, other strings
+// and unknown targets are untouched.
+func TestKnowledgeGraph_RemoveVulnerabilityPrunesExactString(t *testing.T) {
+	kg := NewKnowledgeGraph()
+	defer kg.Close()
+
+	kg.AddVulnerability("https://app.example.com", "Reflected XSS at /search")
+	kg.AddVulnerability("https://app.example.com", "SQL injection at /login")
+	kg.RemoveVulnerability("https://app.example.com", "  Reflected XSS at /search  ")
+
+	target, ok := kg.GetTarget("https://app.example.com")
+	if !ok {
+		t.Fatalf("expected target to exist")
+	}
+	if len(target.Vulnerabilities) != 1 || target.Vulnerabilities[0] != "SQL injection at /login" {
+		t.Errorf("vulnerabilities after prune = %v, want only the untouched finding", target.Vulnerabilities)
+	}
+
+	// Unknown target and empty string are no-ops (no target created).
+	kg.RemoveVulnerability("https://missing.example.com", "anything")
+	kg.RemoveVulnerability("https://app.example.com", "   ")
+	if _, ok := kg.GetTarget("https://missing.example.com"); ok {
+		t.Errorf("removal must not create targets")
+	}
+}
+
+// TestKnowledgeGraph_StructuralExtractNonStringDetail pins deterministic
+// descriptions: a non-string detail value never becomes the description; the
+// next string field (message) is used instead.
+func TestKnowledgeGraph_StructuralExtractNonStringDetail(t *testing.T) {
+	setupTestDB(t)
+	kg := NewKnowledgeGraph()
+	defer kg.Close()
+
+	kg.StructuralExtract("test_tool", "https://app.example.com", nil,
+		`{"status":"vulnerable","detail":{"rows":[1,2,3]},"message":"Auth bypass at /admin"}`)
+
+	target, ok := kg.GetTarget("https://app.example.com")
+	if !ok || len(target.Vulnerabilities) != 1 {
+		t.Fatalf("expected exactly one vulnerability, target=%v", target)
+	}
+	if target.Vulnerabilities[0] != "Auth bypass at /admin" {
+		t.Errorf("description = %q, want message text (non-string detail skipped)", target.Vulnerabilities[0])
+	}
+}

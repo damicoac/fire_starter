@@ -62,8 +62,12 @@ func (m *ThreatMonitoringTesting) Execute(ctx context.Context) ([]ThreatMonitori
 
 	// Baseline: a successful pre-burst baseline is required before burst behavior can
 	// be attributed to active blocking rather than plain overload.
-	baselineStatus, err := m.getBaseline(ctx)
+	baselineStatus, baselineBody, err := m.getBaseline(ctx)
 	if err != nil {
+		// Do not swallow mid-run cancellation as an "unreachable target" row.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return results, ctxErr
+		}
 		return append(results, ThreatMonitoringResult{
 			Target: m.Target,
 			Status: statusFromEvidence(EvidenceWeak, false),
@@ -75,6 +79,15 @@ func (m *ThreatMonitoringTesting) Execute(ctx context.Context) ([]ThreatMonitori
 			Target: m.Target,
 			Status: statusFromEvidence(EvidenceWeak, false),
 			Detail: formatEvidenceDetail(EvidenceWeak, "Baseline endpoint is auth-gated (401/403), so unauthenticated threat-monitoring probing is inconclusive."),
+		}), nil
+	}
+	if baselineStatus == http.StatusTooManyRequests || baselineStatus == http.StatusNotAcceptable {
+		// A baseline that already throttles/refuses makes burst-driven block
+		// statuses indistinguishable from steady-state behavior.
+		return append(results, ThreatMonitoringResult{
+			Target: m.Target,
+			Status: "inconclusive",
+			Detail: fmt.Sprintf("Baseline endpoint already returns HTTP %d (429/406), so burst behavior cannot be attributed to active threat monitoring.", baselineStatus),
 		}), nil
 	}
 	if baselineStatus >= http.StatusInternalServerError {
@@ -142,13 +155,11 @@ func (m *ThreatMonitoringTesting) Execute(ctx context.Context) ([]ThreatMonitori
 					mu.Unlock()
 					return
 				}
-				body, readErr := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
+				_, readErr := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 				resp.Body.Close()
 				if readErr != nil {
-					// The body could not be read, so the WAF-marker judge is
-					// disabled for this response; count it as a failed probe
-					// instead of silently treating it as marker-free.
-					body = nil
+					// The response body could not be read; count it as a
+					// failed probe so the summary reflects partial visibility.
 					mu.Lock()
 					readFailures++
 					mu.Unlock()
@@ -158,9 +169,10 @@ func (m *ThreatMonitoringTesting) Execute(ctx context.Context) ([]ThreatMonitori
 					resp.StatusCode == http.StatusNotAcceptable ||
 					resp.StatusCode == http.StatusTooManyRequests
 				// A burst response counts as blocked when it is a block-status differing
-				// from baseline, or a block-status carrying WAF markers even when it
-				// matches an auth-gated baseline status.
-				if isBlockStatus && (resp.StatusCode != baselineStatus || threatMonitorContainsWAFMarker(string(body))) {
+				// from baseline, or a block-status carrying WAF markers that the
+				// baseline body itself does not contain (a static WAF-challenge page
+				// served on every request is not burst-driven blocking).
+				if isBlockStatus && (resp.StatusCode != baselineStatus || !threatMonitorContainsWAFMarker(baselineBody)) {
 					mu.Lock()
 					blockedCount++
 					mu.Unlock()
@@ -169,6 +181,11 @@ func (m *ThreatMonitoringTesting) Execute(ctx context.Context) ([]ThreatMonitori
 		}(i)
 	}
 	wg.Wait()
+
+	// Mid-run cancellation must surface as an error, not a clean-scan row.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return results, ctxErr
+	}
 
 	// Consider it active monitoring if > 10% of requests explicitly blocked.
 	explicitBlockThreshold := m.burstCount / 10
@@ -212,6 +229,10 @@ func (m *ThreatMonitoringTesting) Execute(ctx context.Context) ([]ThreatMonitori
 	}
 
 	if verifyErr != nil {
+		// Cancellation during verification is not a verification failure.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return results, ctxErr
+		}
 		// Only refused/reset-style failures after the burst support an active-block
 		// attribution; timeouts alone are indistinguishable from overload.
 		if refusedDuringBurst && threatMonitorIsRefusalErr(verifyErr) {
@@ -242,22 +263,28 @@ func (m *ThreatMonitoringTesting) Execute(ctx context.Context) ([]ThreatMonitori
 	}
 	return append(results, ThreatMonitoringResult{
 		Target: m.Target,
-		Status: statusFromEvidence(EvidenceConfirmed, false),
-		Detail: formatEvidenceDetail(EvidenceConfirmed, cleanDetail),
+		// "No monitoring observed" is an observation about controls, not a
+		// confirmed vulnerability; report it as informational.
+		Status: "informational",
+		Detail: cleanDetail,
 	}), nil
 }
 
-func (m *ThreatMonitoringTesting) getBaseline(ctx context.Context) (int, error) {
+func (m *ThreatMonitoringTesting) getBaseline(ctx context.Context) (int, string, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", m.Target, nil)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	resp, err := m.Client.Do(req)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode, nil
+	body, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
+	if err != nil {
+		return 0, "", err
+	}
+	return resp.StatusCode, string(body), nil
 }
 
 // threatMonitorWAFMarkers are body markers that identify an edge/WAF block page.

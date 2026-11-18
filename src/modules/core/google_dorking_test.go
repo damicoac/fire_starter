@@ -14,7 +14,7 @@ func TestGoogleDorking_Execute_ResultURLBody(t *testing.T) {
 		RoundTripFunc: func(req *http.Request) *http.Response {
 			return &http.Response{
 				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(bytes.NewBufferString(`<div class="result__url">http://example.com/.env</div>`)),
+				Body:       io.NopCloser(bytes.NewBufferString(`<a class="result__url" href="http://example.com/.env">example.com/.env</a>`)),
 				Header:     make(http.Header),
 			}
 		},
@@ -33,8 +33,39 @@ func TestGoogleDorking_Execute_ResultURLBody(t *testing.T) {
 		t.Fatalf("expected one result per dork (%d), got %d", len(dorks), len(result))
 	}
 	for _, res := range result {
-		if res.Status != "vulnerable" {
-			t.Errorf("expected vulnerable status for dork results, got %s (%s)", res.Status, res.Detail)
+		if res.Status != "informational" {
+			t.Errorf("expected informational status for dork results, got %s (%s)", res.Status, res.Detail)
+		}
+	}
+}
+
+// Result links whose hosts do not match the target domain are not dork hits:
+// they must yield inconclusive rows, never informational findings.
+func TestGoogleDorking_Execute_ForeignResultLinksInconclusive(t *testing.T) {
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewBufferString(`<a class="result__url" href="https://unrelated-site.net/.env">unrelated-site.net/.env</a>`)),
+				Header:     make(http.Header),
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewGoogleDorking("http://example.com")
+	result, err := module.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if len(result) != len(dorks) {
+		t.Fatalf("expected one result per dork (%d), got %d", len(dorks), len(result))
+	}
+	for _, res := range result {
+		if res.Status != "inconclusive" {
+			t.Fatalf("expected inconclusive row for foreign result links, got: %+v", res)
 		}
 	}
 }
@@ -64,8 +95,8 @@ func TestGoogleDorking_Execute_ResultsWithNoResultsSnippet(t *testing.T) {
 		t.Fatalf("expected one result per dork (%d), got %d", len(dorks), len(result))
 	}
 	for _, res := range result {
-		if res.Status != "vulnerable" {
-			t.Fatalf("expected vulnerable row for results page containing 'No results.' snippet, got: %+v", res)
+		if res.Status != "informational" {
+			t.Fatalf("expected informational row for results page containing 'No results.' snippet, got: %+v", res)
 		}
 	}
 }
@@ -170,5 +201,17 @@ func TestGoogleDorking__Execute_HTTPError(t *testing.T) {
 		if res.Status != "inconclusive" {
 			t.Errorf("expected inconclusive status for non-200 search response, got %s", res.Status)
 		}
+	}
+}
+
+// TestExtractResultLinkHosts_AttributeOrder pins host extraction for anchors
+// whose href precedes the result__url class marker.
+func TestExtractResultLinkHosts_AttributeOrder(t *testing.T) {
+	body := `<a class="result__url" href="https://after.example.com/a">a</a>` +
+		`<a href="https://before.example.com/b" class="result__url">b</a>`
+	got := extractResultLinkHosts(body)
+	want := []string{"after.example.com", "before.example.com"}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("extractResultLinkHosts = %v, want %v", got, want)
 	}
 }

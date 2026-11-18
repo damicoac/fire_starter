@@ -71,3 +71,22 @@ func TestLoginCookieExtractor__Execute_HTTPError(t *testing.T) {
 	ctx := context.Background()
 	_, _ = module.Execute(ctx)
 }
+
+// TestLoginCookiePostSucceeded_EmptyBodyRedirect pins the canonical login
+// shape: a 302 to a non-auth route with an empty body counts as success when
+// a new cookie was issued; marker checks apply only when a body exists.
+func TestLoginCookiePostSucceeded_EmptyBodyRedirect(t *testing.T) {
+	pre := map[string]bool{"csrf_token": true}
+	post := []string{"csrf_token", "session_id"}
+
+	ok, reason := loginCookiePostSucceeded(302, "", "/dashboard", pre, post, "")
+	if !ok {
+		t.Fatalf("empty-body 302 with new cookie should succeed, got %q", reason)
+	}
+	if ok, _ := loginCookiePostSucceeded(302, "nothing relevant here", "/dashboard", pre, post, ""); ok {
+		t.Fatal("non-empty body without a success marker must not count as login success")
+	}
+	if ok, _ := loginCookiePostSucceeded(302, "Invalid username or password", "/dashboard", pre, post, ""); ok {
+		t.Fatal("failure-marker body must veto the redirect")
+	}
+}

@@ -11,6 +11,21 @@ import (
 	"time"
 )
 
+func TestWebCrawler_Crawl_RejectsNonPositiveMaxDepth(t *testing.T) {
+	// MaxDepth <= 0 previously crawled nothing and reported success; it must
+	// be an explicit error instead of a silent no-op.
+	crawler := NewWebCrawler("http://example.com", nil, 0)
+	_, err := crawler.Crawl(context.Background())
+	if err == nil {
+		t.Fatal("expected an error for MaxDepth <= 0, got nil")
+	}
+
+	crawler = NewWebCrawler("http://example.com", nil, -3)
+	if _, err := crawler.Crawl(context.Background()); err == nil {
+		t.Fatal("expected an error for negative MaxDepth, got nil")
+	}
+}
+
 func TestWebCrawler_Crawl(t *testing.T) {
 	mux := http.NewServeMux()
 

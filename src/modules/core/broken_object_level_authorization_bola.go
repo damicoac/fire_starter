@@ -238,6 +238,9 @@ func (m *BrokenObjectLevelAuthorizationBola) testID(ctx context.Context, id stri
 
 	req, err := http.NewRequestWithContext(ctx, "GET", testURL, nil)
 	if err != nil {
+		m.Mu.Lock()
+		m.probeErrors++
+		m.Mu.Unlock()
 		return
 	}
 
@@ -281,15 +284,60 @@ func (m *BrokenObjectLevelAuthorizationBola) testID(ctx context.Context, id stri
 	isSignificantlyDifferent := float64(diff)/float64(baselineLen+1) > 0.1 || diff > 500
 
 	if isSignificantlyDifferent {
+		// Reproduce the differential with a second sentinel-ID request: a
+		// genuine object-level authorization break reproduces across object
+		// IDs; a one-off response artifact does not.
+		confirmID := id
+		if n, atoiErr := strconv.Atoi(id); atoiErr == nil {
+			if n >= 10 {
+				confirmID = "1"
+			} else {
+				confirmID = strconv.Itoa(n + 1)
+			}
+		}
+		if !m.bolaDifferentialReproduced(ctx, confirmID, baselineLen) {
+			return
+		}
 		m.Mu.Lock()
 		m.RecordPoC(req, nil, "Unauthorized access to object at: "+testURL)
 		m.results = append(m.results, BrokenObjectLevelAuthorizationBolaResult{
 			Target: m.Target,
 			Status: "vulnerable",
-			Detail: "Unauthorized access to object at: " + testURL,
+			Detail: "Unauthorized access to object at: " + testURL + " (differential reproduced on a second sentinel-ID request)",
 		})
 		m.Mu.Unlock()
 	}
+}
+
+// bolaDifferentialReproduced re-issues the probe against a different sentinel
+// object ID and reports whether the length differential against the baseline
+// reproduces on a gated 200 response.
+func (m *BrokenObjectLevelAuthorizationBola) bolaDifferentialReproduced(ctx context.Context, confirmID string, baselineLen int) bool {
+	req, err := http.NewRequestWithContext(ctx, "GET", m.Target+"/api/users/"+confirmID, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := m.Client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	body, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
+	if err != nil {
+		return false
+	}
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	bodyLower := strings.ToLower(string(body))
+	if authzLoginWallDetected(bodyLower) || authzErrorEnvelope(bodyLower) || !authzPositiveObjectMarkers(bodyLower) {
+		return false
+	}
+	diff := len(body) - baselineLen
+	if diff < 0 {
+		diff = -diff
+	}
+	return float64(diff)/float64(baselineLen+1) > 0.1 || diff > 500
 }
 
 func init() {

@@ -124,6 +124,60 @@ func TestJWTSecurityAudit_Execute_InconclusiveWhenGenericBearerBypass(t *testing
 	}
 }
 
+func TestJWTSecurityAudit_Execute_RedirectAcceptanceIsNotGenericBypass(t *testing.T) {
+	// 3xx responses are ambiguous (login bounce, consent flow) and must not
+	// count as auth acceptance: a bearer bypass "confirmed" only by redirects
+	// must not produce the standalone confirmed generic-bypass row.
+	callCount := 0
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			callCount++
+			headers := make(http.Header)
+			if callCount == 1 {
+				headers.Add("WWW-Authenticate", "Bearer")
+				return &http.Response{
+					StatusCode: http.StatusUnauthorized,
+					Body:       io.NopCloser(bytes.NewBufferString(`{"error": "unauthorized"}`)),
+					Header:     headers,
+				}
+			}
+			if req.Header.Get("Authorization") != "" {
+				h := make(http.Header)
+				h.Set("Location", "/login?next=%2Fapp")
+				return &http.Response{
+					StatusCode: http.StatusFound,
+					Body:       io.NopCloser(bytes.NewBufferString("")),
+					Header:     h,
+				}
+			}
+			return &http.Response{
+				StatusCode: http.StatusUnauthorized,
+				Body:       io.NopCloser(bytes.NewBufferString(`{"error": "unauthorized"}`)),
+				Header:     make(http.Header),
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewJWTSecurityAudit("http://example.com")
+	module.SetThreads(1)
+
+	result, err := module.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected a single row when acceptance is only 3xx redirects, got %#v", result)
+	}
+	if result[0].Status == "vulnerable" {
+		t.Fatalf("3xx responses must not count as auth acceptance, got %#v", result)
+	}
+	if result[0].Status != "inconclusive" {
+		t.Fatalf("expected inconclusive row for redirect-only acceptance, got %q", result[0].Status)
+	}
+}
+
 func TestJWTSecurityAudit_Execute_InconclusiveWhenJWTNoneRejected(t *testing.T) {
 	callCount := 0
 	mockTransport := &MockTransport{

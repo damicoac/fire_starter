@@ -437,6 +437,19 @@ func LogVulnerabilityWithStatus(vulnID string, targetDomain string, finding stri
 	return err
 }
 
+// FilterResolvedVulnerabilities keeps only findings with a terminal resolved
+// status (confirmed or informational) for publication in report dumps;
+// candidate and disproven rows stay DB-only.
+func FilterResolvedVulnerabilities(records []VulnInfo) []VulnInfo {
+	filtered := make([]VulnInfo, 0, len(records))
+	for _, r := range records {
+		if r.Status == VulnerabilityStatusConfirmed || r.Status == VulnerabilityStatusInformational {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
+}
+
 func MarkVulnerabilityDisproven(vulnID string) error {
 	db, err := getDB()
 	if err != nil {

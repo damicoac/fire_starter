@@ -5,9 +5,13 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 )
 
+// A catch-all 200 that echoes the same body for uploads and fetches proves
+// acceptance but not storage: the module must report inconclusive rows, never
+// a vulnerable finding without the canary served back.
 func TestUnrestrictedFileUpload_Execute(t *testing.T) {
 	mockTransport := &MockTransport{
 		RoundTripFunc: func(req *http.Request) *http.Response {
@@ -31,8 +35,94 @@ func TestUnrestrictedFileUpload_Execute(t *testing.T) {
 	if len(result) == 0 {
 		t.Fatalf("Expected results, got none")
 	}
-	if result[0].Status != "vulnerable" {
-		t.Fatalf("Expected vulnerable status, got: %s", result[0].Status)
+	if result[0].Status != "inconclusive" {
+		t.Fatalf("Expected inconclusive status (storage unverified), got: %s", result[0].Status)
+	}
+	for _, r := range result {
+		if r.Status == "vulnerable" {
+			t.Fatalf("catch-all 200 without storage proof must not be judged vulnerable: %#v", r)
+		}
+	}
+}
+
+// When the follow-up GET returns the exact canary content, the upload is
+// storage-verified and flagged vulnerable.
+func TestUnrestrictedFileUpload_Execute_StorageVerified(t *testing.T) {
+	phpCanary := "<?php echo 'vuln'; ?>"
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			if req.Method == http.MethodGet {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(bytes.NewBufferString(phpCanary)),
+					Header:     make(http.Header),
+				}
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewBufferString(`{"stored": true}`)),
+				Header:     make(http.Header),
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewUnrestrictedFileUpload("http://example.com")
+	result, err := module.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	found := false
+	for _, r := range result {
+		if r.Status == "vulnerable" && strings.Contains(r.Detail, "test.php") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a storage-verified vulnerable finding for test.php, got %+v", result)
+	}
+}
+
+// A 2xx upload whose stored file cannot be retrieved (404 on every served
+// path) must stay inconclusive.
+func TestUnrestrictedFileUpload_Execute_NoStorageProof(t *testing.T) {
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			if req.Method == http.MethodGet {
+				return &http.Response{
+					StatusCode: http.StatusNotFound,
+					Body:       io.NopCloser(bytes.NewBufferString(`not found`)),
+					Header:     make(http.Header),
+				}
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewBufferString(`{"stored": true}`)),
+				Header:     make(http.Header),
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewUnrestrictedFileUpload("http://example.com")
+	result, err := module.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if len(result) == 0 {
+		t.Fatal("expected inconclusive rows for accepted-but-unverified uploads, got none")
+	}
+	for _, r := range result {
+		if r.Status == "vulnerable" {
+			t.Fatalf("upload without storage proof must not be judged vulnerable: %#v", r)
+		}
+		if r.Status != "inconclusive" || !strings.Contains(r.Detail, "storage unverified") {
+			t.Fatalf("expected inconclusive storage-unverified row, got: %+v", r)
+		}
 	}
 }
 

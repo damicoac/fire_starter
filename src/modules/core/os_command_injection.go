@@ -85,6 +85,9 @@ type OSCommandInjection struct {
 	results   []OSCommandInjectionResult
 	probeErrs []string
 
+	// timeMu serializes time-based probes so concurrent SLEEP payloads
+	// cannot inflate each other's measured duration.
+	timeMu sync.Mutex
 	// Timing baseline: minimum of several benign samples, so a single slow
 	// response does not inflate the time-based detection threshold.
 	baselineDuration time.Duration
@@ -320,6 +323,13 @@ func (m *OSCommandInjection) vectorBaseline(ctx context.Context, u *url.URL, vec
 }
 
 func (m *OSCommandInjection) testVector(ctx context.Context, u *url.URL, vector InputVector, payload OSPayload) {
+	// Serialize time-based probes so concurrent sleep payloads
+	// cannot inflate each other's measured duration.
+	if payload.Type == CmdTimeBased {
+		m.timeMu.Lock()
+		defer m.timeMu.Unlock()
+	}
+
 	baseBody, ok := m.vectorBaseline(ctx, u, vector)
 	if !ok {
 		return

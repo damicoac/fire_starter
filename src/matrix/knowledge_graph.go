@@ -140,6 +140,7 @@ type TestCase struct {
 	Payload     string           `json:"payload"`
 	ResultData  string           `json:"result_data"`
 	Description string           `json:"description"`
+	Status      string           `json:"status,omitempty"`
 	PoCs        []ProofOfConcept `json:"reproduction_steps,omitempty"`
 }
 
@@ -693,40 +694,37 @@ func (kg *KnowledgeGraph) structuralExtract(toolName, target string, payload map
 			}
 		}
 
-		signalKeys := map[string]struct{}{
-			"status":   {},
-			"state":    {},
-			"detail":   {},
-			"message":  {},
-			"evidence": {},
-		}
 		var inspect func(any)
 		inspect = func(v any) {
 			switch val := v.(type) {
 			case map[string]any:
+				if raw, ok := statusFieldOf(val); ok {
+					statusVal := strings.ToLower(strings.TrimSpace(fmt.Sprint(raw)))
+					if statusVal == "vulnerable" || statusVal == "informational" {
+						desc := describeStatusFinding(val, toolName, statusVal)
+						payloadBytes, _ := json.Marshal(payload)
+						truncatedResult := resultData
+						if len(truncatedResult) > 30000 {
+							truncatedResult = truncatedResult[:30000] + "... [TRUNCATED]"
+						}
+						tc := TestCase{
+							ToolName:    toolName,
+							Target:      target,
+							Payload:     string(payloadBytes),
+							ResultData:  truncatedResult,
+							Description: desc,
+							PoCs:        pocs,
+						}
+						if statusVal == "vulnerable" {
+							kg.AddVulnerability(target, desc)
+						} else {
+							tc.Status = VulnerabilityStatusInformational
+						}
+						kg.AddTestCase(tc)
+					}
+				}
 				for k, child := range val {
 					key := strings.ToLower(strings.TrimSpace(k))
-					childText := strings.ToLower(strings.TrimSpace(fmt.Sprint(child)))
-					if _, ok := signalKeys[key]; ok {
-						if strings.Contains(childText, "vulnerab") || strings.Contains(childText, "exploit") || strings.Contains(childText, "confirmed") {
-							vulnDesc := "Vulnerability signal found: " + fmt.Sprint(child)
-							kg.AddVulnerability(target, vulnDesc)
-
-							payloadBytes, _ := json.Marshal(payload)
-							truncatedResult := resultData
-							if len(truncatedResult) > 30000 {
-								truncatedResult = truncatedResult[:30000] + "... [TRUNCATED]"
-							}
-							kg.AddTestCase(TestCase{
-								ToolName:    toolName,
-								Target:      target,
-								Payload:     string(payloadBytes),
-								ResultData:  truncatedResult,
-								Description: vulnDesc,
-								PoCs:        pocs,
-							})
-						}
-					}
 					if key == "cookies" {
 						switch cvals := child.(type) {
 						case string:
@@ -764,6 +762,53 @@ func (kg *KnowledgeGraph) structuralExtract(toolName, target string, payload map
 	for _, u := range allowedURLs {
 		kg.AddURL(u, target)
 	}
+}
+
+// statusFieldOf returns the value of a map's "status" key, matching the key
+// name case- and whitespace-insensitively. An exact match wins; a map
+// carrying multiple ambiguous case variants reports no status at all.
+func statusFieldOf(m map[string]any) (any, bool) {
+	if v, ok := m["status"]; ok {
+		return v, true
+	}
+	var found any
+	matches := 0
+	for k, v := range m {
+		if strings.ToLower(strings.TrimSpace(k)) == "status" {
+			found = v
+			matches++
+		}
+	}
+	if matches == 1 {
+		return found, true
+	}
+	return nil, false
+}
+
+// describeStatusFinding picks the description text accompanying a status
+// field from the object's detail/message/evidence/finding keys, falling back
+// to a tool-prefixed summary when none of them carries text.
+func describeStatusFinding(m map[string]any, toolName, statusVal string) string {
+	// Only string values can become descriptions: fmt.Sprint on nested
+	// objects/arrays yields map-order-dependent text that breaks
+	// AddVulnerability's exact-string dedupe and destabilizes vuln IDs.
+	byNormKey := make(map[string]string, len(m))
+	for k, v := range m {
+		s, ok := v.(string)
+		if !ok {
+			continue
+		}
+		nk := strings.ToLower(strings.TrimSpace(k))
+		if _, exists := byNormKey[nk]; !exists {
+			byNormKey[nk] = strings.TrimSpace(s)
+		}
+	}
+	for _, want := range []string{"detail", "message", "evidence", "finding"} {
+		if s := byNormKey[want]; s != "" {
+			return s
+		}
+	}
+	return fmt.Sprintf("%s reported %s status", toolName, statusVal)
 }
 
 func (kg *KnowledgeGraph) StructuralExtract(toolName, target string, payload map[string]any, resultData string) {
@@ -914,6 +959,9 @@ func (kg *KnowledgeGraph) ToRedactedJSON(target string) ([]byte, error) {
 
 func (kg *KnowledgeGraph) toJSONInternal(target string, includeTestCases bool, redactSecrets bool) ([]byte, error) {
 	vulnerabilityRecords, _ := GetVulnerabilities()
+	// Report dumps embed only resolved findings; candidate and disproven rows
+	// stay DB-only (the workflow helper queue still reads them).
+	vulnerabilityRecords = FilterResolvedVulnerabilities(vulnerabilityRecords)
 
 	kg.mu.RLock()
 	defer kg.mu.RUnlock()
@@ -1283,6 +1331,35 @@ func (kg *KnowledgeGraph) AddVulnerability(targetValue string, vuln string) {
 	log.Infof("KNOWLEDGE_GRAPH_UPDATE field=vulnerabilities target=%s value=%s", targetValue, vuln)
 }
 
+// RemoveVulnerability prunes an exact vulnerability string from a target once
+// its finding reached a terminal resolution (confirmed, informational, or
+// disproven), so resolved findings stop re-queueing for helper validation and
+// stop shipping in report dumps.
+func (kg *KnowledgeGraph) RemoveVulnerability(targetValue string, vuln string) {
+	vuln = strings.TrimSpace(vuln)
+	if vuln == "" {
+		return
+	}
+	defer kg.triggerUpdate()
+	kg.mu.Lock()
+	defer kg.mu.Unlock()
+
+	t, ok := kg.targets[NormalizeURL(targetValue)]
+	if !ok {
+		t, ok = kg.targets[targetValue]
+	}
+	if !ok {
+		return
+	}
+	for i, existing := range t.Vulnerabilities {
+		if strings.TrimSpace(existing) == vuln {
+			t.Vulnerabilities = append(t.Vulnerabilities[:i], t.Vulnerabilities[i+1:]...)
+			log.Infof("KNOWLEDGE_GRAPH_UPDATE field=vulnerabilities_removed target=%s value=%s", targetValue, vuln)
+			return
+		}
+	}
+}
+
 func (kg *KnowledgeGraph) AddTestCase(tc TestCase) {
 	defer kg.triggerUpdate()
 
@@ -1321,8 +1398,14 @@ func (kg *KnowledgeGraph) AddTestCase(tc TestCase) {
 
 	// Persist outside kg.mu so the SQLite write cannot stall concurrent readers.
 	if shouldPersist {
-		if err := LogVulnerability(tc.VulnID, NormalizeURL(tc.Target), tc.Description, testCode, "no"); err != nil {
-			log.Warnf("Failed to log vulnerability to database: %v", err)
+		var persistErr error
+		if tc.Status == VulnerabilityStatusInformational {
+			persistErr = LogVulnerabilityWithStatus(tc.VulnID, NormalizeURL(tc.Target), tc.Description, testCode, "no", VulnerabilityStatusInformational, VulnerabilitySeverityInformational)
+		} else {
+			persistErr = LogVulnerability(tc.VulnID, NormalizeURL(tc.Target), tc.Description, testCode, "no")
+		}
+		if persistErr != nil {
+			log.Warnf("Failed to log vulnerability to database: %v", persistErr)
 		}
 	}
 }

@@ -21,6 +21,7 @@ type PathTraversalAttackResult struct {
 type baselineInfo struct {
 	statusCode int
 	bodySize   int
+	body       string
 }
 
 // PathValidator implements reflection and status/size diffing logic.
@@ -37,11 +38,12 @@ func (v *PathValidator) Validate(resp *http.Response, body string, payload strin
 		return false, ""
 	}
 
-	// Content matching
-	if strings.Contains(body, "root:x:0:0:") {
+	// Content matching: a marker already present in the per-vector baseline
+	// body (published docs, listing pages) is not traversal evidence.
+	if strings.Contains(body, "root:x:0:0:") && !strings.Contains(v.Baseline.body, "root:x:0:0:") {
 		return true, "Path traversal successful via content match (/etc/passwd) with payload: " + payload
 	}
-	if strings.Contains(strings.ToLower(body), "[extensions]") {
+	if strings.Contains(strings.ToLower(body), "[extensions]") && !strings.Contains(strings.ToLower(v.Baseline.body), "[extensions]") {
 		return true, "Path traversal successful via content match (win.ini) with payload: " + payload
 	}
 
@@ -125,6 +127,7 @@ func (m *PathTraversalAttack) getBaseline(ctx context.Context, u *url.URL, vecto
 		baselines[v.Key] = baselineInfo{
 			statusCode: resp.StatusCode,
 			bodySize:   len(body),
+			body:       string(body),
 		}
 	}
 	return baselines, firstErr

@@ -171,12 +171,25 @@ func (m *CrlfInjectionTesting) testPayload(ctx context.Context, u *url.URL, payl
 }
 
 // crlfLocationIsPayloadDerived reports whether a 3xx Location shows evidence
-// that the CRLF payload was consumed as header structure: the injected marker
-// appears in the redirect target while the payload itself does not. A
-// Location that echoes the payload (verbatim or percent-encoded) is a server
-// reflecting the request path and must not be flagged.
+// that the CRLF payload was consumed as header structure: payload bytes (the
+// injected Set-Cookie value) appear in the redirect target in some encoding,
+// while the payload itself does not. A Location that echoes the payload
+// (verbatim or percent-encoded) is a server reflecting the request path and
+// must not be flagged.
 func crlfLocationIsPayloadDerived(loc, payload string) bool {
-	if !strings.Contains(loc, "crlf=injected") {
+	lowerLoc := strings.ToLower(loc)
+	markerSeen := false
+	for _, marker := range []string{
+		"crlf=injected",
+		url.QueryEscape("crlf=injected"),
+		strings.ToUpper(url.QueryEscape("crlf=injected")),
+	} {
+		if strings.Contains(lowerLoc, strings.ToLower(marker)) {
+			markerSeen = true
+			break
+		}
+	}
+	if !markerSeen {
 		return false
 	}
 	for _, echo := range []string{

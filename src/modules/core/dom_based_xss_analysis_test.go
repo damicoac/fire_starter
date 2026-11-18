@@ -14,7 +14,7 @@ func TestDOMBasedXSSAnalysis_Execute(t *testing.T) {
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Body:       io.NopCloser(bytes.NewBufferString(`<html><script>eval(location.hash)</script></html>`)),
-				Header:     make(http.Header),
+				Header:     http.Header{"Content-Type": []string{"text/html"}},
 			}
 		},
 	}
@@ -49,7 +49,7 @@ func TestDOMBasedXSSAnalysis__Execute_Benign(t *testing.T) {
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Body:       io.NopCloser(bytes.NewBufferString(`<html><script>console.log("hello");</script></html>`)),
-				Header:     make(http.Header),
+				Header:     http.Header{"Content-Type": []string{"text/html"}},
 			}
 		},
 	}
@@ -82,7 +82,7 @@ func TestDOMBasedXSSAnalysis__Execute_ScriptFetchFailure(t *testing.T) {
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Body:       io.NopCloser(bytes.NewBufferString(`<html><script src="/app.js"></script></html>`)),
-				Header:     make(http.Header),
+				Header:     http.Header{"Content-Type": []string{"text/html"}},
 			}
 		},
 	}

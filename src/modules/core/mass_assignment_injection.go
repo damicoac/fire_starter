@@ -302,7 +302,12 @@ func (m *MassAssignmentInjection) sendVerificationRead(ctx context.Context, mark
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
+	respBody, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
+	if err != nil {
+		// A body-read failure is a probe failure: report it so the caller
+		// counts it instead of judging on a truncated/empty body.
+		return 0, "", err
+	}
 	return resp.StatusCode, string(respBody), nil
 }
 
@@ -324,7 +329,12 @@ func (m *MassAssignmentInjection) sendJSON(ctx context.Context, payload map[stri
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
+	respBody, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
+	if err != nil {
+		// A body-read failure is a probe failure: report it so the caller
+		// counts it instead of judging on a truncated/empty body.
+		return 0, "", err
+	}
 	return resp.StatusCode, string(respBody), nil
 }
 

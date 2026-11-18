@@ -192,3 +192,37 @@ func TestHTTPRequestModule_TruncationMarker(t *testing.T) {
 		t.Errorf("Expected body capped at %d bytes, got %d", MaxResponseBodyBytes, len(body))
 	}
 }
+
+func TestHTTPRequestModule_MultiSetCookieJoinedWithNewline(t *testing.T) {
+	// Multiple Set-Cookie headers contain commas in Expires attributes;
+	// comma-joining corrupts them, so they must be joined with newlines.
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			h := make(http.Header)
+			h.Add("Set-Cookie", "session=abc123; Path=/; Expires=Wed, 21 Oct 2026 07:28:00 GMT")
+			h.Add("Set-Cookie", "prefs=dark; Path=/")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewBufferString(`{"status": "ok"}`)),
+				Header:     h,
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewHTTPRequestModule("http://example.com/api/test", "GET", "", nil)
+
+	result, err := module.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	headers, ok := result["headers"].(map[string]string)
+	if !ok {
+		t.Fatalf("expected headers map in result, got %T", result["headers"])
+	}
+	want := "session=abc123; Path=/; Expires=Wed, 21 Oct 2026 07:28:00 GMT\nprefs=dark; Path=/"
+	if headers["Set-Cookie"] != want {
+		t.Fatalf("expected Set-Cookie values joined with newline, got %q", headers["Set-Cookie"])
+	}
+}

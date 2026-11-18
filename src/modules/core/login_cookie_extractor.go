@@ -105,9 +105,14 @@ func loginCookieParseFormFields(data []byte) map[string]string {
 }
 
 // loginCookiePostSucceeded inspects the POST response for an authentication
-// success signal: a 2xx (or non-login redirect) response that is not a
-// re-rendered login form and does not carry failure markers.
-func loginCookiePostSucceeded(statusCode int, body string, location string) (bool, string) {
+// success signal. A 2xx (or redirect) response must not be a re-rendered
+// login form and must not carry failure markers. A 3xx is a login success
+// only when the Location does not point back at an authentication/error
+// route, the POST issued at least one cookie that was absent before
+// authentication, and the POST body (if any) carries a success marker
+// without failure markers. Failure markers also apply to redirect-target
+// bodies: a Location that renders a failed-login page is not a login.
+func loginCookiePostSucceeded(statusCode int, body string, location string, preAuthCookieNames map[string]bool, postCookieNames []string, redirectBody string) (bool, string) {
 	bodyLower := strings.ToLower(body)
 	failed := containsAnyToken(bodyLower, loginCookieFailureMarkers) || loginCookiePasswordPattern.MatchString(bodyLower)
 
@@ -124,14 +129,40 @@ func loginCookiePostSucceeded(statusCode int, body string, location string) (boo
 		return false, "POST returned 2xx without any authentication-success marker"
 	}
 	if statusCode >= 300 && statusCode < 400 {
+		if location == "" {
+			return false, fmt.Sprintf("POST redirected with status %d and no Location header", statusCode)
+		}
 		locLower := strings.ToLower(location)
-		if strings.Contains(locLower, "login") || strings.Contains(locLower, "signin") || strings.Contains(locLower, "register") {
-			return false, fmt.Sprintf("POST redirected back to a login page: %s", location)
+		for _, banned := range []string{"login", "signin", "sign-in", "register", "signup", "logout", "error"} {
+			if strings.Contains(locLower, banned) {
+				return false, fmt.Sprintf("POST redirected back to an authentication/error route: %s", location)
+			}
 		}
-		if location != "" && !failed {
-			return true, ""
+		newCookie := false
+		for _, name := range postCookieNames {
+			if !preAuthCookieNames[name] {
+				newCookie = true
+				break
+			}
 		}
-		return false, fmt.Sprintf("POST redirected with status %d and no authentication markers", statusCode)
+		if !newCookie {
+			return false, "POST redirected without issuing any cookie that was absent before authentication"
+		}
+		if failed {
+			return false, "POST redirected but its body shows a login failure or re-rendered login form"
+		}
+		// An empty-body 302 to a non-auth route is the canonical successful
+		// login shape; the new-cookie requirement above already carries the
+		// evidence. The success-marker check only applies to a POST that
+		// produced a body.
+		if strings.TrimSpace(body) != "" && !containsAnyToken(bodyLower, loginCookieSuccessMarkers) {
+			return false, "POST redirected but its body does not show an authentication success"
+		}
+		redirectLower := strings.ToLower(redirectBody)
+		if redirectLower != "" && (containsAnyToken(redirectLower, loginCookieFailureMarkers) || loginCookiePasswordPattern.MatchString(redirectLower)) {
+			return false, "redirect target renders a login failure or a re-rendered login form"
+		}
+		return true, ""
 	}
 	return false, fmt.Sprintf("POST returned status %d", statusCode)
 }
@@ -167,6 +198,15 @@ func (e *LoginCookieExtractor) Execute(ctx context.Context) ([]map[string]any, e
 
 	// Parse HTML for hidden inputs, scoped to the form holding the password.
 	hiddenFields := loginCookieParseFormFields(getBodyBytes)
+
+	// Snapshot the pre-authentication cookie names so a 3xx success verdict
+	// can require at least one genuinely new cookie issued by the POST.
+	preAuthCookieNames := make(map[string]bool)
+	if reqURL, err := url.Parse(e.TargetURL); err == nil {
+		for _, c := range client.Jar.Cookies(reqURL) {
+			preAuthCookieNames[c.Name] = true
+		}
+	}
 
 	// 2. Prepare POST form data
 	formData := url.Values{}
@@ -208,17 +248,41 @@ func (e *LoginCookieExtractor) Execute(ctx context.Context) ([]map[string]any, e
 	// 4. Verify the login actually succeeded before reporting extracted
 	// cookies: a session cookie from the initial GET (populating the jar)
 	// must not be mistaken for a successful authenticated login.
-	succeeded, failReason := loginCookiePostSucceeded(respPost.StatusCode, string(postBodyBytes), respPost.Header.Get("Location"))
-
 	// Read cookies from Jar
 	var cookieJar []string
+	var postCookieNames []string
 	if client.Jar != nil {
 		if reqURL, err := url.Parse(e.TargetURL); err == nil {
 			for _, c := range client.Jar.Cookies(reqURL) {
 				cookieJar = append(cookieJar, fmt.Sprintf("%s=%s", c.Name, c.Value))
+				postCookieNames = append(postCookieNames, c.Name)
 			}
 		}
 	}
+
+	// Fetch the redirect-target body so failure markers apply to it too: a
+	// Location that renders a failed-login page is not a successful login.
+	redirectBody := ""
+	if respPost.StatusCode >= 300 && respPost.StatusCode < 400 {
+		if location := respPost.Header.Get("Location"); location != "" {
+			if base, err := url.Parse(e.TargetURL); err == nil {
+				if locURL, err := url.Parse(location); err == nil {
+					if resolved := base.ResolveReference(locURL); resolved != nil {
+						if rreq, err := http.NewRequestWithContext(ctx, "GET", resolved.String(), nil); err == nil {
+							if rresp, err := client.Do(rreq); err == nil {
+								if rb, err := ReadBoundedBody(rresp.Body, MaxResponseBodyBytes); err == nil {
+									redirectBody = string(rb)
+								}
+								rresp.Body.Close()
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	succeeded, failReason := loginCookiePostSucceeded(respPost.StatusCode, string(postBodyBytes), respPost.Header.Get("Location"), preAuthCookieNames, postCookieNames, redirectBody)
 
 	var results []map[string]any
 	if succeeded && len(cookieJar) > 0 {

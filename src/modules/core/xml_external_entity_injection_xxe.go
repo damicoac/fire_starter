@@ -96,6 +96,11 @@ func (m *XMLExternalEntityInjectionXxe) Execute(ctx context.Context) ([]XMLExter
 	m.results = make([]XMLExternalEntityInjectionXxeResult, 0)
 	m.Mu.Unlock()
 
+	// Reset probe counters so repeated Execute calls never inherit a
+	// stale failure ratio from a previous run.
+	atomic.StoreInt64(&m.attemptedProbes, 0)
+	atomic.StoreInt64(&m.failedProbes, 0)
+
 	jobs := make(chan string, len(xxePayloads)+1)
 	for _, p := range xxePayloads {
 		jobs <- p
@@ -162,7 +167,7 @@ func (m *XMLExternalEntityInjectionXxe) appendInconclusiveIfAllProbesFailed() {
 		return
 	}
 	attempted := atomic.LoadInt64(&m.attemptedProbes)
-	if attempted > 0 && attempted == atomic.LoadInt64(&m.failedProbes) {
+	if attempted > 0 && atomic.LoadInt64(&m.failedProbes) >= attempted {
 		m.results = append(m.results, XMLExternalEntityInjectionXxeResult{
 			Target: m.Target,
 			Status: statusFromEvidence(EvidenceWeak, false),

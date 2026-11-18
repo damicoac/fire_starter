@@ -33,9 +33,15 @@ func TestGraphQLAdvanced_Execute(t *testing.T) {
 	if len(result) == 0 {
 		t.Fatalf("Expected batching results, got none")
 	}
+	// Findings dedupe by (host, finding-kind): the batching row appears once
+	// even though four mirror endpoints were probed (the alias probe gets the
+	// same array body, which is not a valid single-query response).
+	if len(result) != 1 {
+		t.Errorf("Expected exactly 1 deduped batching finding across mirror endpoints, got %d: %+v", len(result), result)
+	}
 	for _, r := range result {
-		if r.Status != "vulnerable" {
-			t.Errorf("Expected vulnerable status for batched array response, got %q", r.Status)
+		if r.Status != "informational" {
+			t.Errorf("Expected informational status for batched array response, got %q", r.Status)
 		}
 	}
 }
@@ -64,12 +70,15 @@ func TestGraphQLAdvanced_Execute_BatchingWithEmptyErrorArrays(t *testing.T) {
 
 	found := false
 	for _, r := range result {
-		if r.Status == "vulnerable" && strings.Contains(r.Detail, "batching") {
+		if r.Status == "informational" && strings.Contains(r.Detail, "batching") {
 			found = true
+		}
+		if r.Status == "vulnerable" {
+			t.Errorf("Batching must be informational, got vulnerable: %+v", r)
 		}
 	}
 	if !found {
-		t.Fatalf("Expected a vulnerable batching finding despite empty error arrays, got: %+v", result)
+		t.Fatalf("Expected an informational batching finding despite empty error arrays, got: %+v", result)
 	}
 }
 
@@ -97,8 +106,8 @@ func TestGraphQLAdvanced_Execute_AliasData(t *testing.T) {
 		t.Fatalf("Expected alias-batching results, got none")
 	}
 	for _, r := range result {
-		if r.Status != "vulnerable" {
-			t.Errorf("Expected vulnerable status for alias data response, got %q", r.Status)
+		if r.Status != "informational" {
+			t.Errorf("Expected informational status for alias data response, got %q", r.Status)
 		}
 	}
 }
@@ -124,7 +133,12 @@ func TestGraphQLAdvanced_Execute_RejectionError(t *testing.T) {
 	}
 
 	// A rejecting server echoing the alias name in its validation error
-	// must not be reported as vulnerable.
+	// must not be reported as vulnerable (complexity limit in place).
+	for _, r := range result {
+		if r.Status == "vulnerable" {
+			t.Errorf("Complexity-limited server must not yield a vulnerable finding: %+v", r)
+		}
+	}
 	if len(result) != 0 {
 		t.Errorf("Expected 0 results for rejection error body, got %d: %+v", len(result), result)
 	}
@@ -176,5 +190,37 @@ func TestGraphQLAdvanced_Execute_NoVulnerability(t *testing.T) {
 	res, _ := module.Execute(ctx)
 	if len(res) > 0 {
 		t.Fatalf("Expected no results, got %d", len(res))
+	}
+}
+
+// An array-shaped response whose entries carry data but no executed
+// __typename field is not a real batch result: it must not be reported as
+// batching (and a complexity-limited server must never yield vulnerable).
+func TestGraphQLAdvanced_Execute_BatchingWithoutTypenames(t *testing.T) {
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewBufferString(`[{"data":{"foo":"bar"}},{"data":{"baz":"qux"}}]`)),
+				Header:     make(http.Header),
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewGraphQLAdvanced("http://example.com")
+	ctx := context.Background()
+	result, err := module.Execute(ctx)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	for _, r := range result {
+		if r.Status == "vulnerable" {
+			t.Fatalf("Complexity-limited server must not yield a vulnerable finding: %+v", r)
+		}
+	}
+	if len(result) != 0 {
+		t.Fatalf("Expected no findings for non-batch array data without __typename, got: %+v", result)
 	}
 }

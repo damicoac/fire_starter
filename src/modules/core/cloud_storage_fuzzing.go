@@ -180,9 +180,15 @@ func (m *CloudStorageFuzzing) testProbe(ctx context.Context, probe storageProbe)
 		// (e.g. a proxy or WAF answering for everything).
 		status = statusFromEvidence(EvidenceWeak, false)
 		detail = fmt.Sprintf("GCS endpoint %s responded HTTP 200 without a ListBucketResult document; public-listability unverified.", probe.url)
-	case probe.provider == "gcs" && (resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound):
+	case probe.provider == "gcs" && resp.StatusCode == http.StatusForbidden:
+		// GCS returns 403 for both missing and existing buckets; existence
+		// cannot be judged from an access-denied response, so this is an
+		// access-denied note, not evidence the bucket exists.
 		status = statusFromEvidence(EvidenceWeak, false)
-		detail = fmt.Sprintf("GCS bucket %s appears to exist but is not publicly listable (HTTP %d).", probe.url, resp.StatusCode)
+		detail = fmt.Sprintf("GCS bucket %s denied public listing access (HTTP 403); existence and listability could not be determined.", probe.url)
+	case probe.provider == "gcs" && resp.StatusCode == http.StatusNotFound:
+		// Bucket does not exist — not a finding.
+		return
 	case probe.provider == "azure" && resp.StatusCode == http.StatusOK && strings.Contains(bodyStr, "<EnumerationResults"):
 		status = statusFromEvidence(EvidenceConfirmed, false)
 		detail = fmt.Sprintf("Publicly readable Azure blob container found: %s (HTTP 200 with blob listing)", probe.url)

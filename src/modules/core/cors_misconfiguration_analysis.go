@@ -243,12 +243,26 @@ func (m *CorsMisconfigurationAnalysis) testOrigin(ctx context.Context, origin st
 			m.Mu.Unlock()
 		}
 	case allowOrigin == "null":
+		// A reflected 'null' origin is only exploitable for credentialed
+		// cross-origin reads when the server also allows credentials; without
+		// Access-Control-Allow-Credentials the reflected origin yields no
+		// readable protected content.
+		if allowCreds != "true" {
+			m.Mu.Lock()
+			m.results = append(m.results, CorsMisconfigurationAnalysisResult{
+				Target: m.Target,
+				Status: "inconclusive",
+				Detail: "CORS misconfiguration: Allows 'null' Origin without Access-Control-Allow-Credentials; not exploitable for credentialed reads.",
+			})
+			m.Mu.Unlock()
+			return
+		}
 		m.Mu.Lock()
-		m.RecordPoC(req, nil, "CORS misconfiguration: Allows 'null' Origin")
+		m.RecordPoC(req, nil, "CORS misconfiguration: Allows 'null' Origin with Credentials")
 		m.results = append(m.results, CorsMisconfigurationAnalysisResult{
 			Target: m.Target,
 			Status: "vulnerable",
-			Detail: "CORS misconfiguration: Allows 'null' Origin",
+			Detail: "CORS misconfiguration: Allows 'null' Origin with Credentials",
 		})
 		m.Mu.Unlock()
 	default:

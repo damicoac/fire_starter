@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -35,11 +36,16 @@ func TestJsonHijackingTest_Execute(t *testing.T) {
 	}
 
 	if len(result) == 0 {
-		t.Fatal("Expected result indicating vulnerability, got none")
+		t.Fatal("Expected a result row for a top-level JSON array, got none")
 	}
 
-	if result[0].Status != "vulnerable" {
-		t.Fatalf("Expected vulnerable status, got: %s", result[0].Status)
+	// JSON hijacking is not exploitable in current browsers: the finding is
+	// informational, never a vulnerability.
+	if result[0].Status != "informational" {
+		t.Fatalf("Expected informational status for a top-level array, got: %s", result[0].Status)
+	}
+	if strings.Contains(result[0].Detail, "without requiring specific CSRF protection headers") {
+		t.Errorf("Fabricated CSRF-protection claim must be gone, got: %s", result[0].Detail)
 	}
 }
 

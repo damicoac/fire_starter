@@ -40,6 +40,11 @@ type agentEnv struct {
 	currentTarget    string
 	vulnLogged       bool
 	httpRequestState *httpRequestGateState
+
+	// evidenceToolRuns counts successful technique-tool executions in the
+	// current helper session; log_vulnerability may not confirm a finding
+	// until at least one verification run succeeded.
+	evidenceToolRuns int
 }
 
 // dispatchToolCall executes a single tool call and returns the result text for
@@ -156,6 +161,12 @@ func logHelperVulnerability(env *agentEnv, origVulnID string, args map[string]an
 	if validationErr := validateVulnerabilityLogInput(origVulnID, targetStr, fnd, testCode, exploitable, status, severity); validationErr != nil {
 		return fmt.Sprintf("TOOL_ERROR: %v", validationErr)
 	}
+
+	// A helper may only confirm a finding it has actually verified with at
+	// least one successful technique-tool run in this session.
+	if status == matrix.VulnerabilityStatusConfirmed && env.evidenceToolRuns == 0 {
+		return "TOOL_ERROR: cannot mark confirmed without at least one successful verification tool run this session; re-verify or use status informational/disprove."
+	}
 	normalizedTgt := normalizeTarget(targetStr)
 	if err := matrix.LogVulnerabilityWithStatus(origVulnID, normalizedTgt, fnd, testCode, exploitable, status, severity); err != nil {
 		return fmt.Sprintf("TOOL_ERROR: failed to log vulnerability: %v", err)
@@ -255,7 +266,14 @@ func dispatchTechniqueTool(ctx context.Context, env *agentEnv, call fantasy.Tool
 	isExec, _ := matrix.IsPayloadExecuted(payloadHash)
 	if env.payloadHashes[payloadHash] || isExec {
 		if helperMode {
-			return "TOOL_ERROR: You have already successfully executed this tool with this exact payload in this helper run. Choose different parameters or another tool."
+			// A previously successful run of the exact payload is itself
+			// verification evidence: without this, a helper re-verifying a
+			// payload the orchestrator already executed could never satisfy
+			// the confirm gate and would be forced to disprove real findings.
+			if normalizeTarget(targetUsedFromPayload(env.initialTarget, payload)) == normalizeTarget(env.currentTarget) {
+				env.evidenceToolRuns++
+			}
+			return "=== TOOL EXECUTION SUMMARY ===\n[Session: default] This exact tool and payload already executed successfully earlier in this engagement; the cached success counts as verification evidence for this helper session. Vary the parameters for further verification."
 		}
 		return "TOOL_ERROR: You have already successfully executed this tool with this exact payload. Please choose a different target, a different tool, different parameters, or advance the phase."
 	}
@@ -292,6 +310,12 @@ func executeToolAcrossSessions(ctx context.Context, env *agentEnv, call fantasy.
 			continue
 		}
 
+		if helperMode && normalizeTarget(targetUsed) == normalizeTarget(env.currentTarget) {
+			// Successful technique-tool runs against the finding's target are
+			// the verification evidence a helper must produce before it may
+			// confirm a finding.
+			env.evidenceToolRuns++
+		}
 		env.payloadHashes[payloadHash] = true
 		_ = matrix.RecordPayloadExecuted(payloadHash, call.ToolName, targetUsed)
 		markToolExecuted(env.kg, iterPayload, call.ToolName)

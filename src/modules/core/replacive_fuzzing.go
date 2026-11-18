@@ -77,6 +77,11 @@ func (m *ReplaciveFuzzing) Execute(ctx context.Context) ([]ReplaciveFuzzingResul
 		m.Mu.Unlock()
 		return m.results, nil
 	}
+	// Carry any session cookies gathered by earlier modules so auth-gated
+	// endpoints are fuzzed in their authenticated state.
+	if cookies := m.GetCookies(); cookies != "" {
+		baselineReq.Header.Set("Cookie", cookies)
+	}
 	baselineResp, err := m.Client.Do(baselineReq)
 	if err != nil {
 		m.Mu.Lock()
@@ -179,6 +184,10 @@ func (m *ReplaciveFuzzing) testPayload(ctx context.Context, u *url.URL, payload 
 	if err != nil {
 		return
 	}
+	// Carry session cookies so auth-gated endpoints are probed authenticated.
+	if cookies := m.GetCookies(); cookies != "" {
+		req.Header.Set("Cookie", cookies)
+	}
 
 	resp, err := m.Client.Do(req)
 	if err != nil {
@@ -203,26 +212,19 @@ func (m *ReplaciveFuzzing) testPayload(ctx context.Context, u *url.URL, payload 
 	// blip is not reported as payload-caused; 502/504 additionally indicate a killed
 	// backend worker rather than application input validation.
 	switch {
-	case resp.StatusCode == http.StatusInternalServerError && baselineHealthy:
-		m.Mu.Lock()
-		detail := "Fuzzing payload caused HTTP 500 Internal Server Error (baseline responded normally): " + payload
-		m.RecordPoC(req, nil, detail)
-		m.results = append(m.results, ReplaciveFuzzingResult{
-			Target: m.Target,
-			Status: statusFromEvidence(EvidenceConfirmed, false),
-			Detail: detail,
-		})
-		m.Mu.Unlock()
-	case (resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusGatewayTimeout) && baselineHealthy:
-		// A single 502/504 can be a transient upstream blip; re-issue the
-		// payload once and require the failure to reproduce before calling it
-		// a confirmed worker crash.
+	case (resp.StatusCode == http.StatusInternalServerError || resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusGatewayTimeout) && baselineHealthy:
+		// A single 500/502/504 can be a transient blip; re-issue the payload
+		// once and require the failure to reproduce before calling it a
+		// confirmed payload-caused server error.
 		reproducible := false
 		retryReq, retryErr := http.NewRequestWithContext(ctx, "GET", testURL.String(), nil)
 		if retryErr == nil {
+			if cookies := m.GetCookies(); cookies != "" {
+				retryReq.Header.Set("Cookie", cookies)
+			}
 			retryResp, doErr := m.Client.Do(retryReq)
 			if doErr == nil {
-				if retryResp.StatusCode == http.StatusBadGateway || retryResp.StatusCode == http.StatusGatewayTimeout {
+				if retryResp.StatusCode == http.StatusInternalServerError || retryResp.StatusCode == http.StatusBadGateway || retryResp.StatusCode == http.StatusGatewayTimeout {
 					reproducible = true
 				}
 				retryResp.Body.Close()

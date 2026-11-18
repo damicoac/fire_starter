@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -229,5 +230,207 @@ func TestHttpVerbTampering__Execute_HTTPError(t *testing.T) {
 	}
 	if result[0].Status != "secure" {
 		t.Fatalf("Expected secure summary on uniform 500s, got: %+v", result[0])
+	}
+}
+
+// A server that answers every unknown or mixed-case verb with the same
+// catch-all 2xx response is normalizing, not bypassing: the mixed-case rule
+// must require divergence from the bogus-verb baseline too.
+func TestHttpVerbTampering_Execute_MixedCaseMatchesBogusBaseline(t *testing.T) {
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			switch req.Method {
+			case "GET", "GeT", "POst", "BOGUSVERB", "JEAN_BOGUS_VERB", "OPTIONS", "HEAD", "CONNECT", "TRACE", "TRACK":
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(bytes.NewBufferString(`<html>ok</html>`)),
+					Header:     make(http.Header),
+				}
+			default:
+				return &http.Response{
+					StatusCode: http.StatusForbidden,
+					Body:       io.NopCloser(bytes.NewBufferString(`forbidden`)),
+					Header:     make(http.Header),
+				}
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewHttpVerbTampering("http://example.com")
+	ctx := context.Background()
+	result, err := module.Execute(ctx)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if len(result) != 1 || result[0].Status != "secure" {
+		t.Fatalf("Expected single secure summary (mixed-case normalized, not a bypass), got: %+v", result)
+	}
+}
+
+// A mixed-case verb that diverges from BOTH the GET baseline and the
+// bogus-verb baseline is a genuine filter bypass (the equal-length bodies
+// keep the separate auth-bypass rule out of the way).
+func TestHttpVerbTampering_Execute_MixedCaseFilterBypass(t *testing.T) {
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			switch req.Method {
+			case "GET":
+				return &http.Response{
+					StatusCode: http.StatusForbidden,
+					Body:       io.NopCloser(bytes.NewBufferString(`forbidden`)),
+					Header:     make(http.Header),
+				}
+			case "GeT":
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					// Same length as the bogus-verb body so the auth-bypass
+					// rule stays silent and the mixed-case rule decides.
+					Body:   io.NopCloser(bytes.NewBufferString(`bypasspage`)),
+					Header: make(http.Header),
+				}
+			case "JEAN_BOGUS_VERB":
+				return &http.Response{
+					StatusCode: http.StatusNotFound,
+					Body:       io.NopCloser(bytes.NewBufferString(`notfound!!`)),
+					Header:     make(http.Header),
+				}
+			default:
+				return &http.Response{
+					StatusCode: http.StatusForbidden,
+					Body:       io.NopCloser(bytes.NewBufferString(`forbidden`)),
+					Header:     make(http.Header),
+				}
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewHttpVerbTampering("http://example.com")
+	ctx := context.Background()
+	result, err := module.Execute(ctx)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	found := false
+	for _, r := range result {
+		if r.Status == "vulnerable" && strings.Contains(r.Detail, "filter bypass") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Expected mixed-case filter bypass finding, got: %+v", result)
+	}
+}
+
+// A volatile page must not fake a resource change: with GET samples that
+// already disagree with each other, a post-verb GET equal to the second
+// sample is not evidence that the verb mutated anything.
+func TestHttpVerbTampering_Execute_VolatilePageNotStateChange(t *testing.T) {
+	var gets int32
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			switch req.Method {
+			case "PUT":
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(bytes.NewBufferString(`{"ok":true}`)),
+					Header:     make(http.Header),
+				}
+			case "GET":
+				n := atomic.AddInt32(&gets, 1)
+				// First GET is short, every later GET is longer: the two
+				// baseline samples already disagree, so the page is volatile.
+				body := "v1"
+				if n > 1 {
+					body = "v2-longer"
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(bytes.NewBufferString(body)),
+					Header:     make(http.Header),
+				}
+			default:
+				return &http.Response{
+					StatusCode: http.StatusForbidden,
+					Body:       io.NopCloser(bytes.NewBufferString(`forbidden`)),
+					Header:     make(http.Header),
+				}
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewHttpVerbTampering("http://example.com")
+	module.SetAllowMutating(true)
+	ctx := context.Background()
+	result, err := module.Execute(ctx)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	for _, r := range result {
+		if r.Status == "vulnerable" {
+			t.Fatalf("Volatile page must not be flagged as state-changing PUT evidence: %+v", result)
+		}
+	}
+	if len(result) != 1 || result[0].Status != "secure" {
+		t.Fatalf("Expected single secure summary on volatile page, got: %+v", result)
+	}
+}
+
+// A genuinely mutated resource still flags: the post-verb GET differs from
+// both stable samples and the PUT echoes no probe marker.
+func TestHttpVerbTampering_Execute_ResourceChangeConfirmed(t *testing.T) {
+	var mutated int32
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			switch req.Method {
+			case "PUT":
+				atomic.StoreInt32(&mutated, 1)
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(bytes.NewBufferString(`{"ok":true}`)),
+					Header:     make(http.Header),
+				}
+			case "GET":
+				body := "v1"
+				if atomic.LoadInt32(&mutated) == 1 {
+					body = "v2-mutated"
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(bytes.NewBufferString(body)),
+					Header:     make(http.Header),
+				}
+			default:
+				return &http.Response{
+					StatusCode: http.StatusForbidden,
+					Body:       io.NopCloser(bytes.NewBufferString(`forbidden`)),
+					Header:     make(http.Header),
+				}
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewHttpVerbTampering("http://example.com")
+	module.SetAllowMutating(true)
+	ctx := context.Background()
+	result, err := module.Execute(ctx)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	found := false
+	for _, r := range result {
+		if r.Status == "vulnerable" && strings.Contains(r.Detail, "PUT") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Expected confirmed PUT resource-change finding, got: %+v", result)
 	}
 }

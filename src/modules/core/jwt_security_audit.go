@@ -146,7 +146,10 @@ func (m *JWTSecurityAudit) probeToken(ctx context.Context, name string, token st
 }
 
 func isAuthAcceptedStatus(statusCode int) bool {
-	return statusCode >= http.StatusOK && statusCode < http.StatusBadRequest && statusCode != http.StatusUnauthorized && statusCode != http.StatusForbidden
+	// Only a 2xx response counts as the endpoint accepting the presented
+	// token: 3xx redirects are ambiguous (login bounce, consent flow) and
+	// must not be read as authorization success.
+	return statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices
 }
 
 // tokenOutcomeIndicatesClaimBinding reports whether an accepted alg=none

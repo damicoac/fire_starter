@@ -221,3 +221,74 @@ func TestOAuthMisconfiguration_Execute_DetectsMetaRefreshClientSideRedirect(t *t
 		t.Fatalf("meta-refresh construct containing evil.com should be detected, got %#v", res)
 	}
 }
+
+func TestOAuthMisconfiguration_Execute_LocationXSSReflectionIsInformational(t *testing.T) {
+	// A payload reflected into the Location header is input reflection, not
+	// confirmed XSS: it must be reported as informational and must never
+	// produce a vulnerable row or a PoC.
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			h := make(http.Header)
+			h.Set("Location", "/redirect?target=javascript:prompt(1)")
+			return &http.Response{
+				StatusCode: http.StatusFound,
+				Body:       io.NopCloser(bytes.NewBufferString("")),
+				Header:     h,
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewOAuthMisconfiguration("http://example.com")
+	ctx := context.Background()
+	res, _ := module.Execute(ctx)
+	foundInformational := false
+	for _, r := range res {
+		if r.Status == "vulnerable" {
+			t.Fatalf("Location-header reflection must not be reported as vulnerable XSS, got %#v", r)
+		}
+		if r.Status == "informational" && strings.Contains(r.Detail, "Location header") {
+			foundInformational = true
+		}
+	}
+	if !foundInformational {
+		t.Fatalf("expected an informational input-reflection row for the Location header, got %#v", res)
+	}
+	if len(module.GetPoCs()) != 0 {
+		t.Fatalf("input reflection must not record PoCs, got %#v", module.GetPoCs())
+	}
+}
+
+func TestOAuthMisconfiguration_Execute_AnchorHrefOnlyIsInconclusive(t *testing.T) {
+	// An anchor href pointing at the evil URL is user-initiated navigation,
+	// not an automatic redirect construct: inconclusive, never vulnerable.
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body: io.NopCloser(bytes.NewBufferString(
+					`<html><body><a href="https://evil.com/callback">visit</a></body></html>`)),
+				Header: make(http.Header),
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewOAuthMisconfiguration("http://example.com")
+	ctx := context.Background()
+	res, _ := module.Execute(ctx)
+	foundInconclusive := false
+	for _, r := range res {
+		if r.Status == "vulnerable" {
+			t.Fatalf("anchor href alone must not be flagged vulnerable, got %#v", r)
+		}
+		if r.Status == "inconclusive" {
+			foundInconclusive = true
+		}
+	}
+	if !foundInconclusive {
+		t.Fatalf("expected an inconclusive row for anchor-href reflection, got %#v", res)
+	}
+}

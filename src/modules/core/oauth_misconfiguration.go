@@ -116,9 +116,10 @@ func oauthHostMatchesTarget(host string, match string) bool {
 	return host == match || strings.HasSuffix(host, "."+match)
 }
 
-// oauthRedirectConstructContainsURL checks whether the evil URL is inside an actual
-// redirect construct on the page (meta refresh, JS location assignment, or a
-// link href) — not merely reflected in an error message.
+// oauthRedirectConstructContainsURL checks whether the evil URL is inside an
+// automatic redirect construct on the page (meta refresh, JS location
+// assignment, or a query-string redirect parameter) — not merely reflected in
+// an error message or a plain user-clickable link.
 func oauthRedirectConstructContainsURL(body string, rawURL string) bool {
 	if rawURL == "" {
 		return false
@@ -141,14 +142,6 @@ func oauthRedirectConstructContainsURL(body string, rawURL string) bool {
 		}
 	}
 
-	// Anchor href pointing at the evil URL.
-	hrefRe := regexp.MustCompile(`(?is)<a[^>]+href\s*=\s*["']([^"']*)["']`)
-	for _, m := range hrefRe.FindAllStringSubmatch(body, -1) {
-		if strings.Contains(strings.ToLower(m[1]), needle) {
-			return true
-		}
-	}
-
 	// Query-string redirect targets: ?url=... / ?redirect=... / ?next=...
 	// Only count when the evil URL appears as (part of) the parameter value.
 	qsRe := regexp.MustCompile(`(?is)[?&](url|redirect|redirect_uri|next|continue|return|returnurl|target|dest|destination)=([^&"'\s<]*)`)
@@ -162,6 +155,24 @@ func oauthRedirectConstructContainsURL(body string, rawURL string) bool {
 		}
 	}
 
+	return false
+}
+
+// oauthAnchorHrefContainsURL reports whether an anchor href on the page points
+// at the evil URL. A bare link requires user interaction and is not an
+// automatic redirect, so it is weaker evidence than the constructs checked by
+// oauthRedirectConstructContainsURL and only justifies an inconclusive row.
+func oauthAnchorHrefContainsURL(body string, rawURL string) bool {
+	if rawURL == "" {
+		return false
+	}
+	needle := strings.ToLower(rawURL)
+	hrefRe := regexp.MustCompile(`(?is)<a[^>]+href\s*=\s*["']([^"']*)["']`)
+	for _, m := range hrefRe.FindAllStringSubmatch(body, -1) {
+		if strings.Contains(strings.ToLower(m[1]), needle) {
+			return true
+		}
+	}
 	return false
 }
 
@@ -231,13 +242,24 @@ func (m *OAuthMisconfiguration) testOAuth(ctx context.Context, endpoint, payload
 			// not redirect anyone.
 			body, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 			bodyStr := string(body)
-			if oauthRedirectConstructContainsURL(bodyStr, "http://"+match) || oauthRedirectConstructContainsURL(bodyStr, "https://"+match) {
+			switch {
+			case oauthRedirectConstructContainsURL(bodyStr, "http://"+match) || oauthRedirectConstructContainsURL(bodyStr, "https://"+match):
 				m.Mu.Lock()
 				m.RecordPoC(req, nil, fmt.Sprintf("OAuth redirect_uri reflected in body for client-side redirect at: %s", testURL))
 				m.results = append(m.results, OAuthMisconfigurationResult{
 					Target: m.Target,
 					Status: statusFromEvidence(EvidenceConfirmed, false),
 					Detail: formatEvidenceDetail(EvidenceConfirmed, fmt.Sprintf("OAuth redirect_uri reflected, potential client-side redirect at %s", testURL)),
+				})
+				m.Mu.Unlock()
+			case oauthAnchorHrefContainsURL(bodyStr, "http://"+match) || oauthAnchorHrefContainsURL(bodyStr, "https://"+match):
+				// Only a plain anchor link: user-initiated navigation, not an
+				// automatic client-side redirect.
+				m.Mu.Lock()
+				m.results = append(m.results, OAuthMisconfigurationResult{
+					Target: m.Target,
+					Status: statusFromEvidence(EvidenceWeak, false),
+					Detail: formatEvidenceDetail(EvidenceWeak, fmt.Sprintf("OAuth redirect_uri appears only in an anchor href at %s; user-initiated navigation, client-side redirect unconfirmed.", testURL)),
 				})
 				m.Mu.Unlock()
 			}
@@ -247,23 +269,37 @@ func (m *OAuthMisconfiguration) testOAuth(ctx context.Context, endpoint, payload
 		if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 			if strings.HasPrefix(strings.ToLower(loc), match) || strings.Contains(loc, match) {
 				m.Mu.Lock()
-				m.RecordPoC(req, nil, fmt.Sprintf("OAuth XSS via Location header at: %s", testURL))
+				// Reflection into the Location header alone is input
+				// reflection, not confirmed XSS: exploitation depends on how
+				// the client handles the redirect target.
 				m.results = append(m.results, OAuthMisconfigurationResult{
 					Target: m.Target,
-					Status: statusFromEvidence(EvidenceConfirmed, false),
-					Detail: formatEvidenceDetail(EvidenceConfirmed, fmt.Sprintf("OAuth redirect_uri reflected in Location header causing XSS at %s", testURL)),
+					Status: "informational",
+					Detail: fmt.Sprintf("OAuth redirect_uri reflected in Location header at %s; input reflection noted, XSS not confirmed.", testURL),
 				})
 				m.Mu.Unlock()
 			}
 		} else if resp.StatusCode == http.StatusOK {
 			body, _ := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
-			if oauthRedirectConstructContainsURL(string(body), match) {
+			bodyStr := string(body)
+			switch {
+			case oauthRedirectConstructContainsURL(bodyStr, match):
 				m.Mu.Lock()
 				m.RecordPoC(req, nil, fmt.Sprintf("OAuth redirect_uri XSS reflected in body at: %s", testURL))
 				m.results = append(m.results, OAuthMisconfigurationResult{
 					Target: m.Target,
 					Status: statusFromEvidence(EvidenceConfirmed, false),
 					Detail: formatEvidenceDetail(EvidenceConfirmed, fmt.Sprintf("OAuth redirect_uri reflected causing potential XSS at %s", testURL)),
+				})
+				m.Mu.Unlock()
+			case oauthAnchorHrefContainsURL(bodyStr, match):
+				// A plain anchor link to the evil URL requires a user click:
+				// not an automatic redirect construct, not confirmed XSS.
+				m.Mu.Lock()
+				m.results = append(m.results, OAuthMisconfigurationResult{
+					Target: m.Target,
+					Status: statusFromEvidence(EvidenceWeak, false),
+					Detail: formatEvidenceDetail(EvidenceWeak, fmt.Sprintf("OAuth redirect_uri appears only in an anchor href at %s; user-initiated navigation, XSS unconfirmed.", testURL)),
 				})
 				m.Mu.Unlock()
 			}
@@ -378,7 +414,6 @@ func (m *OAuthMisconfiguration) testOAuthState(ctx context.Context, endpoint str
 		// Proceeding to a redirect without state: the authorize flow accepted
 		// the request with no CSRF protection parameter.
 		m.Mu.Lock()
-		m.RecordPoC(req, nil, fmt.Sprintf("OAuth authorize endpoint proceeded without state parameter at: %s", testURL))
 		m.results = append(m.results, OAuthMisconfigurationResult{
 			Target: m.Target,
 			Status: statusFromEvidence(EvidenceStrong, false),
@@ -401,7 +436,6 @@ func (m *OAuthMisconfiguration) testOAuthState(ctx context.Context, endpoint str
 		// A 2xx consent/authorization page without state means the flow
 		// proceeded without CSRF protection.
 		m.Mu.Lock()
-		m.RecordPoC(req, nil, fmt.Sprintf("OAuth authorize endpoint proceeded without state parameter at: %s", testURL))
 		m.results = append(m.results, OAuthMisconfigurationResult{
 			Target: m.Target,
 			Status: statusFromEvidence(EvidenceStrong, false),

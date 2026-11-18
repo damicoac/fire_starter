@@ -130,6 +130,7 @@ func (m *SAMLAssertionTesting) Execute(ctx context.Context) ([]SAMLAssertionTest
 	close(jobs)
 
 	var wg sync.WaitGroup
+	attempted, failed := 0, 0
 
 	for range m.MaxThreads {
 		wg.Add(1)
@@ -140,7 +141,14 @@ func (m *SAMLAssertionTesting) Execute(ctx context.Context) ([]SAMLAssertionTest
 				case <-ctx.Done():
 					return
 				default:
-					m.testPayload(ctx, payload, baseline)
+					m.Mu.Lock()
+					attempted++
+					m.Mu.Unlock()
+					if !m.testPayload(ctx, payload, baseline) {
+						m.Mu.Lock()
+						failed++
+						m.Mu.Unlock()
+					}
 				}
 			}
 		}()
@@ -154,40 +162,97 @@ func (m *SAMLAssertionTesting) Execute(ctx context.Context) ([]SAMLAssertionTest
 
 	select {
 	case <-done:
-		return m.results, nil
 	case <-ctx.Done():
 		<-done
 		return m.results, ctx.Err()
 	}
+
+	if attempted > 0 && failed >= attempted {
+		m.Mu.Lock()
+		m.noteInconclusiveOnce(fmt.Sprintf("All %d probes failed (request or transport errors); SAML assertion acceptance could not be assessed.", attempted))
+		m.Mu.Unlock()
+	}
+	return m.results, nil
 }
 
 // samlAuthSignals are positive authentication markers a Service Provider
 // returns when it processed a SAML response into an authenticated session.
 var samlAuthSignals = []string{"logged in", "sign-on complete", "authenticated", "samlauth", "welcome", "session established"}
 
-func (m *SAMLAssertionTesting) testPayload(ctx context.Context, payload string, baseline samlBaseline) {
+// samlNegationPhrases are multi-word rejection markers checked as substrings.
+var samlNegationPhrases = []string{"not authenticated", "unauthenticated", "sign in", "log in"}
+
+// samlNegationWords are single-word rejection markers matched as whole words
+// only, so words merely containing the marker ("terror", "errored") no
+// longer veto an otherwise authenticated page.
+var samlNegationWords = map[string]bool{"invalid": true, "error": true, "errors": true}
+
+// samlBodyShowsRejection reports whether a body describes a failed
+// authentication flow rather than an accepted forged assertion.
+func samlBodyShowsRejection(body string) bool {
+	lower := strings.ToLower(body)
+	for _, phrase := range samlNegationPhrases {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	for _, tok := range strings.FieldsFunc(lower, func(r rune) bool {
+		return r < 'a' || r > 'z'
+	}) {
+		if samlNegationWords[tok] {
+			return true
+		}
+	}
+	return false
+}
+
+// noteInconclusiveOnce appends an inconclusive row unless an identical one
+// already exists. Callers must hold m.Mu.
+func (m *SAMLAssertionTesting) noteInconclusiveOnce(detail string) {
+	wrapped := formatEvidenceDetail(EvidenceWeak, detail)
+	for _, r := range m.results {
+		if r.Status == "inconclusive" && r.Detail == wrapped {
+			return
+		}
+	}
+	m.results = append(m.results, SAMLAssertionTestingResult{
+		Target: m.Target,
+		Status: statusFromEvidence(EvidenceWeak, false),
+		Detail: wrapped,
+	})
+}
+
+// testPayload sends one forged-SAML probe. It returns false when the probe
+// itself failed (request build, transport, or body read error).
+func (m *SAMLAssertionTesting) testPayload(ctx context.Context, payload string, baseline samlBaseline) bool {
 	req, err := http.NewRequestWithContext(ctx, "POST", m.Target, strings.NewReader("SAMLResponse="+payload))
 	if err != nil {
-		return
+		return false
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := m.Client.Do(req)
 	if err != nil {
-		return
+		return false
 	}
 	defer resp.Body.Close()
 
 	body, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	if err != nil {
-		return
+		return false
 	}
 	bodyStr := string(body)
 
 	// A transient baseline failure (status 0) must never be judged: 200 != 0
 	// would flag every 200 as "accepted".
 	if !baseline.ok {
-		return
+		return true
+	}
+
+	// A rejection page can never evidence an accepted forged assertion, even
+	// when it happens to contain a positive-sounding marker.
+	if samlBodyShowsRejection(bodyStr) {
+		return true
 	}
 
 	// Judge acceptance only through positive evidence: either the baseline was
@@ -196,8 +261,15 @@ func (m *SAMLAssertionTesting) testPayload(ctx context.Context, payload string, 
 	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
 		tier := EvaluateDifferentialEvidence(bodyStr, baseline.body, baseline.body, true)
 		hasAuthSignal := containsAnyToken(bodyStr, samlAuthSignals)
+		baselineRejected := baseline.statusCode >= 400 || !containsAnyToken(baseline.body, samlAuthSignals)
 		if baseline.statusCode != resp.StatusCode && hasAuthSignal {
-			tier = EvidenceConfirmed
+			if baselineRejected {
+				tier = EvidenceConfirmed
+			} else {
+				// The baseline was not clearly rejected, so the "baseline
+				// rejected it" differential cannot be claimed.
+				tier = EvidenceWeak
+			}
 		} else if !hasAuthSignal {
 			tier = EvidenceWeak
 		}
@@ -210,8 +282,14 @@ func (m *SAMLAssertionTesting) testPayload(ctx context.Context, payload string, 
 				Detail: formatEvidenceDetail(tier, "Server processed a forged SAML Assertion into an authenticated session (forged response accepted; baseline rejected it)."),
 			})
 			m.Mu.Unlock()
+		} else if resp.StatusCode != baseline.statusCode && hasAuthSignal {
+			m.Mu.Lock()
+			m.noteInconclusiveOnce(fmt.Sprintf("Payload response differed from the baseline (HTTP %d vs %d) with an auth signal, but the baseline was not clearly rejected; SAML acceptance could not be confirmed.",
+				baseline.statusCode, resp.StatusCode))
+			m.Mu.Unlock()
 		}
 	}
+	return true
 }
 
 func init() {

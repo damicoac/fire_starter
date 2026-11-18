@@ -30,8 +30,10 @@ func TestRateLimitProbing_Execute(t *testing.T) {
 		t.Fatalf("Execute failed: %v", err)
 	}
 
-	if len(result) == 0 || result[0].Status != "vulnerable" {
-		t.Fatalf("expected vulnerable status when no throttling is observed, got %#v", result)
+	// Absence of throttling after a finite burst is informational, not a
+	// confirmed vulnerability.
+	if len(result) == 0 || result[0].Status != "informational" {
+		t.Fatalf("expected informational status when no throttling is observed, got %#v", result)
 	}
 }
 

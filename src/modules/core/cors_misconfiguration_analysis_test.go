@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -112,6 +113,41 @@ func TestCorsMisconfigurationAnalysis_Execute_WildcardWithCredentials(t *testing
 		if r.Status != "inconclusive" {
 			t.Fatalf("Expected an inconclusive informational row for ACAO * + credentials, got: %+v", r)
 		}
+	}
+}
+
+func TestCorsMisconfigurationAnalysis_Execute_NullOriginWithoutCredentials(t *testing.T) {
+	// A reflected 'null' origin without Access-Control-Allow-Credentials
+	// yields no credentialed cross-origin read: inconclusive, never vulnerable.
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			h := make(http.Header)
+			h.Set("Access-Control-Allow-Origin", req.Header.Get("Origin"))
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewBufferString(`{"status": "ok"}`)),
+				Header:     h,
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewCorsMisconfigurationAnalysis("http://example.com")
+	ctx := context.Background()
+	result, err := module.Execute(ctx)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if len(result) != 1 {
+		t.Fatalf("Expected exactly one inconclusive row for reflected null origin without credentials, got %d results: %+v", len(result), result)
+	}
+	if result[0].Status != "inconclusive" {
+		t.Fatalf("Expected inconclusive for null origin without credentials, got %q (%s)", result[0].Status, result[0].Detail)
+	}
+	if !strings.Contains(result[0].Detail, "null") {
+		t.Fatalf("Expected detail to mention the null origin, got %q", result[0].Detail)
 	}
 }
 

@@ -103,7 +103,9 @@ func (m *SecurityHeaders) Execute(ctx context.Context) ([]SecurityHeadersResult,
 	res := make([]SecurityHeadersResult, len(m.results))
 	copy(res, m.results)
 	m.Mu.Unlock()
-	return res, nil
+	// Do not swallow mid-run cancellation: surface it so the caller knows the
+	// scan did not complete normally.
+	return res, ctx.Err()
 }
 
 func (m *SecurityHeaders) testHeaders(ctx context.Context, endpoint string, seen map[string]bool) {
@@ -142,10 +144,14 @@ func (m *SecurityHeaders) testHeaders(ctx context.Context, endpoint string, seen
 	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
 	isHTML := strings.Contains(contentType, "text/html")
 
-	if resp.Header.Get("Content-Security-Policy") == "" {
+	// CSP only constrains rendered documents; a JSON API response without one
+	// is not a finding.
+	if isHTML && resp.Header.Get("Content-Security-Policy") == "" {
 		missing = append(missing, "Content-Security-Policy")
 	}
-	if resp.Header.Get("Strict-Transport-Security") == "" {
+	// HSTS is only meaningful on https origins; flagging its absence on a
+	// plain-http target would misreport a scheme limitation as a header gap.
+	if resp.Request != nil && resp.Request.URL != nil && resp.Request.URL.Scheme == "https" && resp.Header.Get("Strict-Transport-Security") == "" {
 		missing = append(missing, "Strict-Transport-Security")
 	}
 	if isHTML && resp.Header.Get("X-Frame-Options") == "" {
@@ -169,7 +175,9 @@ func (m *SecurityHeaders) testHeaders(ctx context.Context, endpoint string, seen
 	m.RecordPoC(req, nil, fmt.Sprintf("Missing Security Headers at: %s", testURL))
 	m.results = append(m.results, SecurityHeadersResult{
 		Target: m.Target,
-		Status: "vulnerable",
+		// A missing hardening header is a hardening gap, not a confirmed
+		// exploitable vulnerability; report it as informational.
+		Status: "informational",
 		Detail: detailStr,
 	})
 }

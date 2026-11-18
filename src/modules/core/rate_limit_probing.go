@@ -50,10 +50,7 @@ type rateProbeSnapshot struct {
 	firstHalfDone      int
 	secondHalfSuccess  int
 	secondHalfDone     int
-	status4xxCount     int
-	status5xxCount     int
 	got429             bool
-	gotRetryAfter      bool
 	gotAuthChallenge   bool
 	recoveryDone       int
 	recoverySuccess    int
@@ -117,7 +114,7 @@ func (m *RateLimitProbing) Execute(ctx context.Context) ([]RateLimitProbingResul
 	// without a first-half vs second-half success delta.
 	hasThrottleDomination := burstSnapshot.requestsDone >= rateLimitBurstRequests/2 && burstSnapshot.got429 && burstSuccessRate <= 0.1
 	hasRecoveryNormalization := recoverySnapshot.recoveryDone >= rateLimitRecoveryRequests/2 && recoveryRate > secondHalfRate+0.2
-	hasMeaningfulThrottleSignal := burstSnapshot.got429 || burstSnapshot.gotRetryAfter
+	hasMeaningfulThrottleSignal := burstSnapshot.got429
 	hasCorroboratedThrottle := hasMeaningfulThrottleSignal && (hasBurstDegradation || hasThrottleDomination) && (hasRecoveryNormalization || recoverySnapshot.recovery429 || recoverySnapshot.recoveryRetryAfter)
 	hasContradictorySignals := hasMeaningfulThrottleSignal && !hasBurstDegradation && burstSuccessRate > 0.75
 
@@ -154,8 +151,10 @@ func (m *RateLimitProbing) Execute(ctx context.Context) ([]RateLimitProbingResul
 		m.RecordPoC(burstSnapshot.lastReq, nil, "High request success remained stable across burst and recovery phases with no throttling evidence.")
 		m.results = append(m.results, RateLimitProbingResult{
 			Target: m.Target,
-			Status: statusFromEvidence(EvidenceConfirmed, false),
-			Detail: formatEvidenceDetail(EvidenceConfirmed, "No meaningful throttling indicators were observed during burst or recovery phases."),
+			// Absence of a rate limiter after a finite burst is an observation,
+			// not a confirmed vulnerability; report it as informational.
+			Status: "informational",
+			Detail: "No meaningful throttling indicators were observed during burst or recovery phases (rate limiting not detected).",
 		})
 	default:
 		m.RecordPoC(burstSnapshot.lastReq, nil, "Rate-limit probe produced partial or mixed signals that could not be causally corroborated.")
@@ -196,9 +195,6 @@ func (m *RateLimitProbing) runBurstPhase(ctx context.Context) (rateProbeSnapshot
 						continue
 					}
 					statusCode := resp.StatusCode
-					// Retry-After is a throttle signal only on HTTP 429; overloaded backends
-					// commonly attach it to 503 responses.
-					retryAfter := statusCode == http.StatusTooManyRequests && resp.Header.Get("Retry-After") != ""
 					resp.Body.Close()
 
 					m.Mu.Lock()
@@ -217,17 +213,8 @@ func (m *RateLimitProbing) runBurstPhase(ctx context.Context) (rateProbeSnapshot
 							snapshot.secondHalfSuccess++
 						}
 					}
-					if statusCode >= http.StatusBadRequest && statusCode < http.StatusInternalServerError {
-						snapshot.status4xxCount++
-					}
-					if statusCode >= http.StatusInternalServerError {
-						snapshot.status5xxCount++
-					}
 					if statusCode == http.StatusTooManyRequests {
 						snapshot.got429 = true
-					}
-					if retryAfter {
-						snapshot.gotRetryAfter = true
 					}
 					if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
 						snapshot.gotAuthChallenge = true

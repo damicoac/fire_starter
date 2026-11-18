@@ -36,8 +36,9 @@ func TestSecurityHeaders_Execute(t *testing.T) {
 		t.Fatalf("Expected missing-header findings, got none")
 	}
 	for _, r := range result {
-		if r.Status != "vulnerable" {
-			t.Fatalf("Expected vulnerable finding, got: %+v", r)
+		// Missing hardening headers are informational, not vulnerable.
+		if r.Status != "informational" {
+			t.Fatalf("Expected informational finding, got: %+v", r)
 		}
 	}
 }
@@ -232,12 +233,20 @@ func TestSecurityHeaders_Execute_JSON(t *testing.T) {
 	module := NewSecurityHeaders("http://example.com/api/v1")
 	ctx := context.Background()
 	res, _ := module.Execute(ctx)
-	if len(res) == 0 {
-		t.Fatalf("Expected CSP/HSTS missing, got no results")
+	// CSP is only judged on HTML responses and HSTS only on https origins,
+	// so a JSON API over plain http must produce no header-gap findings at
+	// all — just the secure summary row.
+	if len(res) != 1 {
+		t.Fatalf("Expected exactly one summary row for JSON API, got %d: %+v", len(res), res)
+	}
+	if res[0].Status != "secure" {
+		t.Fatalf("Expected secure summary for JSON API, got: %+v", res[0])
 	}
 	for _, r := range res {
-		if strings.Contains(r.Detail, "X-Frame-Options") {
-			t.Fatalf("Did not expect X-Frame-Options missing for JSON API, but got: %s", r.Detail)
+		for _, header := range []string{"Content-Security-Policy", "Strict-Transport-Security", "X-Frame-Options"} {
+			if strings.Contains(r.Detail, header) {
+				t.Fatalf("Did not expect %s finding for JSON API, but got: %s", header, r.Detail)
+			}
 		}
 	}
 }

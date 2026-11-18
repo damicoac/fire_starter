@@ -36,10 +36,27 @@ func NewBusinessLogicBypass(target string) *BusinessLogicBypass {
 	}
 }
 
+// businessLogicSuccessWord reports whether the lowercase body contains
+// "success" as a whole word (split on non-letter runs), so negative forms
+// like "unsuccessful" do not match the way substring matching would.
+func businessLogicSuccessWord(bodyLower string) bool {
+	for _, tok := range strings.FieldsFunc(bodyLower, func(r rune) bool {
+		return r < 'a' || r > 'z'
+	}) {
+		if tok == "success" {
+			return true
+		}
+	}
+	return false
+}
+
 // businessLogicPositiveSignal reports whether a lowercase body carries an
 // explicit success marker for the completed step.
 func businessLogicPositiveSignal(bodyLower string) bool {
-	return containsAnyToken(bodyLower, []string{"success", "confirmed", `"status":"ok"`})
+	if businessLogicSuccessWord(bodyLower) {
+		return true
+	}
+	return containsAnyToken(bodyLower, []string{"confirmed", `"status":"ok"`})
 }
 
 // businessLogicNegativeSignal reports whether a lowercase body explicitly
@@ -126,22 +143,24 @@ func (m *BusinessLogicBypass) testLogicBypass(ctx context.Context, endpoint stri
 
 	testURL := m.Target + endpoint
 
-	// Baseline/control: plain GET of the same endpoint establishes what the
-	// endpoint returns to a request that did not reach the state-changing
-	// handler.
-	getReq, err := http.NewRequestWithContext(ctx, "GET", testURL, nil)
+	// Control: the same POST with an invalidated prerequisite field. Using the
+	// same method keeps the differential like-for-like (a GET would exercise a
+	// different handler path), and the invalidated field makes the control fail
+	// the prerequisite check the completed step requires.
+	controlReq, err := http.NewRequestWithContext(ctx, "POST", testURL, strings.NewReader("firestarter_prerequisite=invalidated"))
 	if err != nil {
 		return
 	}
-	getResp, err := m.Client.Do(getReq)
+	controlReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	controlResp, err := m.Client.Do(controlReq)
 	if err != nil {
 		m.Mu.Lock()
 		m.probeErrors++
 		m.Mu.Unlock()
 		return
 	}
-	getBody, err := ReadBoundedBody(getResp.Body, MaxResponseBodyBytes)
-	getResp.Body.Close()
+	controlBody, err := ReadBoundedBody(controlResp.Body, MaxResponseBodyBytes)
+	controlResp.Body.Close()
 	if err != nil {
 		m.Mu.Lock()
 		m.probeErrors++
@@ -195,9 +214,9 @@ func (m *BusinessLogicBypass) testLogicBypass(ctx context.Context, endpoint stri
 	}
 
 	// Differential gating: the success body must actually differ from the
-	// endpoint's normal (control) GET response, so marketing copy or static
-	// text containing "success" is not misread as a completed step.
-	tier := EvaluateDifferentialEvidence(string(bodyBytes), string(getBody), string(getBody), true)
+	// control POST's response, so marketing copy or static text containing
+	// "success" is not misread as a completed step.
+	tier := EvaluateDifferentialEvidence(string(bodyBytes), string(controlBody), string(controlBody), true)
 	if tier == EvidenceConfirmed {
 		m.Mu.Lock()
 		m.RecordPoC(req, nil, fmt.Sprintf("Potential Business Logic Bypass at: %s", testURL))

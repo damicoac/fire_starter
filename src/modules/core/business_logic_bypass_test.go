@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -12,6 +13,19 @@ func TestBusinessLogicBypass_Execute(t *testing.T) {
 	mockTransport := &MockTransport{
 		RoundTripFunc: func(req *http.Request) *http.Response {
 			if req.Method == "POST" {
+				var body []byte
+				if req.Body != nil {
+					body, _ = io.ReadAll(req.Body)
+				}
+				// The control POST carries the invalidated prerequisite
+				// field: the endpoint rejects it.
+				if strings.Contains(string(body), "firestarter_prerequisite") {
+					return &http.Response{
+						StatusCode: http.StatusBadRequest,
+						Body:       io.NopCloser(bytes.NewBufferString(`{"error": "invalid prerequisite"}`)),
+						Header:     make(http.Header),
+					}
+				}
 				return &http.Response{
 					StatusCode: http.StatusOK,
 					Body:       io.NopCloser(bytes.NewBufferString(`{"status": "success", "order": "123"}`)),
@@ -103,9 +117,9 @@ func TestBusinessLogicBypass_NegativePhrasingIgnored(t *testing.T) {
 }
 
 func TestBusinessLogicBypass_UniformSuccessBodyNotConfirmed(t *testing.T) {
-	// Marketing-style success text on every request (same body for GET and
-	// POST) must not be confirmed as a bypass: the differential cannot
-	// distinguish the direct hit from the control response.
+	// Marketing-style success text on every request (same body for the probe
+	// and the control POST) must not be confirmed as a bypass: the differential
+	// cannot distinguish the direct hit from the control response.
 	mockTransport := &MockTransport{
 		RoundTripFunc: func(req *http.Request) *http.Response {
 			return &http.Response{
@@ -125,5 +139,41 @@ func TestBusinessLogicBypass_UniformSuccessBodyNotConfirmed(t *testing.T) {
 		if r.Status == "vulnerable" {
 			t.Errorf("Expected static success-text page to not be flagged, got: %s", r.Detail)
 		}
+	}
+}
+
+func TestBusinessLogicBypass_UnsuccessfulIsNotASuccessMarker(t *testing.T) {
+	// "unsuccessful" contains "success" as a substring; word-bounded matching
+	// must keep this an explicit denial instead of a completed step.
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			if req.Method == "POST" {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(bytes.NewBufferString(`{"status": "unsuccessful", "detail": "payment was reversed"}`)),
+					Header:     make(http.Header),
+				}
+			}
+			return &http.Response{
+				StatusCode: http.StatusForbidden,
+				Body:       io.NopCloser(bytes.NewBufferString(`{"error": "forbidden"}`)),
+				Header:     make(http.Header),
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewBusinessLogicBypass("http://example.com")
+	ctx := context.Background()
+	res, _ := module.Execute(ctx)
+	if len(res) != 1 {
+		t.Fatalf("Expected exactly 1 summary result for unsuccessful bodies, got %d", len(res))
+	}
+	if res[0].Status == "vulnerable" {
+		t.Fatalf("\"unsuccessful\" must not satisfy the success marker, got %#v", res[0])
+	}
+	if res[0].Status != "inconclusive" {
+		t.Fatalf("Expected inconclusive summary status, got %q", res[0].Status)
 	}
 }

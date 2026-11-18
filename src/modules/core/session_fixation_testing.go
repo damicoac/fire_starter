@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/net/html"
 )
 
 // SessionFixationTestingResult holds the result of the SessionFixationTesting module execution.
@@ -99,6 +102,19 @@ func (m *SessionFixationTesting) Execute(ctx context.Context) ([]SessionFixation
 	// 1. Send a request with a fake predetermined session ID
 	// 2. See if the server accepts it or forces a new one
 
+	// POST credentials to the discovered login form's action URL rather than
+	// the page URL: forms frequently submit to a dedicated handler route.
+	postTarget := m.Target
+	if action := sessionFixationFormAction(getBodyStr); action != "" {
+		if base, err := url.Parse(m.Target); err == nil {
+			if aURL, err := url.Parse(action); err == nil {
+				if resolved := base.ResolveReference(aURL); resolved != nil {
+					postTarget = resolved.String()
+				}
+			}
+		}
+	}
+
 	sessionNames := []string{"PHPSESSID", "JSESSIONID", "session_id", "ASP.NET_SessionId"}
 
 	jobs := make(chan string, len(sessionNames))
@@ -118,7 +134,7 @@ func (m *SessionFixationTesting) Execute(ctx context.Context) ([]SessionFixation
 				case <-ctx.Done():
 					return
 				default:
-					m.testCookie(ctx, cookieName)
+					m.testCookie(ctx, cookieName, postTarget)
 				}
 			}
 		}()
@@ -135,11 +151,15 @@ func (m *SessionFixationTesting) Execute(ctx context.Context) ([]SessionFixation
 		m.Mu.Lock()
 		attempts, errors := m.probeAttempts, m.probeErrors
 		m.Mu.Unlock()
-		if attempts == 0 && errors > 0 {
+		if len(m.results) == 0 {
+			// Probing ran (login POSTs issued) but produced no finding: the
+			// run is inconclusive, not a clean scan — session rotation could
+			// not be observed on any probe.
+			detail := fmt.Sprintf("Login POST probes completed (%d attempts, %d transport errors) with no session-fixation finding; session rotation could not be observed.", attempts, errors)
 			m.results = append(m.results, SessionFixationTestingResult{
 				Target: m.Target,
 				Status: statusFromEvidence(EvidenceWeak, false),
-				Detail: formatEvidenceDetail(EvidenceWeak, fmt.Sprintf("All %d login POST probes failed with transport errors; session rotation could not be observed.", errors)),
+				Detail: formatEvidenceDetail(EvidenceWeak, detail),
 			})
 		}
 		return m.results, nil
@@ -178,10 +198,86 @@ func sessionFixationHopCookies(resp *http.Response) []string {
 	return resp.Header.Values("Set-Cookie")
 }
 
-func (m *SessionFixationTesting) testCookie(ctx context.Context, cookieName string) {
+// sessionFixationFollowupAuthed sends a follow-up request carrying the fake
+// session cookie and reports whether the response is auth-indicating: a 2xx
+// whose body carries an explicit authentication-success marker without
+// failure markers.
+func (m *SessionFixationTesting) sessionFixationFollowupAuthed(ctx context.Context, cookieName, fakeSessionID, postTarget string) bool {
+	req, err := http.NewRequestWithContext(ctx, "GET", postTarget, nil)
+	if err != nil {
+		return false
+	}
+	req.AddCookie(&http.Cookie{Name: cookieName, Value: fakeSessionID})
+	client := &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: m.Client.Transport,
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	body, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
+	if err != nil {
+		return false
+	}
+	return sessionFixationFollowupAuthIndicating(resp.StatusCode, string(body))
+}
+
+// sessionFixationFollowupAuthIndicating reports whether a follow-up response
+// proves the presented (fake) session cookie granted an authenticated context.
+func sessionFixationFollowupAuthIndicating(statusCode int, body string) bool {
+	if statusCode < 200 || statusCode >= 300 {
+		return false
+	}
+	bodyLower := strings.ToLower(body)
+	if containsAnyToken(bodyLower, sessionFixationLoginFailureSignals) {
+		return false
+	}
+	return containsAnyToken(bodyLower, sessionFixationLoginSuccessSignals)
+}
+
+// sessionFixationFormAction returns the action attribute of the form that
+// contains a password input, or "" when the form carries no action.
+func sessionFixationFormAction(body string) string {
+	doc, err := html.Parse(strings.NewReader(body))
+	if err != nil {
+		return ""
+	}
+	action := ""
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "form" {
+			hasPassword := false
+			for c := n.FirstChild; c != nil; c = c.NextSibling {
+				if c.Type == html.ElementNode && c.Data == "input" {
+					for _, a := range c.Attr {
+						if a.Key == "type" && strings.EqualFold(a.Val, "password") {
+							hasPassword = true
+						}
+					}
+				}
+			}
+			if hasPassword {
+				for _, a := range n.Attr {
+					if a.Key == "action" {
+						action = a.Val
+					}
+				}
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+	return action
+}
+
+func (m *SessionFixationTesting) testCookie(ctx context.Context, cookieName string, postTarget string) {
 	fakeSessionID := "1234567890abcdef1234567890abcdef"
 
-	req, err := http.NewRequestWithContext(ctx, "POST", m.Target, strings.NewReader("username=test&password=test"))
+	req, err := http.NewRequestWithContext(ctx, "POST", postTarget, strings.NewReader("username=test&password=test"))
 	if err != nil {
 		return
 	}
@@ -217,6 +313,14 @@ func (m *SessionFixationTesting) testCookie(ctx context.Context, cookieName stri
 
 	// Verify the login actually succeeded before judging rotation behavior.
 	if !sessionFixationLoginSucceeded(resp.StatusCode, string(body), sessionFixationHopCookies(resp)) {
+		return
+	}
+
+	// EvidenceConfirmed requires the attacker-chosen session ID to actually
+	// grant access: a follow-up authenticated request carrying the fake
+	// cookie must return an auth-indicating response. Without it there is no
+	// proof the fake session ID was accepted post-authentication.
+	if !m.sessionFixationFollowupAuthed(ctx, cookieName, fakeSessionID, postTarget) {
 		return
 	}
 

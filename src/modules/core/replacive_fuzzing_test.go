@@ -108,6 +108,43 @@ func TestReplaciveFuzzing_Execute_Single502StaysInconclusive(t *testing.T) {
 	}
 }
 
+func TestReplaciveFuzzing_Execute_Single500StaysInconclusive(t *testing.T) {
+	// Baseline responds 200; the first mutated request 500s, but the re-issue
+	// of the same payload succeeds: a single unreproduced 500 must be reported
+	// as inconclusive, never as a confirmed payload-caused crash.
+	var mutated atomic.Int64
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			status := http.StatusOK
+			if req.URL.RawQuery == "" && (req.URL.Path == "" || req.URL.Path == "/") {
+				status = http.StatusOK
+			} else if mutated.Add(1) == 1 {
+				status = http.StatusInternalServerError
+			}
+			return &http.Response{
+				StatusCode: status,
+				Body:       io.NopCloser(bytes.NewBufferString(`{"status": "ok"}`)),
+				Header:     make(http.Header),
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewReplaciveFuzzing("http://example.com")
+
+	result, err := module.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected exactly 1 result for the single 500 sample, got %d: %+v", len(result), result)
+	}
+	if result[0].Status != "inconclusive" {
+		t.Fatalf("expected a single unreproduced 500 to stay inconclusive, got %q (%s)", result[0].Status, result[0].Detail)
+	}
+}
+
 func TestReplaciveFuzzing_Execute_Reproduced502IsVulnerable(t *testing.T) {
 	// Baseline responds 200; every mutated request 502s on both the probe and
 	// the re-issue: reproducible gateway failures are confirmed worker crashes.

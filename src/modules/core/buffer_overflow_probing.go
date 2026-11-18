@@ -108,6 +108,11 @@ func (m *BufferOverflowProbing) Execute(ctx context.Context) ([]BufferOverflowPr
 
 	select {
 	case <-done:
+		// The done channel may win the select even when the run was
+		// cancelled; surface cancellation instead of a result.
+		if ctx.Err() != nil {
+			return m.results, ctx.Err()
+		}
 		m.Mu.Lock()
 		if len(m.results) == 0 {
 			switch {
@@ -233,7 +238,7 @@ func (m *BufferOverflowProbing) testPayload(ctx context.Context, u *url.URL, pay
 // unpolluted baseline: vulnerable only when the oversized request fails with a
 // 500 while the baseline succeeds, or when behavior degrades with length.
 func (m *BufferOverflowProbing) probeOneParam(ctx context.Context, testURL *url.URL, key string, payload string, baselineStatus int, baselineBody string) {
-	status, body, err := m.fetchWithQuery(ctx, testURL, testURL.RawQuery)
+	status, _, err := m.fetchWithQuery(ctx, testURL, testURL.RawQuery)
 	if err != nil {
 		// Crash-style errors are already recorded; plain transport errors here.
 		if !bufferOverflowIsCrashStyleError(err) {
@@ -262,14 +267,20 @@ func (m *BufferOverflowProbing) probeOneParam(ctx context.Context, testURL *url.
 	}
 	shortQuery[key] = []string{"A"}
 	shortStatus, _, shortErr := m.fetchWithQuery(ctx, testURL, shortQuery.Encode())
-	if shortErr == nil && shortStatus == http.StatusInternalServerError {
-		// Short input also fails: generic validation failure, not overflow.
+	if shortErr != nil {
+		// The short-value control probe itself failed: we cannot tell an
+		// overflow apart from a generic validation failure, so never flag.
+		m.Mu.Lock()
+		m.results = append(m.results, BufferOverflowProbingResult{
+			Target: m.Target,
+			Status: statusFromEvidence(EvidenceWeak, false),
+			Detail: formatEvidenceDetail(EvidenceWeak, fmt.Sprintf("Control probe for parameter '%s' failed (%v); overflow could not be distinguished from generic input-validation failure.", key, shortErr)),
+		})
+		m.Mu.Unlock()
 		return
 	}
-
-	// A 500 whose body is byte-identical to a baseline 500 body is a static
-	// error page, not a crash caused by this payload.
-	if baselineStatus == status && baselineBody == body {
+	if shortStatus == http.StatusInternalServerError {
+		// Short input also fails: generic validation failure, not overflow.
 		return
 	}
 

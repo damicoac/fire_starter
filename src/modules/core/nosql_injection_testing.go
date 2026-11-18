@@ -129,6 +129,11 @@ func (m *NosqlInjectionTesting) Execute(ctx context.Context) ([]NosqlInjectionTe
 
 	baseline, err := m.getBaseline(ctx)
 	if err != nil {
+		// A cancelled scan is not a module finding: propagate the
+		// cancellation instead of reporting a fake result.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return m.results, ctxErr
+		}
 		// Without a baseline neither judging path is sound; report inconclusive
 		// instead of a clean-looking empty result.
 		m.addResult(statusFromEvidence(EvidenceWeak, false),
@@ -341,6 +346,11 @@ func noSQLSessionCookieName(setCookie string) bool {
 		name = name[:i]
 	}
 	name = strings.ToLower(strings.TrimSpace(name))
+	// CSRF cookie names (csrf_token, _csrf, XSRF-TOKEN variants) are anti-CSRF
+	// nonces, never evidence of an authenticated session.
+	if strings.Contains(name, "csrf") || strings.Contains(name, "xsrf") {
+		return false
+	}
 	return containsAnyToken(name, []string{"session", "auth", "token", "sid", "jwt"})
 }
 

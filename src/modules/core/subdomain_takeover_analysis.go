@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,8 +33,16 @@ type SubdomainTakeoverAnalysis struct {
 
 // NewSubdomainTakeoverAnalysis creates a new instance.
 func NewSubdomainTakeoverAnalysis(target string) *SubdomainTakeoverAnalysis {
-	target = strings.TrimPrefix(target, "http://")
-	target = strings.TrimPrefix(target, "https://")
+	// Strip scheme, port, and path so DNS lookups probe the bare hostname
+	// (e.g. "https://sub.example.com:8443/admin" -> "sub.example.com").
+	if parsed, err := url.Parse(EnsureHTTPPrefix(target)); err == nil && parsed.Hostname() != "" {
+		target = parsed.Hostname()
+	} else {
+		target = strings.TrimPrefix(target, "http://")
+		target = strings.TrimPrefix(target, "https://")
+		target = strings.Split(target, "/")[0]
+		target = strings.Split(target, ":")[0]
+	}
 	return &SubdomainTakeoverAnalysis{
 		BaseModule: BaseModule{
 			Client:     NewHTTPClient(10 * time.Second),

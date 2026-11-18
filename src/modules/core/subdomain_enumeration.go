@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -31,14 +32,11 @@ type SubdomainEnumeration struct {
 // NewSubdomainEnumeration creates a new instance of SubdomainEnumeration.
 func NewSubdomainEnumeration(target string) *SubdomainEnumeration {
 	// Strip scheme, path and port: DNS lookups need a bare hostname.
-	target = strings.TrimPrefix(target, "http://")
-	target = strings.TrimPrefix(target, "https://")
-	if idx := strings.Index(target, "/"); idx >= 0 {
-		target = target[:idx]
+	targetHost := ""
+	if u, err := url.Parse(EnsureHTTPPrefix(target)); err == nil {
+		targetHost = u.Hostname()
 	}
-	if idx := strings.Index(target, ":"); idx >= 0 {
-		target = target[:idx]
-	}
+	target = targetHost
 	return &SubdomainEnumeration{
 		BaseModule: BaseModule{
 			Client:     NewHTTPClient(10 * time.Second),
@@ -91,11 +89,26 @@ func (m *SubdomainEnumeration) Execute(ctx context.Context) ([]SubdomainEnumerat
 	wildcardIPs := make(map[string]bool)
 	if controlLabel := randomHexLabel(); controlLabel != "" {
 		controlHost := fmt.Sprintf("%s.%s", controlLabel, m.Target)
-		if ips, err := lookupWithRetry(ctx, controlHost, resolve); err == nil && len(ips) > 0 {
+		ips, err := lookupWithRetry(ctx, controlHost, resolve)
+		switch {
+		case err == nil && len(ips) > 0:
 			for _, ip := range ips {
 				wildcardIPs[ip] = true
 			}
 			m.addResult(fmt.Sprintf("Wildcard DNS detected: control host %s resolves; candidate results are filtered against the wildcard IP set", controlHost), statusFromEvidence(EvidenceWeak, false))
+		case isNXDOMAIN(err):
+			// Expected: the control host does not exist, so candidate
+			// resolutions are meaningful.
+		default:
+			// The control probe failed even after retries: wildcard filtering
+			// cannot be established, so judging candidates risks mass-flagging
+			// the whole wordlist. Report one inconclusive row and skip judging.
+			reason := "no addresses returned"
+			if err != nil {
+				reason = err.Error()
+			}
+			m.addResult(fmt.Sprintf("Wildcard DNS control probe failed (%s); candidate judging skipped because wildcard filtering cannot be established", reason), statusFromEvidence(EvidenceWeak, false))
+			return m.results, ctx.Err()
 		}
 	}
 
@@ -132,7 +145,9 @@ func (m *SubdomainEnumeration) Execute(ctx context.Context) ([]SubdomainEnumerat
 						// Wildcard answer: not a real subdomain.
 					} else {
 						resolvedCount++
-						m.addResult(fmt.Sprintf("Subdomain %s resolved to %s", job, strings.Join(ips, ", ")), statusFromEvidence(EvidenceConfirmed, false))
+						// A name resolving is an inventory fact, not a
+						// vulnerability: report it as informational.
+						m.addResult(fmt.Sprintf("Subdomain %s resolves to %s", job, strings.Join(ips, ", ")), "informational")
 					}
 				case isNXDOMAIN(err):
 					// Definitive negative.
@@ -166,7 +181,8 @@ func (m *SubdomainEnumeration) Execute(ctx context.Context) ([]SubdomainEnumerat
 		if resolvedCount == 0 && otherErrCount > 0 {
 			m.addResult(fmt.Sprintf("DNS resolution failed for %d of %d candidates (non-NXDOMAIN errors); results unreliable", otherErrCount, len(wordlist)), statusFromEvidence(EvidenceWeak, false))
 		} else if resolvedCount == 0 {
-			m.addResult("No subdomains resolved from the wordlist", statusFromEvidence(EvidenceConfirmed, true))
+			// A ~140-name wordlist cannot confirm the absence of subdomains.
+			m.addResult("No subdomains resolved from the wordlist; a wordlist scan cannot confirm absence of subdomains", statusFromEvidence(EvidenceWeak, false))
 		}
 	}
 

@@ -185,9 +185,6 @@ func (m *HttpParameterPollutionHpp) testParameter(ctx context.Context, u *url.UR
 	}
 	rawPolluted := qPolluted.Encode()
 
-	m.Mu.Lock()
-	m.Mu.Unlock()
-
 	baselineStatus, _, err := m.hppFetch(ctx, u, rawBaseline)
 	if err != nil {
 		m.recordProbeError(err)
@@ -213,8 +210,13 @@ func (m *HttpParameterPollutionHpp) testParameter(ctx context.Context, u *url.UR
 		baselineStatus != http.StatusInternalServerError &&
 		controlStatus != http.StatusInternalServerError {
 		// Polluted pair specifically breaks the request while the same payload
-		// alone does not: a duplicate-parameter parsing difference.
-		vulnerable = true
+		// alone does not: a duplicate-parameter parsing difference. A single
+		// 500 can be transient; require the differential to reproduce on one
+		// re-issue before flagging.
+		reStatus, _, reErr := m.hppFetch(ctx, u, rawPolluted)
+		if reErr == nil && reStatus == http.StatusInternalServerError {
+			vulnerable = true
+		}
 	} else if pollutedStatus == baselineStatus && pollutedStatus == controlStatus {
 		// Same status: look for server-side concatenation of both values in the
 		// response body (ASP.NET style), in either order, where the control

@@ -42,6 +42,20 @@ func TestSubdomainTakeoverAnalysis_Execute(t *testing.T) {
 	}
 }
 
+func TestSubdomainTakeoverAnalysis_StripsPortAndPathFromTarget(t *testing.T) {
+	// Scheme, port, and path must be stripped so DNS lookups probe the bare
+	// hostname; "sub.example.com:8443/admin" is not a resolvable DNS name.
+	module := NewSubdomainTakeoverAnalysis("http://example.com:8443/admin")
+	if module.Target != "example.com" {
+		t.Fatalf("expected target normalized to bare hostname, got %q", module.Target)
+	}
+
+	module = NewSubdomainTakeoverAnalysis("example.com")
+	if module.Target != "example.com" {
+		t.Fatalf("expected bare hostname preserved, got %q", module.Target)
+	}
+}
+
 func TestSubdomainTakeoverAnalysis_Execute_VulnerableTakeover(t *testing.T) {
 	mockTransport := &MockTransport{
 		RoundTripFunc: func(req *http.Request) *http.Response {

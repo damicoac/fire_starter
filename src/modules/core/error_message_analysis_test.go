@@ -109,13 +109,35 @@ func TestErrorMessageAnalysis__Execute_CanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	_, _ = module.Execute(ctx)
+	result, err := module.Execute(ctx)
+	if err != nil {
+		t.Fatalf("Expected no error on cancelled context, got %v", err)
+	}
+	// The cancelled baseline fetch must render as the single inconclusive
+	// baseline-failure row, never as a clean scan or a finding.
+	if len(result) != 1 {
+		t.Fatalf("Expected exactly 1 row on cancelled context, got %d: %+v", len(result), result)
+	}
+	if result[0].Status != "inconclusive" {
+		t.Errorf("Expected inconclusive status on cancelled context, got %s", result[0].Status)
+	}
 }
 
 func TestErrorMessageAnalysis__Execute_InvalidURL(t *testing.T) {
 	module := NewErrorMessageAnalysis("http://invalid-url-:foo")
 	ctx := context.Background()
-	_, _ = module.Execute(ctx)
+	result, err := module.Execute(ctx)
+	if err != nil {
+		t.Fatalf("Expected no error for invalid target URL, got %v", err)
+	}
+	// The unparseable target makes the baseline fetch fail: exactly one
+	// inconclusive baseline-failure row, never a clean scan.
+	if len(result) != 1 {
+		t.Fatalf("Expected exactly 1 inconclusive row for invalid URL, got %d: %+v", len(result), result)
+	}
+	if result[0].Status != "inconclusive" {
+		t.Errorf("Expected inconclusive status for invalid URL, got %s", result[0].Status)
+	}
 }
 
 func TestErrorMessageAnalysis__Execute_HTTPError(t *testing.T) {
@@ -133,5 +155,18 @@ func TestErrorMessageAnalysis__Execute_HTTPError(t *testing.T) {
 
 	module := NewErrorMessageAnalysis("http://example.com")
 	ctx := context.Background()
-	_, _ = module.Execute(ctx)
+	result, err := module.Execute(ctx)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	// A uniform-500 target where the baseline itself is an error page yields
+	// no attributable signatures: zero rows, never a vulnerable finding.
+	if len(result) != 0 {
+		t.Errorf("Expected 0 rows when the baseline is already an error page, got %d: %+v", len(result), result)
+	}
+	for _, r := range result {
+		if r.Status == "vulnerable" {
+			t.Errorf("Unexpected vulnerable row on uniform-500 target: %+v", r)
+		}
+	}
 }

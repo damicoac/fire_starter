@@ -5,15 +5,28 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 )
 
+// The new success oracle: the probe payload must yield a strict positive JSON
+// signal (2xx, success/authenticated true or non-empty string token) AND the
+// same endpoint with a deliberately invalid code must produce a
+// failure-indicating difference.
 func TestMFABypass_Execute(t *testing.T) {
 	mockTransport := &MockTransport{
 		RoundTripFunc: func(req *http.Request) *http.Response {
+			body, _ := io.ReadAll(req.Body)
+			if strings.Contains(string(body), "__firestarter_invalid_code__") {
+				return &http.Response{
+					StatusCode: http.StatusUnauthorized,
+					Body:       io.NopCloser(bytes.NewBufferString(`{"error": "invalid code"}`)),
+					Header:     make(http.Header),
+				}
+			}
 			return &http.Response{
 				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(bytes.NewBufferString(`{"status": "success", "token": "xyz"}`)),
+				Body:       io.NopCloser(bytes.NewBufferString(`{"success": true, "token": "xyz"}`)),
 				Header:     make(http.Header),
 			}
 		},
@@ -33,6 +46,36 @@ func TestMFABypass_Execute(t *testing.T) {
 	}
 	if result[0].Status != "vulnerable" {
 		t.Fatalf("Expected vulnerable status, got: %s", result[0].Status)
+	}
+}
+
+// An endpoint that answers identically to every POST (echo/error pages) can
+// show a positive-shaped body but provides no differential: no bypass may be
+// claimed.
+func TestMFABypass_Execute_EchoServerNoDifferential(t *testing.T) {
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewBufferString(`{"success": true, "token": "xyz"}`)),
+				Header:     make(http.Header),
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewMFABypass("http://example.com")
+	result, err := module.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if len(result) != 1 {
+		t.Fatalf("Expected single inconclusive summary result on echo server, got %d: %+v", len(result), result)
+	}
+	if result[0].Status != "inconclusive" {
+		t.Fatalf("Expected inconclusive status on echo server, got: %s", result[0].Status)
 	}
 }
 

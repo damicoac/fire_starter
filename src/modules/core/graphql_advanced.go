@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -43,13 +44,16 @@ func (m *GraphQLAdvanced) Execute(ctx context.Context) ([]GraphQLAdvancedResult,
 	}
 
 	probes := 0
+	// Dedupe findings across the candidate endpoints by (host, finding-kind):
+	// the same host serving /graphql and /api/graphql is one observation, not four.
+	seen := make(map[string]bool)
 	for _, ep := range endpoints {
 		select {
 		case <-ctx.Done():
 			return m.results, ctx.Err()
 		default:
-			probes += m.testBatching(ctx, ep)
-			probes += m.testDeepQuery(ctx, ep)
+			probes += m.testBatching(ctx, ep, seen)
+			probes += m.testDeepQuery(ctx, ep, seen)
 		}
 	}
 
@@ -62,6 +66,16 @@ func (m *GraphQLAdvanced) Execute(ctx context.Context) ([]GraphQLAdvancedResult,
 	}
 
 	return m.results, nil
+}
+
+// graphqlAdvancedFindingKey builds the (host, finding-kind) dedupe key for a
+// probe endpoint, so mirror-path findings on the same host collapse to one.
+func graphqlAdvancedFindingKey(endpoint, kind string) string {
+	host := endpoint
+	if u, err := url.Parse(endpoint); err == nil && u.Host != "" {
+		host = u.Host
+	}
+	return host + "|" + kind
 }
 
 // graphqlRawMessageHasContent reports whether a raw JSON field carries a
@@ -78,7 +92,7 @@ func graphqlRawMessageIsEmptyArray(raw json.RawMessage) bool {
 	return bytes.Equal(trimmed, []byte("[]"))
 }
 
-func (m *GraphQLAdvanced) testBatching(ctx context.Context, endpoint string) int {
+func (m *GraphQLAdvanced) testBatching(ctx context.Context, endpoint string, seen map[string]bool) int {
 	testURL := endpoint
 
 	// Test array batching payload
@@ -101,8 +115,10 @@ func (m *GraphQLAdvanced) testBatching(ctx context.Context, endpoint string) int
 		return 0
 	}
 
-	// A vulnerable batched response is a JSON array with >= 2 entries, each
-	// carrying non-empty data and none carrying errors.
+	// A batched response is a JSON array with >= 2 entries, each carrying
+	// non-empty data that actually executed the batched query (a __typename
+	// field per entry) and none carrying errors. Array-shaped JSON that is
+	// not a real batch result must not count.
 	if resp.StatusCode == http.StatusOK {
 		var results []struct {
 			Data   json.RawMessage `json:"data"`
@@ -114,19 +130,34 @@ func (m *GraphQLAdvanced) testBatching(ctx context.Context, endpoint string) int
 			for _, entry := range results {
 				if !graphqlRawMessageHasContent(entry.Data) {
 					allData = false
+					continue
+				}
+				var dataObj map[string]any
+				if err := json.Unmarshal(entry.Data, &dataObj); err != nil || dataObj == nil {
+					allData = false
+					continue
+				}
+				if _, ok := dataObj["__typename"]; !ok {
+					allData = false
 				}
 				if graphqlRawMessageHasContent(entry.Errors) && !graphqlRawMessageIsEmptyArray(entry.Errors) {
 					anyErrors = true
 				}
 			}
 			if allData && !anyErrors {
+				key := graphqlAdvancedFindingKey(testURL, "batching")
 				m.Mu.Lock()
-				m.RecordPoC(req, []byte(payload), fmt.Sprintf("GraphQL Query Batching Enabled at: %s", testURL))
-				m.results = append(m.results, GraphQLAdvancedResult{
-					Target: m.Target,
-					Status: "vulnerable",
-					Detail: fmt.Sprintf("GraphQL endpoint supports query batching (potential DoS/Brute Force): %s", testURL),
-				})
+				if !seen[key] {
+					seen[key] = true
+					m.RecordPoC(req, []byte(payload), fmt.Sprintf("GraphQL Query Batching Enabled at: %s", testURL))
+					m.results = append(m.results, GraphQLAdvancedResult{
+						Target: m.Target,
+						// Query batching is a spec feature; its abuse potential is
+						// configuration-dependent, so report it as informational.
+						Status: "informational",
+						Detail: fmt.Sprintf("GraphQL endpoint supports query batching (potential DoS/Brute Force): %s", testURL),
+					})
+				}
 				m.Mu.Unlock()
 			}
 		}
@@ -134,7 +165,7 @@ func (m *GraphQLAdvanced) testBatching(ctx context.Context, endpoint string) int
 	return 1
 }
 
-func (m *GraphQLAdvanced) testDeepQuery(ctx context.Context, endpoint string) int {
+func (m *GraphQLAdvanced) testDeepQuery(ctx context.Context, endpoint string, seen map[string]bool) int {
 	testURL := endpoint
 
 	// Test alias batching / deep query using aliases
@@ -173,13 +204,20 @@ func (m *GraphQLAdvanced) testDeepQuery(ctx context.Context, endpoint string) in
 				}
 			}
 			if allAliases {
+				key := graphqlAdvancedFindingKey(testURL, "aliases")
 				m.Mu.Lock()
-				m.RecordPoC(req, []byte(payload), fmt.Sprintf("GraphQL Alias Batching / Deep Query Allowed at: %s", testURL))
-				m.results = append(m.results, GraphQLAdvancedResult{
-					Target: m.Target,
-					Status: "vulnerable",
-					Detail: fmt.Sprintf("GraphQL endpoint does not restrict query complexity/aliases: %s", testURL),
-				})
+				if !seen[key] {
+					seen[key] = true
+					m.RecordPoC(req, []byte(payload), fmt.Sprintf("GraphQL Alias Batching / Deep Query Allowed at: %s", testURL))
+					m.results = append(m.results, GraphQLAdvancedResult{
+						Target: m.Target,
+						// Serving multiple aliases is spec behavior; missing
+						// complexity limits are a hardening gap, not a confirmed
+						// vulnerability.
+						Status: "informational",
+						Detail: fmt.Sprintf("GraphQL endpoint does not restrict query complexity/aliases: %s", testURL),
+					})
+				}
 				m.Mu.Unlock()
 			}
 		}

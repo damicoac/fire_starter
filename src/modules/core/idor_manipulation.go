@@ -47,21 +47,21 @@ func (m *IDORManipulation) SetThreads(count int) {
 	m.MaxThreads = count
 }
 
-func (m *IDORManipulation) getBaselineLength(ctx context.Context, u *url.URL) (int, error) {
+func (m *IDORManipulation) getBaselineBody(ctx context.Context, u *url.URL) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
 	if err != nil {
-		return 0, err
+		return "", err
 	}
 	resp, err := m.Client.Do(req)
 	if err != nil {
-		return 0, err
+		return "", err
 	}
 	defer resp.Body.Close()
 	body, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	if err != nil {
-		return 0, err
+		return "", err
 	}
-	return len(body), nil
+	return string(body), nil
 }
 
 // idorIds are ID-shaped replacement values. Role names such as "admin" are
@@ -89,7 +89,7 @@ func (m *IDORManipulation) Execute(ctx context.Context) ([]IDORManipulationResul
 		return m.results, err
 	}
 
-	baselineLen, err := m.getBaselineLength(ctx, parsedURL)
+	baselineBody, err := m.getBaselineBody(ctx, parsedURL)
 	if err != nil {
 		m.results = append(m.results, IDORManipulationResult{
 			Target: m.Target,
@@ -98,6 +98,8 @@ func (m *IDORManipulation) Execute(ctx context.Context) ([]IDORManipulationResul
 		})
 		return m.results, nil
 	}
+	baselineLen := len(baselineBody)
+	baselineNorm := normalizedCompactLower(baselineBody)
 	if baselineLen <= 0 {
 		// A zero-length baseline makes the length-differential judge fire on
 		// any non-empty 200; skip judging entirely rather than risk a false
@@ -127,7 +129,7 @@ func (m *IDORManipulation) Execute(ctx context.Context) ([]IDORManipulationResul
 				case <-ctx.Done():
 					return
 				default:
-					m.testPayload(ctx, parsedURL, payload, baselineLen)
+					m.testPayload(ctx, parsedURL, payload, baselineNorm)
 				}
 			}
 		}()
@@ -160,15 +162,22 @@ func (m *IDORManipulation) Execute(ctx context.Context) ([]IDORManipulationResul
 	}
 }
 
-func (m *IDORManipulation) testPayload(ctx context.Context, u *url.URL, payload string, baselineLen int) {
+// idorValidationNoise are response fragments that describe an invalid lookup
+// (validation noise) rather than an object representation; they veto the
+// differential judge.
+var idorValidationNoise = []string{
+	"invalid id", "record not found", "not found", "does not exist", "no such",
+}
+
+func (m *IDORManipulation) testPayload(ctx context.Context, u *url.URL, payload string, baselineNorm string) {
 	m.Mu.Lock()
 	m.testedCount++
 	m.Mu.Unlock()
 
 	query := u.Query()
 	testURL := *u
+	hasIDKey := false
 	if len(query) > 0 {
-		hasIDKey := false
 		for _, key := range idorIDKeys {
 			if _, ok := query[key]; ok {
 				hasIDKey = true
@@ -220,32 +229,89 @@ func (m *IDORManipulation) testPayload(ctx context.Context, u *url.URL, payload 
 	m.Mu.Unlock()
 
 	bodyLower := strings.ToLower(string(bodyBytes))
-	// Gate the length-only judge: skip auth walls, 200-wrapped error
-	// envelopes, and bodies without positive object markers.
+	// Gate the differential judge: skip auth walls, 200-wrapped error
+	// envelopes, validation-noise lookups, and bodies without positive
+	// object markers.
 	if authzLoginWallDetected(bodyLower) || authzErrorEnvelope(bodyLower) ||
-		!authzPositiveObjectMarkers(bodyLower) || strings.Contains(bodyLower, "invalid id") {
+		!authzPositiveObjectMarkers(bodyLower) || containsAnyToken(bodyLower, idorValidationNoise) {
 		return
 	}
 
-	// Differential analysis: does it differ significantly from the baseline?
-	diff := len(bodyBytes) - baselineLen
-	if diff < 0 {
-		diff = -diff
+	if !hasIDKey {
+		// Fallback dual-injection (arbitrary canonical parameters added to a
+		// URL that addresses no object) can only ever produce length-only
+		// noise: drop length-only judgments from it entirely.
+		return
 	}
 
-	// If difference is > 10% or > 500 bytes, consider it an IDOR
-	isSignificantlyDifferent := float64(diff)/float64(baselineLen+1) > 0.1 || diff > 500
-
-	if isSignificantlyDifferent {
-		m.Mu.Lock()
-		m.RecordPoC(req, nil, "Potential IDOR found. Reached object with ID "+payload+" at "+testURL.String())
-		m.results = append(m.results, IDORManipulationResult{
-			Target: m.Target,
-			Status: "vulnerable",
-			Detail: "Potential IDOR found. Reached object with ID " + payload + " at " + testURL.String(),
-		})
-		m.Mu.Unlock()
+	// Normalized-body differential: the probe body must differ from the
+	// baseline after whitespace-insensitive normalization. A length-only
+	// judge was dropped — dynamic content (timestamps, nonces) made it fire
+	// on every volatile response.
+	normProbe := normalizedCompactLower(string(bodyBytes))
+	if normProbe == baselineNorm {
+		return
 	}
+
+	// Reproduce the differential with a second request carrying a different
+	// mutated value: genuine object access reproduces across ID values; a
+	// one-off validation artifact does not.
+	confirmPayload := ""
+	for _, candidate := range idorIds {
+		if candidate != payload {
+			confirmPayload = candidate
+			break
+		}
+	}
+	if !m.idorDifferentialReproduced(ctx, u, confirmPayload, baselineNorm) {
+		return
+	}
+
+	m.Mu.Lock()
+	m.RecordPoC(req, nil, "Potential IDOR found. Reached object with ID "+payload+" at "+testURL.String())
+	m.results = append(m.results, IDORManipulationResult{
+		Target: m.Target,
+		Status: "vulnerable",
+		Detail: "Potential IDOR found. Reached object with ID " + payload + " at " + testURL.String() + " (differential reproduced with a different mutated value)",
+	})
+	m.Mu.Unlock()
+}
+
+// idorDifferentialReproduced re-issues the probe with a different mutated ID
+// value and reports whether the normalized-body differential against the
+// baseline reproduces (and the response passes the same gates).
+func (m *IDORManipulation) idorDifferentialReproduced(ctx context.Context, u *url.URL, confirmPayload, baselineNorm string) bool {
+	query := u.Query()
+	for _, key := range idorIDKeys {
+		if _, ok := query[key]; ok {
+			query.Set(key, confirmPayload)
+		}
+	}
+	confirmURL := *u
+	confirmURL.RawQuery = query.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", confirmURL.String(), nil)
+	if err != nil {
+		return false
+	}
+	resp, err := m.Client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	body, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
+	if err != nil {
+		return false
+	}
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	bodyLower := strings.ToLower(string(body))
+	if authzLoginWallDetected(bodyLower) || authzErrorEnvelope(bodyLower) ||
+		!authzPositiveObjectMarkers(bodyLower) || containsAnyToken(bodyLower, idorValidationNoise) {
+		return false
+	}
+	return normalizedCompactLower(string(body)) != baselineNorm
 }
 
 func init() {

@@ -26,15 +26,17 @@ type ResponseBaseline struct {
 // HttpVerbTampering executes the http_verb_tampering security technique.
 type HttpVerbTampering struct {
 	BaseModule
-	Target          string
-	results         []HttpVerbTamperingResult
-	baselineGet     ResponseBaseline
-	baselineBogus   ResponseBaseline
-	baselineGetOK   bool
-	baselineBogusOK bool
-	allowMutation   bool
-	probeErrCount   int
-	probeCount      int
+	Target              string
+	results             []HttpVerbTamperingResult
+	baselineGet         ResponseBaseline
+	baselineGetStable   ResponseBaseline
+	baselineBogus       ResponseBaseline
+	baselineGetOK       bool
+	baselineGetStableOK bool
+	baselineBogusOK     bool
+	allowMutation       bool
+	probeErrCount       int
+	probeCount          int
 }
 
 // NewHttpVerbTampering creates a new instance.
@@ -88,6 +90,10 @@ func isRoutinelyUnauthenticated(verb string) bool {
 
 func (m *HttpVerbTampering) runBaseline(ctx context.Context) {
 	m.baselineGet, m.baselineGetOK = m.fetchBaseline(ctx, "GET")
+	// Second GET sample: a stability control. Only a post-verb GET that
+	// differs from BOTH stable samples counts as a real state change, so a
+	// volatile page cannot fake one.
+	m.baselineGetStable, m.baselineGetStableOK = m.fetchBaseline(ctx, "GET")
 	m.baselineBogus, m.baselineBogusOK = m.fetchBaseline(ctx, "JEAN_BOGUS_VERB")
 }
 
@@ -221,10 +227,13 @@ func (m *HttpVerbTampering) summarize() {
 // state-changing verb actually modified the resource.
 func (m *HttpVerbTampering) resourceChanged(ctx context.Context) bool {
 	after, ok := m.fetchBaseline(ctx, "GET")
-	if !ok {
+	if !ok || !m.baselineGetStableOK {
+		// Without the second stable sample there is no volatility control;
+		// refuse to call a difference a state change.
 		return false
 	}
-	return after.StatusCode != m.baselineGet.StatusCode || after.Length != m.baselineGet.Length
+	return (after.StatusCode != m.baselineGet.StatusCode || after.Length != m.baselineGet.Length) &&
+		(after.StatusCode != m.baselineGetStable.StatusCode || after.Length != m.baselineGetStable.Length)
 }
 
 func (m *HttpVerbTampering) testVerb(ctx context.Context, verb string) {
@@ -308,8 +317,11 @@ func (m *HttpVerbTampering) testVerb(ctx context.Context, verb string) {
 	}
 
 	// 3. WAF / Filter Bypass (Case Sensitivity)
+	// The mixed-case verb must diverge from BOTH the GET baseline and the
+	// bogus-verb baseline: servers that answer any unknown/mixed-case verb
+	// with the same catch-all 2xx response are normalizing, not bypassing.
 	if !isVulnerable && verb != verbUpper && (resp.StatusCode >= 200 && resp.StatusCode < 300) && respLength > 0 {
-		if m.baselineGet.StatusCode != resp.StatusCode {
+		if m.baselineGet.StatusCode != resp.StatusCode && m.baselineBogus.StatusCode != resp.StatusCode {
 			// This indicates the mixed-case verb bypassed whatever was blocking the standard GET
 			isVulnerable = true
 			detail = fmt.Sprintf("Possible filter bypass. Mixed-case verb %s returned %d (GET was %d).", verb, resp.StatusCode, m.baselineGet.StatusCode)

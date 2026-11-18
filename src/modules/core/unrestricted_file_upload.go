@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"sync"
 	"time"
 )
@@ -83,7 +84,7 @@ func (m *UnrestrictedFileUpload) Execute(ctx context.Context) ([]UnrestrictedFil
 		m.results = append(m.results, UnrestrictedFileUploadResult{
 			Target: m.Target,
 			Status: "inconclusive",
-			Detail: "No upload endpoint confirmed acceptance of a dangerous file type on tested payloads.",
+			Detail: "No upload endpoint on the tested paths accepted a dangerous file type with retrievable storage.",
 		})
 		m.Mu.Unlock()
 	}
@@ -96,8 +97,12 @@ func (m *UnrestrictedFileUpload) testUpload(ctx context.Context, endpoint, filen
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 
-	// Create form file
-	part, err := writer.CreateFormFile("file", filename)
+	// Create the file part with the declared MIME type as an explicit
+	// Content-Type header (CreateFormFile always sends octet-stream).
+	header := textproto.MIMEHeader{}
+	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename=%q`, filename))
+	header.Set("Content-Type", mimeType)
+	part, err := writer.CreatePart(header)
 	if err != nil {
 		return
 	}
@@ -126,9 +131,11 @@ func (m *UnrestrictedFileUpload) testUpload(ctx context.Context, endpoint, filen
 		return
 	}
 
-	// If it returns 200/201 and does not reject the file type, report a finding.
-	// The rejection vocabulary covers differently-worded validators
-	// ("file extension rejected", "unsupported file type", "upload failed", ...).
+	// A 200/201 without rejection vocabulary only shows acceptance: flag the
+	// upload as vulnerable only when a follow-up GET of the served path
+	// returns the exact canary content (storage proof). The rejection
+	// vocabulary covers differently-worded validators ("file extension
+	// rejected", "unsupported file type", "upload failed", ...).
 	rejectionTokens := []string{
 		"invalid", "error", "not allowed", "not permitted", "unsupported",
 		"rejected", "denied", "forbidden", "disallowed", "failed",
@@ -136,15 +143,55 @@ func (m *UnrestrictedFileUpload) testUpload(ctx context.Context, endpoint, filen
 	if (resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated) &&
 		!containsAnyToken(string(respBody), rejectionTokens) {
 
-		m.Mu.Lock()
-		m.RecordPoC(req, body.Bytes(), fmt.Sprintf("Successfully uploaded dangerous file type (%s) to %s", filename, testURL))
-		m.results = append(m.results, UnrestrictedFileUploadResult{
-			Target: m.Target,
-			Status: "vulnerable",
-			Detail: fmt.Sprintf("Possible unrestricted file upload detected at %s using %s", testURL, filename),
-		})
-		m.Mu.Unlock()
+		if m.storageVerified(ctx, endpoint, filename, content) {
+			m.Mu.Lock()
+			m.RecordPoC(req, body.Bytes(), fmt.Sprintf("Uploaded dangerous file type (%s) to %s and retrieved the stored canary", filename, testURL))
+			m.results = append(m.results, UnrestrictedFileUploadResult{
+				Target: m.Target,
+				Status: "vulnerable",
+				Detail: fmt.Sprintf("Unrestricted file upload at %s: %s was accepted and served back with its original content", testURL, filename),
+			})
+			m.Mu.Unlock()
+		} else {
+			m.Mu.Lock()
+			m.results = append(m.results, UnrestrictedFileUploadResult{
+				Target: m.Target,
+				Status: "inconclusive",
+				Detail: fmt.Sprintf("Upload of %s to %s returned HTTP %d without a rejection, but the stored file could not be retrieved; storage unverified", filename, testURL, resp.StatusCode),
+			})
+			m.Mu.Unlock()
+		}
 	}
+}
+
+// storageVerified attempts to retrieve the uploaded canary from the paths a
+// typical server would serve it from and requires the exact canary content to
+// come back, proving the file was actually stored.
+func (m *UnrestrictedFileUpload) storageVerified(ctx context.Context, endpoint, filename string, canary []byte) bool {
+	candidates := []string{
+		m.Target + endpoint + "/" + filename,
+		m.Target + "/uploads/" + filename,
+		m.Target + "/" + filename,
+	}
+	for _, u := range candidates {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			continue
+		}
+		resp, err := m.Client.Do(req)
+		if err != nil {
+			continue
+		}
+		body, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
+		resp.Body.Close()
+		if err != nil || resp.StatusCode < 200 || resp.StatusCode > 299 {
+			continue
+		}
+		if bytes.Contains(body, canary) {
+			return true
+		}
+	}
+	return false
 }
 
 func init() {

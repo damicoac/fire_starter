@@ -75,7 +75,7 @@ func (m *GoogleDorking) Execute(ctx context.Context) ([]GoogleDorkingResult, err
 				case <-ctx.Done():
 					return
 				default:
-					m.testDork(ctx, query)
+					m.testDork(ctx, query, targetDomain)
 					// Small delay to prevent instant ban
 					select {
 					case <-ctx.Done():
@@ -102,7 +102,7 @@ func (m *GoogleDorking) Execute(ctx context.Context) ([]GoogleDorkingResult, err
 	}
 }
 
-func (m *GoogleDorking) testDork(ctx context.Context, query string) {
+func (m *GoogleDorking) testDork(ctx context.Context, query, targetDomain string) {
 	// Send to DuckDuckGo HTML version to avoid Google's strict Captcha, as it's easier to parse for a simple module
 	searchURL := "https://html.duckduckgo.com/html/?q=" + url.QueryEscape(query)
 
@@ -143,10 +143,22 @@ func (m *GoogleDorking) testDork(ctx context.Context, query string) {
 		}
 	}
 
-	// Result links present means exposures were found; a snippet that merely
-	// contains the text "No results." must not downgrade a real result page.
+	// A dork "hit" requires at least one extracted result-link host that
+	// suffix-matches the target domain; indexed existence is an inventory
+	// note, not a confirmed vulnerability.
 	if strings.Contains(bodyStr, "result__url") {
-		m.addResult("Search engine found results for dork: "+query, statusFromEvidence(EvidenceConfirmed, false))
+		matchedHost := ""
+		for _, host := range extractResultLinkHosts(bodyStr) {
+			if hostSuffixMatches(host, targetDomain) {
+				matchedHost = host
+				break
+			}
+		}
+		if matchedHost != "" {
+			m.addResult(fmt.Sprintf("Search engine found results for dork %s (result link host %s matches the target domain); review the indexed paths manually", query, matchedHost), "informational")
+		} else {
+			m.addResult("Search engine returned result links but none matched the target domain for dork "+query, statusFromEvidence(EvidenceWeak, false))
+		}
 		return
 	}
 
@@ -168,6 +180,70 @@ func (m *GoogleDorking) addResult(detail, status string) {
 		Status: status,
 		Detail: detail,
 	})
+}
+
+// extractResultLinkHosts pulls href targets out of result__url blocks and
+// returns their lowercased hostnames. The href attribute may precede or
+// follow the result__url class marker inside the same anchor tag; the
+// closest href on either side wins so a neighbouring anchor's link is never
+// attributed to this result block.
+func extractResultLinkHosts(body string) []string {
+	parseHost := func(s string) (string, bool) {
+		if u, err := url.Parse(s); err == nil && u.Hostname() != "" {
+			return strings.ToLower(u.Hostname()), true
+		}
+		return "", false
+	}
+	firstHostAfter := func(s string) (string, bool) {
+		hIdx := strings.Index(s, `href="`)
+		if hIdx < 0 {
+			return "", false
+		}
+		rest := s[hIdx+len(`href="`):]
+		end := strings.Index(rest, `"`)
+		if end < 0 {
+			return "", false
+		}
+		return parseHost(rest[:end])
+	}
+
+	var hosts []string
+	for i := 0; i < len(body); {
+		idx := strings.Index(body[i:], "result__url")
+		if idx < 0 {
+			break
+		}
+		start := i + idx
+
+		after := body[start:]
+		if len(after) > 512 {
+			after = after[:512]
+		}
+		if host, ok := firstHostAfter(after); ok {
+			hosts = append(hosts, host)
+			i = start + len("result__url")
+			continue
+		}
+
+		beforeStart := start - 256
+		if beforeStart < 0 {
+			beforeStart = 0
+		}
+		if last := strings.LastIndex(body[beforeStart:start], `href="`); last >= 0 {
+			if host, ok := firstHostAfter(body[beforeStart+last:]); ok {
+				hosts = append(hosts, host)
+			}
+		}
+		i = start + len("result__url")
+	}
+	return hosts
+}
+
+// hostSuffixMatches reports whether a result-link host is the target domain
+// itself or lives under it.
+func hostSuffixMatches(host, domain string) bool {
+	host = strings.TrimSuffix(host, ".")
+	return host == domain || strings.HasSuffix(host, "."+domain)
 }
 
 func init() {

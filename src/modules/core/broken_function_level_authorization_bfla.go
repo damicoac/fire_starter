@@ -107,6 +107,16 @@ func (m *BrokenFunctionLevelAuthorizationBfla) Execute(ctx context.Context) ([]B
 		})
 		return m.results, nil
 	}
+	if baselineLen >= 500 {
+		// A large baseline defeats the >500-byte differential: noise on
+		// unprivileged pages can reach the threshold. Skip judging.
+		m.results = append(m.results, BrokenFunctionLevelAuthorizationBflaResult{
+			Target: m.Target,
+			Status: statusFromEvidence(EvidenceWeak, false),
+			Detail: formatEvidenceDetail(EvidenceWeak, fmt.Sprintf("Baseline response body is large (%d bytes); length-differential judging is unreliable.", baselineLen)),
+		})
+		return m.results, nil
+	}
 
 	jobs := make(chan string, len(adminPaths))
 	for _, p := range adminPaths {
@@ -200,9 +210,10 @@ func (m *BrokenFunctionLevelAuthorizationBfla) testPath(ctx context.Context, pat
 	if authzLoginWallDetected(bodyLower) || authzErrorEnvelope(bodyLower) {
 		return
 	}
-	// Generic slugs (/manage, /config) exist on countless unprivileged pages;
+	// Generic slugs (/manage, /config) and admin-path guesses (/admin,
+	// /api/admin, /administrator) exist on countless unprivileged pages;
 	// require actual administrative content before flagging them.
-	if (path == "/manage" || path == "/config") && !authzAdminContentMarkers(bodyLower) {
+	if authzAdminPath(path) && !authzAdminContentMarkers(bodyLower) {
 		return
 	}
 
@@ -214,6 +225,12 @@ func (m *BrokenFunctionLevelAuthorizationBfla) testPath(ctx context.Context, pat
 	isSignificantlyDifferent := float64(diff)/float64(baselineLen+1) > 0.1 || diff > 500
 
 	if isSignificantlyDifferent {
+		// The condition must reproduce on a second, independent request
+		// before the path is flagged: one-off response noise must not create
+		// a finding.
+		if !m.bflaReproduces(ctx, path, baselineLen) {
+			return
+		}
 		m.Mu.Lock()
 		m.RecordPoC(req, nil, "Unauthenticated access to administrative endpoint: "+testURL)
 		m.results = append(m.results, BrokenFunctionLevelAuthorizationBflaResult{
@@ -223,6 +240,53 @@ func (m *BrokenFunctionLevelAuthorizationBfla) testPath(ctx context.Context, pat
 		})
 		m.Mu.Unlock()
 	}
+}
+
+// authzAdminPath reports whether the path is an admin-slug guess that
+// requires administrative content markers before it can be flagged.
+func authzAdminPath(path string) bool {
+	switch path {
+	case "/manage", "/config", "/admin", "/api/admin", "/api/v1/admin", "/administrator":
+		return true
+	}
+	return false
+}
+
+// bflaCandidate evaluates one probe response against the BFLA finding gates:
+// HTTP 200, no login wall, no error envelope, admin content on gated slugs,
+// and a significant length differential versus the baseline.
+func (m *BrokenFunctionLevelAuthorizationBfla) bflaCandidate(bodyBytes []byte, path string, baselineLen int) bool {
+	bodyLower := strings.ToLower(string(bodyBytes))
+	if authzLoginWallDetected(bodyLower) || authzErrorEnvelope(bodyLower) {
+		return false
+	}
+	if authzAdminPath(path) && !authzAdminContentMarkers(bodyLower) {
+		return false
+	}
+	diff := len(bodyBytes) - baselineLen
+	if diff < 0 {
+		diff = -diff
+	}
+	return float64(diff)/float64(baselineLen+1) > 0.1 || diff > 500
+}
+
+// bflaReproduces re-issues the probe request and requires the full finding
+// condition to hold again.
+func (m *BrokenFunctionLevelAuthorizationBfla) bflaReproduces(ctx context.Context, path string, baselineLen int) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.Target+path, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := m.Client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	body, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return false
+	}
+	return m.bflaCandidate(body, path, baselineLen)
 }
 
 func init() {

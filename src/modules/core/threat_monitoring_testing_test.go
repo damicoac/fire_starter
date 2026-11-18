@@ -61,8 +61,10 @@ func TestThreatMonitoringVulnerable(t *testing.T) {
 		t.Fatalf("Expected results, got 0")
 	}
 
-	if results[0].Status != "vulnerable" {
-		t.Errorf("Expected status vulnerable (no monitoring detected), got %s", results[0].Status)
+	// A clean burst is an observation ("no monitoring detected"), not a
+	// confirmed vulnerability.
+	if results[0].Status != "informational" {
+		t.Errorf("Expected status informational (no monitoring detected), got %s", results[0].Status)
 	}
 }
 

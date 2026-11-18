@@ -331,3 +331,52 @@ func TestMassAssignmentInjection__Execute_HTTPError(t *testing.T) {
 	ctx := context.Background()
 	_, _ = module.Execute(ctx)
 }
+
+type massAssignmentFailingBody struct{}
+
+func (massAssignmentFailingBody) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+func (massAssignmentFailingBody) Close() error             { return nil }
+
+func TestMassAssignmentInjection_Execute_BodyReadErrorCountedAsProbeFailure(t *testing.T) {
+	// A body-read failure on a mutation probe is a probe failure: it must be
+	// counted and surface as the inconclusive failure summary, never judged on
+	// a truncated/empty body.
+	callCount := 0
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			callCount++
+			if callCount <= 2 {
+				// Baseline and control probes succeed.
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(bytes.NewBufferString(`{"username": "firestarter"}`)),
+					Header:     make(http.Header),
+				}
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       massAssignmentFailingBody{},
+				Header:     make(http.Header),
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewMassAssignmentInjection("http://example.com")
+	module.SetThreads(1)
+
+	result, err := module.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected exactly 1 failure-summary result, got %d: %+v", len(result), result)
+	}
+	if result[0].Status != "inconclusive" {
+		t.Fatalf("expected inconclusive failure summary, got %q (%s)", result[0].Status, result[0].Detail)
+	}
+	if !strings.Contains(result[0].Detail, "failed") {
+		t.Fatalf("expected detail to name probe failures, got %q", result[0].Detail)
+	}
+}

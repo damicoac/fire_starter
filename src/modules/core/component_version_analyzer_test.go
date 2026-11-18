@@ -23,7 +23,9 @@ func TestComponentVersionAnalyzer(t *testing.T) {
 		}
 		if r.URL.Path == "/package.json" {
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"name": "test-app", "version": "1.0.0"}`))
+			// Confirmed exposure requires real manifest structure
+			// (dependencies/devDependencies/scripts), not a bare name/version.
+			_, _ = w.Write([]byte(`{"name": "test-app", "version": "1.0.0", "dependencies": {"express": "^4.17.1"}}`))
 			return
 		}
 		if r.URL.Path == "/.env" {
@@ -174,7 +176,18 @@ func TestComponentVersionAnalyzer_Execute_CanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	_, _ = analyzer.Execute(ctx)
+	results, err := analyzer.Execute(ctx)
+	if err == nil {
+		t.Fatal("Expected context.Canceled error on cancelled run, got nil")
+	}
+	if err != context.Canceled {
+		t.Fatalf("Expected context.Canceled, got %v", err)
+	}
+	for _, r := range results {
+		if r.Status == "vulnerable" {
+			t.Errorf("Unexpected vulnerable row on cancelled run: %+v", r)
+		}
+	}
 }
 
 func TestComponentVersionAnalyzer_Execute_InvalidURL(t *testing.T) {

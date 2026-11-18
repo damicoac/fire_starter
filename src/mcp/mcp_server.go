@@ -137,7 +137,7 @@ func (s *MCPServer) registerBuiltinTools() {
 	// 3. fire_starter_get_vulnerabilities
 	s.RegisterTool(ToolDescriptor{
 		Name:        "fire_starter_get_vulnerabilities",
-		Description: "Query confirmed and candidate vulnerability findings from assessment records",
+		Description: "Query confirmed and informational vulnerability findings from assessment records",
 	}, func(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 		targetFilter, _ := args["target"].(string)
 		if targetFilter != "" {
@@ -153,7 +153,7 @@ func (s *MCPServer) registerBuiltinTools() {
 				}
 				return map[string]interface{}{"vulnerabilities": []interface{}{}}, nil
 			}
-			return map[string]interface{}{"vulnerabilities": vulns}, nil
+			return map[string]interface{}{"vulnerabilities": matrix.FilterResolvedVulnerabilities(vulns)}, nil
 		}
 
 		vulns, err := matrix.GetVulnerabilities()
@@ -168,7 +168,7 @@ func (s *MCPServer) registerBuiltinTools() {
 			}
 			return map[string]interface{}{"vulnerabilities": []interface{}{}}, nil
 		}
-		return map[string]interface{}{"vulnerabilities": vulns}, nil
+		return map[string]interface{}{"vulnerabilities": matrix.FilterResolvedVulnerabilities(vulns)}, nil
 	})
 
 	// 4. fire_starter_execute_module and fire_starter_execute_tool

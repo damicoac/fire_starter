@@ -531,3 +531,66 @@ func TestEpisodicMemoryAndTokenWiring(t *testing.T) {
 		t.Fatalf("unexpected memory query result: %s", results[0].Entry.Content)
 	}
 }
+
+// TestLogHelperVulnerabilityConfirmRequiresEvidence pins the Phase 0 gate: a
+// helper may not mark a finding confirmed without at least one successful
+// technique-tool run in the session, while informational stays ungated.
+func TestLogHelperVulnerabilityConfirmRequiresEvidence(t *testing.T) {
+	matrix.ResetDBForTest()
+	if _, err := matrix.InitDB(filepath.Join(t.TempDir(), "fire_starter.db")); err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+
+	args := func(status string) map[string]any {
+		return map[string]any{
+			"target":      "app.example.com",
+			"finding":     "Reflected XSS in search parameter",
+			"test_code":   "GET /search?q=<script> HTTP/200 reflected",
+			"exploitable": "yes",
+			"status":      status,
+			"severity":    "high",
+		}
+	}
+
+	env := &agentEnv{}
+	vulnID := matrix.GenerateVulnID("app.example.com", "Reflected XSS in search parameter")
+
+	if got := logHelperVulnerability(env, vulnID, args(matrix.VulnerabilityStatusConfirmed)); !strings.Contains(got, "cannot mark confirmed") {
+		t.Errorf("confirm without evidence = %q, want gate refusal", got)
+	}
+
+	env.evidenceToolRuns = 1
+	if got := logHelperVulnerability(env, vulnID, args(matrix.VulnerabilityStatusConfirmed)); strings.Contains(got, "TOOL_ERROR") {
+		t.Errorf("confirm with evidence = %q, want success", got)
+	}
+
+	env.evidenceToolRuns = 0
+	infoArgs := args(matrix.VulnerabilityStatusInformational)
+	infoArgs["exploitable"] = "no"
+	infoArgs["severity"] = matrix.VulnerabilitySeverityInformational
+	if got := logHelperVulnerability(env, vulnID, infoArgs); strings.Contains(got, "TOOL_ERROR") {
+		t.Errorf("informational without evidence = %q, want success", got)
+	}
+}
+
+// TestDispatchTechniqueTool_CachedPayloadCountsAsEvidence pins the helper
+// dedupe path: an already-successfully-executed payload returns a cached
+// evidence summary and satisfies the confirm gate instead of a hard
+// TOOL_ERROR that would starve the helper of verification evidence.
+func TestDispatchTechniqueTool_CachedPayloadCountsAsEvidence(t *testing.T) {
+	hash := "decision_test|" + `{"target":"https://app.example.com"}`
+	env := &agentEnv{
+		initialTarget: "app.example.com",
+		currentTarget: "app.example.com",
+		payloadHashes: map[string]bool{hash: true},
+	}
+	call := fantasy.ToolCallContent{ToolName: "decision_test", Input: `{"target":"https://app.example.com"}`}
+
+	res := dispatchTechniqueTool(context.Background(), env, call, true)
+	if strings.Contains(res, "TOOL_ERROR") {
+		t.Errorf("cached payload in helper mode = %q, want cached-evidence summary", res)
+	}
+	if env.evidenceToolRuns != 1 {
+		t.Errorf("evidenceToolRuns = %d, want 1 (cached success counts once)", env.evidenceToolRuns)
+	}
+}

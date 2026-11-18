@@ -48,12 +48,52 @@ var xpathPayloads = []string{
 	"'] | //user/* [ '1'='1",
 }
 
+// fetchBaseline performs the payload-free request whose body serves as the
+// differential baseline: an error marker already present without any payload
+// is not injection evidence.
+func (m *XpathInjectionTesting) fetchBaseline(ctx context.Context, u *url.URL) (string, bool) {
+	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+	if err != nil {
+		return "", false
+	}
+	resp, err := m.Client.Do(req)
+	if err != nil {
+		return "", false
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
+	if err != nil {
+		return "", false
+	}
+	return string(bodyBytes), true
+}
+
+// containsXPathErrorMarker reports whether a body carries the XPath error
+// signature conjunction.
+func containsXPathErrorMarker(bodyLower string) bool {
+	return strings.Contains(bodyLower, "xpath") &&
+		(strings.Contains(bodyLower, "syntax error") || strings.Contains(bodyLower, "invalid expression"))
+}
+
 func (m *XpathInjectionTesting) Execute(ctx context.Context) ([]XpathInjectionTestingResult, error) {
 	m.results = make([]XpathInjectionTestingResult, 0)
 
 	parsedURL, err := url.Parse(m.Target)
 	if err != nil {
 		return m.results, err
+	}
+
+	baselineBody, baselineOK := m.fetchBaseline(ctx, parsedURL)
+	if !baselineOK {
+		m.Mu.Lock()
+		m.results = append(m.results, XpathInjectionTestingResult{
+			Target: m.Target,
+			Status: "inconclusive",
+			Detail: "Baseline request failed (transport or read error); XPath injection could not be assessed.",
+		})
+		m.Mu.Unlock()
+		return m.results, nil
 	}
 
 	jobs := make(chan string, len(xpathPayloads))
@@ -63,8 +103,9 @@ func (m *XpathInjectionTesting) Execute(ctx context.Context) ([]XpathInjectionTe
 	close(jobs)
 
 	var wg sync.WaitGroup
+	attempted, failed := 0, 0
 
-	for i := 0; i < m.MaxThreads; i++ {
+	for range m.MaxThreads {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -73,7 +114,14 @@ func (m *XpathInjectionTesting) Execute(ctx context.Context) ([]XpathInjectionTe
 				case <-ctx.Done():
 					return
 				default:
-					m.testPayload(ctx, parsedURL, payload)
+					m.Mu.Lock()
+					attempted++
+					m.Mu.Unlock()
+					if !m.testPayload(ctx, parsedURL, payload, baselineBody) {
+						m.Mu.Lock()
+						failed++
+						m.Mu.Unlock()
+					}
 				}
 			}
 		}()
@@ -87,14 +135,27 @@ func (m *XpathInjectionTesting) Execute(ctx context.Context) ([]XpathInjectionTe
 
 	select {
 	case <-done:
-		return m.results, nil
 	case <-ctx.Done():
 		<-done
 		return m.results, ctx.Err()
 	}
+
+	if attempted > 0 && failed >= attempted {
+		m.Mu.Lock()
+		m.results = append(m.results, XpathInjectionTestingResult{
+			Target: m.Target,
+			Status: "inconclusive",
+			Detail: fmt.Sprintf("All %d probes failed (request or transport errors); XPath injection could not be assessed.", attempted),
+		})
+		m.Mu.Unlock()
+	}
+	return m.results, nil
 }
 
-func (m *XpathInjectionTesting) testPayload(ctx context.Context, u *url.URL, payload string) {
+// testPayload sends one payload probe and judges it against the payload-free
+// baseline. It returns false when the probe itself failed (request build,
+// transport, or body read error).
+func (m *XpathInjectionTesting) testPayload(ctx context.Context, u *url.URL, payload, baselineBody string) bool {
 	query := u.Query()
 	hasParams := len(query) > 0
 
@@ -114,24 +175,27 @@ func (m *XpathInjectionTesting) testPayload(ctx context.Context, u *url.URL, pay
 
 	req, err := http.NewRequestWithContext(ctx, "GET", testURL.String(), nil)
 	if err != nil {
-		return
+		return false
 	}
 
 	resp, err := m.Client.Do(req)
 	if err != nil {
-		return
+		return false
 	}
 	defer resp.Body.Close()
 
 	bodyBytes, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	if err != nil {
-		return
+		return false
 	}
 
 	bodyStr := strings.ToLower(string(bodyBytes))
+	baseLower := strings.ToLower(baselineBody)
 
-	// Common XPath error signatures
-	if strings.Contains(bodyStr, "xpath") && (strings.Contains(bodyStr, "syntax error") || strings.Contains(bodyStr, "invalid expression")) {
+	// Mirror sql_injection_testing.go: the error marker counts only when the
+	// payload-free baseline body does not already carry it (a broken query or
+	// a generic error page is not injection evidence).
+	if containsXPathErrorMarker(bodyStr) && !containsXPathErrorMarker(baseLower) {
 		m.Mu.Lock()
 		m.RecordPoC(req, nil, "XPath Injection detected via error signature with payload: "+payload)
 		m.results = append(m.results, XpathInjectionTestingResult{
@@ -141,6 +205,7 @@ func (m *XpathInjectionTesting) testPayload(ctx context.Context, u *url.URL, pay
 		})
 		m.Mu.Unlock()
 	}
+	return true
 }
 
 func init() {

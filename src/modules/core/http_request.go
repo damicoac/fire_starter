@@ -78,6 +78,12 @@ func (m *HTTPRequestModule) Execute(ctx context.Context) (map[string]any, error)
 
 	respHeaders := make(map[string]string)
 	for k, v := range resp.Header {
+		if k == "Set-Cookie" {
+			// Set-Cookie values contain commas in Expires/Max-Age attributes;
+			// comma-joining would corrupt them. Newlines preserve each header.
+			respHeaders[k] = strings.Join(v, "\n")
+			continue
+		}
 		respHeaders[k] = strings.Join(v, ", ")
 	}
 

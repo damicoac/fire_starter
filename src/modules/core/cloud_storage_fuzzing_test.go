@@ -98,6 +98,85 @@ func TestCloudStorageFuzzing_GCS_ListableBucket(t *testing.T) {
 	}
 }
 
+func TestCloudStorageFuzzing_GCS_NotFoundIsNotAFinding(t *testing.T) {
+	// GCS "exists" is HTTP 200 only: a 404 means the bucket is absent and must
+	// produce no per-bucket finding.
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Body:       io.NopCloser(bytes.NewBufferString(`NoSuchBucket`)),
+				Header:     make(http.Header),
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewCloudStorageFuzzing("http://example.com")
+
+	result, err := module.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	for _, res := range result {
+		if res.Status == "vulnerable" {
+			t.Errorf("404 GCS bucket must not be flagged, got %+v", res)
+		}
+		if strings.Contains(res.Detail, "appears to exist") {
+			t.Errorf("404 must not be reported as an existing bucket, got: %s", res.Detail)
+		}
+	}
+}
+
+func TestCloudStorageFuzzing_GCS_ForbiddenIsAccessDeniedNote(t *testing.T) {
+	// GCS returns 403 for both missing and private buckets: the row must be an
+	// inconclusive access-denied note, never an existence claim.
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			if req.URL.Host == "storage.googleapis.com" {
+				return &http.Response{
+					StatusCode: http.StatusForbidden,
+					Body:       io.NopCloser(bytes.NewBufferString(`AccessDenied`)),
+					Header:     make(http.Header),
+				}
+			}
+			return &http.Response{
+				StatusCode: http.StatusForbidden,
+				Body:       io.NopCloser(bytes.NewBufferString(`AccessDenied`)),
+				Header:     make(http.Header),
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewCloudStorageFuzzing("http://example.com")
+
+	result, err := module.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	foundGCSNote := false
+	for _, res := range result {
+		if res.Status == "vulnerable" {
+			t.Errorf("403 GCS bucket must not be flagged vulnerable, got %+v", res)
+		}
+		if strings.Contains(res.Detail, "GCS") {
+			foundGCSNote = true
+			if res.Status != "inconclusive" {
+				t.Errorf("GCS 403 note must be inconclusive, got %q (%s)", res.Status, res.Detail)
+			}
+			if !strings.Contains(res.Detail, "could not be determined") {
+				t.Errorf("GCS 403 note must not claim existence, got: %s", res.Detail)
+			}
+		}
+	}
+	if !foundGCSNote {
+		t.Errorf("expected at least one GCS access-denied note, got %+v", result)
+	}
+}
+
 func TestCloudStorageFuzzing_Azure_PublicContainer(t *testing.T) {
 	mockTransport := &MockTransport{
 		RoundTripFunc: func(req *http.Request) *http.Response {

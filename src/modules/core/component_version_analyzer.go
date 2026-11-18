@@ -24,6 +24,11 @@ type ComponentVersionAnalyzer struct {
 	Target  string
 	results []ComponentVersionResult
 	seen    map[string]bool
+
+	// active-scan probe counters (guarded by Mu) so an all-failed active
+	// scan can be reported as inconclusive instead of silently clean.
+	scanAttempted int
+	scanFailed    int
 }
 
 func NewComponentVersionAnalyzer(target string) *ComponentVersionAnalyzer {
@@ -39,6 +44,10 @@ func NewComponentVersionAnalyzer(target string) *ComponentVersionAnalyzer {
 func (m *ComponentVersionAnalyzer) Execute(ctx context.Context) ([]ComponentVersionResult, error) {
 	m.results = make([]ComponentVersionResult, 0)
 	m.seen = make(map[string]bool)
+	m.Mu.Lock()
+	m.scanAttempted = 0
+	m.scanFailed = 0
+	m.Mu.Unlock()
 
 	parsedURL, err := url.Parse(m.Target)
 	if err != nil {
@@ -62,9 +71,44 @@ func (m *ComponentVersionAnalyzer) Execute(ctx context.Context) ([]ComponentVers
 			}
 		}(file)
 	}
-	wg.Wait()
 
-	return m.results, nil
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// The done channel may win the select even when the run was
+		// cancelled; surface cancellation instead of a result.
+		if ctx.Err() != nil {
+			return m.results, ctx.Err()
+		}
+		m.appendInconclusiveIfAllProbesFailed()
+		return m.results, nil
+	case <-ctx.Done():
+		<-done
+		return m.results, ctx.Err()
+	}
+}
+
+// appendInconclusiveIfAllProbesFailed emits one inconclusive row when every
+// dispatched active-scan request failed, so an unreachable target is never
+// reported as a clean scan.
+func (m *ComponentVersionAnalyzer) appendInconclusiveIfAllProbesFailed() {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	if len(m.results) > 0 {
+		return
+	}
+	if m.scanAttempted > 0 && m.scanFailed >= m.scanAttempted {
+		m.results = append(m.results, ComponentVersionResult{
+			Target: m.Target,
+			Status: statusFromEvidence(EvidenceWeak, false),
+			Detail: formatEvidenceDetail(EvidenceWeak, "All active-scan probes failed with build, transport, or read errors; target reachability could not be established."),
+		})
+	}
 }
 
 // passiveScan performs a non-intrusive scan of the target URL by making a GET request
@@ -122,16 +166,19 @@ func (m *ComponentVersionAnalyzer) passiveScan(ctx context.Context, targetURL st
 // activeScan probes specific paths on the target to find exposed files or configurations
 // (like .env or package.json) that might leak sensitive component version information.
 func (m *ComponentVersionAnalyzer) activeScan(ctx context.Context, base *url.URL, path string) {
+	m.recordScanAttempt()
 	testURL := *base
 	testURL.Path = strings.TrimSuffix(base.Path, "/") + path
 
 	req, err := http.NewRequestWithContext(ctx, "GET", testURL.String(), nil)
 	if err != nil {
+		m.recordScanFailure()
 		return
 	}
 
 	resp, err := m.Client.Do(req)
 	if err != nil {
+		m.recordScanFailure()
 		return
 	}
 	defer resp.Body.Close()
@@ -142,6 +189,7 @@ func (m *ComponentVersionAnalyzer) activeScan(ctx context.Context, base *url.URL
 
 	bodyBytes, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	if err != nil {
+		m.recordScanFailure()
 		return
 	}
 	bodyStr := string(bodyBytes)
@@ -152,16 +200,24 @@ func (m *ComponentVersionAnalyzer) activeScan(ctx context.Context, base *url.URL
 	// the login form field.
 	switch path {
 	case "/.env":
-		envLineRegex := regexp.MustCompile(`(?m)^[A-Za-z_][A-Za-z0-9_]*=`)
+		envLineRegex := regexp.MustCompile(`(?m)^[A-Z][A-Z0-9_]{2,}=\S+`)
 		if envLineRegex.MatchString(bodyStr) {
 			m.addResult("Found exposed configuration file: /.env (sensitive settings; no version information available)", statusFromEvidence(EvidenceWeak, false))
 		}
 	case "/package.json":
 		var manifest struct {
-			Name    string `json:"name"`
-			Version string `json:"version"`
+			Name            string            `json:"name"`
+			Version         string            `json:"version"`
+			Dependencies    map[string]string `json:"dependencies"`
+			DevDependencies map[string]string `json:"devDependencies"`
+			Scripts         map[string]string `json:"scripts"`
 		}
 		if err := json.Unmarshal([]byte(bodyStr), &manifest); err == nil && manifest.Name != "" {
+			// A bare {"name": ...} JSON document is not proof of an exposed
+			// component manifest; require real project structure.
+			if len(manifest.Dependencies) == 0 && len(manifest.DevDependencies) == 0 && len(manifest.Scripts) == 0 {
+				return
+			}
 			if manifest.Version != "" {
 				m.addResult(fmt.Sprintf("Found exposed configuration file: /package.json (name=%s, version=%s)", manifest.Name, manifest.Version), statusFromEvidence(EvidenceConfirmed, false))
 			} else {
@@ -193,6 +249,22 @@ func (m *ComponentVersionAnalyzer) activeScan(ctx context.Context, base *url.URL
 			m.addResult("Found exposed configuration file: /README.md", statusFromEvidence(EvidenceWeak, false))
 		}
 	}
+}
+
+// recordScanAttempt counts one dispatched active-scan probe.
+func (m *ComponentVersionAnalyzer) recordScanAttempt() {
+	m.Mu.Lock()
+	m.scanAttempted++
+	m.Mu.Unlock()
+}
+
+// recordScanFailure counts a build/transport/read failure of one active-scan
+// probe so an all-failed active scan can be reported as inconclusive. The
+// attempt itself is already counted by recordScanAttempt at dispatch.
+func (m *ComponentVersionAnalyzer) recordScanFailure() {
+	m.Mu.Lock()
+	m.scanFailed++
+	m.Mu.Unlock()
 }
 
 func (m *ComponentVersionAnalyzer) addResult(detail, status string) {

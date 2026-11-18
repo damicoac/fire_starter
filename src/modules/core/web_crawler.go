@@ -36,6 +36,9 @@ func NewWebCrawler(target string, customURLs []string, maxDepth int) *WebCrawler
 }
 
 func (c *WebCrawler) Crawl(ctx context.Context) ([]string, error) {
+	if c.MaxDepth <= 0 {
+		return nil, fmt.Errorf("web_crawler: MaxDepth must be positive, got %d", c.MaxDepth)
+	}
 	if len(c.TargetURLs) == 0 {
 		return nil, nil
 	}

@@ -56,46 +56,100 @@ var sprayUsernames = []string{
 
 const sprayPassword = "Password1!"
 
-func (m *PasswordSpraying) getBaselineAuthBypass(ctx context.Context) (bool, int, string, error) {
+// spraySuccessMarkers are positive-login markers; the baseline probe uses
+// invalid credentials, so a baseline response carrying one of them indicates
+// the endpoint accepts anything and spraying findings are meaningless.
+var spraySuccessMarkers = []string{"welcome", "dashboard", "logged in", "sign-on complete", "authenticated", "session established"}
+
+// sprayLockoutLocationTokens are whole path tokens (the Location split on
+// non-alphanumerics) that identify a lockout/throttling redirect. Substring
+// matching would also fire on benign paths such as /blocked or /moderate.
+var sprayLockoutLocationTokens = map[string]bool{
+	"lock": true, "locked": true, "locking": true, "unlock": true,
+	"rate": true, "throttle": true, "throttled": true, "throttling": true,
+	"attempt": true, "attempts": true,
+}
+
+// sprayLocationIndicatesLockout reports whether any path token of a redirect
+// Location is an exact lockout/throttling marker.
+func sprayLocationIndicatesLockout(location string) bool {
+	for _, tok := range strings.FieldsFunc(strings.ToLower(location), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
+	}) {
+		if sprayLockoutLocationTokens[tok] {
+			return true
+		}
+	}
+	return false
+}
+
+// sprayBaseline holds the outcome of the invalid-credential baseline request.
+type sprayBaseline struct {
+	authBypass  bool   // baseline failure response itself looked like a successful login
+	location    string // baseline redirect target, if any
+	cookieNames map[string]bool
+	body        string
+	statusCode  int
+}
+
+func (m *PasswordSpraying) getBaselineAuthBypass(ctx context.Context) (sprayBaseline, error) {
+	baseline := sprayBaseline{cookieNames: map[string]bool{}}
 	body := "username=invalid_user_12345&password=invalid_password_12345"
 	req, err := http.NewRequestWithContext(ctx, "POST", m.Target, strings.NewReader(body))
 	if err != nil {
-		return false, 0, "", err
+		return baseline, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := m.Client.Do(req)
 	if err != nil {
-		return false, 0, "", err
+		return baseline, err
 	}
 	defer resp.Body.Close()
 
 	bodyBytes, err := ReadBoundedBody(resp.Body, MaxResponseBodyBytes)
 	if err != nil {
-		return false, 0, "", err
+		return baseline, err
+	}
+
+	baseline.statusCode = resp.StatusCode
+	baseline.body = string(bodyBytes)
+	baseline.location = resp.Header.Get("Location")
+	for _, c := range resp.Cookies() {
+		baseline.cookieNames[c.Name] = true
 	}
 
 	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusFound || resp.StatusCode == http.StatusSeeOther {
-		location := resp.Header.Get("Location")
-		locationLower := strings.ToLower(location)
+		locationLower := strings.ToLower(baseline.location)
 
 		isLikelyError := false
-		if location != "" && (strings.Contains(locationLower, "error") || strings.Contains(locationLower, "login") || strings.Contains(locationLower, "retry")) {
+		if baseline.location != "" && (strings.Contains(locationLower, "error") || strings.Contains(locationLower, "login") || strings.Contains(locationLower, "retry")) {
 			isLikelyError = true
 		}
 
-		bodyStr := strings.ToLower(string(bodyBytes))
+		bodyStr := strings.ToLower(baseline.body)
 
 		if resp.StatusCode == http.StatusOK && (strings.Contains(bodyStr, "invalid") || strings.Contains(bodyStr, "incorrect") || strings.Contains(bodyStr, "wrong") || strings.Contains(bodyStr, "failed")) {
 			isLikelyError = true
 		}
 
-		if (len(resp.Cookies()) > 0 || location != "") && !isLikelyError {
-			return true, len(bodyBytes), location, nil
+		// The baseline failure response itself carries a success marker only
+		// when it positively looks like a logged-in page (2xx) or redirects to
+		// a non-auth target (3xx) — never merely because it sets a cookie or
+		// redirects anywhere.
+		successMarker := false
+		if resp.StatusCode == http.StatusOK && containsAnyToken(bodyStr, spraySuccessMarkers) {
+			successMarker = true
 		}
-		return false, len(bodyBytes), location, nil
+		if (resp.StatusCode == http.StatusFound || resp.StatusCode == http.StatusSeeOther) && baseline.location != "" && !isLikelyError {
+			successMarker = true
+		}
+
+		if successMarker && !isLikelyError {
+			baseline.authBypass = true
+		}
 	}
-	return false, len(bodyBytes), "", nil
+	return baseline, nil
 }
 
 func (m *PasswordSpraying) Execute(ctx context.Context) ([]PasswordSprayingResult, error) {
@@ -103,13 +157,23 @@ func (m *PasswordSpraying) Execute(ctx context.Context) ([]PasswordSprayingResul
 	m.lockoutDetected = false
 	m.aborted = false
 
-	baselineAuthBypass, baselineLen, baselineLocation, err := m.getBaselineAuthBypass(ctx)
+	baseline, err := m.getBaselineAuthBypass(ctx)
 	if err != nil {
 		m.results = append(m.results, PasswordSprayingResult{
 			Target: m.Target,
 			Status: "inconclusive",
 			Detail: "Baseline authentication probe failed: " + err.Error(),
 		})
+		return m.results, nil
+	}
+
+	// A 429 on the baseline probe means rate limiting is already active:
+	// spraying further would only deepen lockouts.
+	if baseline.statusCode == http.StatusTooManyRequests {
+		m.Mu.Lock()
+		m.lockoutDetected = true
+		m.Mu.Unlock()
+		m.appendLockoutInconclusive()
 		return m.results, nil
 	}
 
@@ -136,7 +200,7 @@ func (m *PasswordSpraying) Execute(ctx context.Context) ([]PasswordSprayingResul
 				case <-ctx.Done():
 					return
 				default:
-					m.testUsername(ctx, username, baselineAuthBypass, baselineLen, baselineLocation)
+					m.testUsername(ctx, username, baseline)
 				}
 			}
 		}()
@@ -187,7 +251,7 @@ func sameRedirectPath(a, b string) bool {
 	return "/"+strings.Trim(pa.Path, "/") == "/"+strings.Trim(pb.Path, "/")
 }
 
-func (m *PasswordSpraying) testUsername(ctx context.Context, username string, baselineAuthBypass bool, baselineLen int, baselineLocation string) {
+func (m *PasswordSpraying) testUsername(ctx context.Context, username string, baseline sprayBaseline) {
 	body := "username=" + username + "&password=" + sprayPassword
 	req, err := http.NewRequestWithContext(ctx, "POST", m.Target, strings.NewReader(body))
 	if err != nil {
@@ -200,6 +264,16 @@ func (m *PasswordSpraying) testUsername(ctx context.Context, username string, ba
 		return
 	}
 	defer resp.Body.Close()
+
+	// HTTP 429 anywhere is an active rate limiter: treat it as a lockout and
+	// abort the remaining spray jobs.
+	if resp.StatusCode == http.StatusTooManyRequests {
+		m.Mu.Lock()
+		m.lockoutDetected = true
+		m.aborted = true
+		m.Mu.Unlock()
+		return
+	}
 
 	// 200 OK or 302 Redirect might indicate a successful login
 	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusFound || resp.StatusCode == http.StatusSeeOther {
@@ -237,41 +311,70 @@ func (m *PasswordSpraying) testUsername(ctx context.Context, username string, ba
 			return
 		}
 
+		// A 3xx redirect to a lockout/throttling target is a lockout signal too.
+		if resp.StatusCode != http.StatusOK && sprayLocationIndicatesLockout(location) {
+			m.Mu.Lock()
+			m.lockoutDetected = true
+			m.aborted = true
+			m.Mu.Unlock()
+			return
+		}
+
 		// A redirect counts as a successful login only when it goes somewhere
 		// other than the baseline's (failed-login) redirect target. Paths are
 		// compared normalized so "/login" vs "/login/" and absolute-vs-relative
 		// forms of the same path compare equal.
-		if location != "" && sameRedirectPath(location, baselineLocation) {
+		if location != "" && sameRedirectPath(location, baseline.location) {
 			isLikelyError = true
 		}
 
-		if resp.StatusCode == http.StatusOK {
-			if strings.Contains(bodyStr, "invalid") || strings.Contains(bodyStr, "incorrect") || strings.Contains(bodyStr, "wrong") || strings.Contains(bodyStr, "failed") {
-				isLikelyError = true
-			} else {
-				diff := len(bodyBytes) - baselineLen
-				if diff < 0 {
-					diff = -diff
-				}
-				isSignificantlyDifferent := float64(diff)/float64(baselineLen+1) > 0.1 || diff > 500
-				if !isSignificantlyDifferent {
-					isLikelyError = true
+		if resp.StatusCode == http.StatusFound || resp.StatusCode == http.StatusSeeOther {
+			// Success via redirect requires a Location that is not the failed
+			// login target and carries no error markers.
+			if location != "" && !isLikelyError {
+				if !baseline.authBypass {
+					m.Mu.Lock()
+					m.RecordPoC(req, nil, "Successful login found via spraying: "+username+" / "+sprayPassword)
+					m.results = append(m.results, PasswordSprayingResult{
+						Target: m.Target,
+						Status: "vulnerable",
+						Detail: "Successful login found via spraying: " + username + " / " + sprayPassword,
+					})
+					m.Mu.Unlock()
 				}
 			}
+			return
 		}
 
-		// Just a heuristic - if it doesn't set a cookie or redirect to dashboard, it might be a false positive
-		if (len(resp.Cookies()) > 0 || location != "") && !isLikelyError {
-			if !baselineAuthBypass {
-				m.Mu.Lock()
-				m.RecordPoC(req, nil, "Successful login found via spraying: "+username+" / "+sprayPassword)
-				m.results = append(m.results, PasswordSprayingResult{
-					Target: m.Target,
-					Status: "vulnerable",
-					Detail: "Successful login found via spraying: " + username + " / " + sprayPassword,
-				})
-				m.Mu.Unlock()
+		// 200 OK: failure-marker pages can never be successful logins.
+		if strings.Contains(bodyStr, "invalid") || strings.Contains(bodyStr, "incorrect") || strings.Contains(bodyStr, "wrong") || strings.Contains(bodyStr, "failed") {
+			return
+		}
+
+		// Success oracle: the response must set at least one cookie name the
+		// baseline response did not set AND its normalized body must differ
+		// from the baseline body. Length differences and any-cookie heuristics
+		// are not evidence of a session.
+		newCookie := false
+		for _, c := range resp.Cookies() {
+			if !baseline.cookieNames[c.Name] {
+				newCookie = true
+				break
 			}
+		}
+		if !newCookie || normalizedCompactLower(string(bodyBytes)) == normalizedCompactLower(baseline.body) {
+			return
+		}
+
+		if !baseline.authBypass {
+			m.Mu.Lock()
+			m.RecordPoC(req, nil, "Successful login found via spraying: "+username+" / "+sprayPassword)
+			m.results = append(m.results, PasswordSprayingResult{
+				Target: m.Target,
+				Status: "vulnerable",
+				Detail: "Successful login found via spraying: " + username + " / " + sprayPassword,
+			})
+			m.Mu.Unlock()
 		}
 	}
 }

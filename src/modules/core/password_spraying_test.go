@@ -258,6 +258,93 @@ func TestPasswordSpraying_Execute_LockoutAborts(t *testing.T) {
 	}
 }
 
+// An HTTP 429 anywhere is an active rate limiter: it must abort the spray
+// and yield an inconclusive lockout row, never a finding.
+func TestPasswordSpraying_Execute_429IsLockout(t *testing.T) {
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			body, _ := io.ReadAll(req.Body)
+			if strings.Contains(string(body), "invalid_user_12345") {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(bytes.NewBufferString("invalid credentials")),
+					Header:     make(http.Header),
+				}
+			}
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Body:       io.NopCloser(bytes.NewBufferString("")),
+				Header:     make(http.Header),
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewPasswordSpraying("http://example.com")
+	results, err := module.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	for _, r := range results {
+		if r.Status == "vulnerable" {
+			t.Errorf("429 responses must never be judged successful logins: %+v", r)
+		}
+	}
+	foundInconclusive := false
+	for _, r := range results {
+		if r.Status == "inconclusive" {
+			foundInconclusive = true
+		}
+	}
+	if !foundInconclusive {
+		t.Errorf("Expected an inconclusive lockout result, got %+v", results)
+	}
+}
+
+// A failure page that echoes the submitted username (so its body differs
+// strongly from the baseline) but sets only a cookie name the baseline also
+// set is NOT a successful login: the cookie-name differential suppresses it.
+func TestPasswordSpraying_Execute_EchoedUsernameErrorPageNotSuccess(t *testing.T) {
+	mockTransport := &MockTransport{
+		RoundTripFunc: func(req *http.Request) *http.Response {
+			hdr := make(http.Header)
+			hdr.Set("Set-Cookie", "tracking=1")
+			body, _ := io.ReadAll(req.Body)
+			reqBody := string(body)
+			if strings.Contains(reqBody, "invalid_user_12345") {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(bytes.NewBufferString("please try again")),
+					Header:     hdr,
+				}
+			}
+			username := reqBody
+			if i := strings.Index(reqBody, "&"); i >= 0 {
+				username = reqBody[len("username="):i]
+			}
+			echo := "Account lookup for user " + username + ": no matching directory entry. " +
+				strings.Repeat("The profile page, recovery options and preferences are listed below. ", 30)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewBufferString(echo)),
+				Header:     hdr,
+			}
+		},
+	}
+	cleanup := SetMockTransport(mockTransport)
+	defer cleanup()
+
+	module := NewPasswordSpraying("http://example.com")
+	results, err := module.Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("Echoed-username failure page with no new cookie name must not be a finding, got %+v", results)
+	}
+}
+
 func TestPasswordSpraying__Execute_CanceledContext(t *testing.T) {
 	module := NewPasswordSpraying("http://example.com")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -288,4 +375,19 @@ func TestPasswordSpraying__Execute_HTTPError(t *testing.T) {
 	module := NewPasswordSpraying("http://example.com")
 	ctx := context.Background()
 	_, _ = module.Execute(ctx)
+}
+
+// TestSprayLocationIndicatesLockout_TokenMatching pins exact-token lockout
+// detection: substring look-alikes (/blocked, /moderate) must not abort.
+func TestSprayLocationIndicatesLockout_TokenMatching(t *testing.T) {
+	for _, loc := range []string{"/account/locked", "https://sso.example.com/rate/limited", "/auth/throttle"} {
+		if !sprayLocationIndicatesLockout(loc) {
+			t.Errorf("sprayLocationIndicatesLockout(%q) = false, want true", loc)
+		}
+	}
+	for _, loc := range []string{"/blocked", "/moderate", "/dashboard"} {
+		if sprayLocationIndicatesLockout(loc) {
+			t.Errorf("sprayLocationIndicatesLockout(%q) = true, want false", loc)
+		}
+	}
 }

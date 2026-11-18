@@ -98,12 +98,13 @@ func (m *JsonHijackingTest) Execute(ctx context.Context) ([]JsonHijackingTestRes
 		return m.results, nil
 	}
 
-	// If it returns a top-level array, it might be vulnerable to JSON Hijacking
-	m.RecordPoC(req, nil, "Potential JSON Hijacking vulnerability: Endpoint returns a top-level JSON array without requiring specific CSRF protection headers.")
+	// A top-level JSON array is a legacy JSON-hijacking surface, but the
+	// technique is dead in current browsers: report it as informational, not
+	// as a vulnerability.
 	m.results = append(m.results, JsonHijackingTestResult{
 		Target: m.Target,
-		Status: "vulnerable",
-		Detail: "Potential JSON Hijacking vulnerability: Endpoint returns a top-level JSON array without requiring specific CSRF protection headers.",
+		Status: "informational",
+		Detail: "Public JSON array response (JSON hijacking is not exploitable in current browsers; informational)",
 	})
 
 	return m.results, nil

@@ -70,7 +70,7 @@ func buildHelperHistory(env *agentEnv, currentTarget string, finding string, ori
 	if rawBytes, err := env.kg.ToJSONWithoutTestCases(currentTarget); err == nil {
 		rawGraph = rawBytes
 	}
-	prompt := fmt.Sprintf("You are a vulnerability helper sub-agent. Focus only on target '%s' and finding '%s' (vuln_id: %s). Use the available tools to validate exploitability and refine proof-of-concept evidence. DO NOT write your own custom tools or scripts; you must use the provided tools for testing. If this is a confirmed security vulnerability, call log_vulnerability with status='confirmed', severity='critical'|'high'|'medium'|'low'|'unknown', vuln_id, target, finding, exploitable yes/no and concise test_code. If this is a confirmed informational observation rather than a vulnerability, call log_vulnerability with status='informational' and severity='informational'. Make sure the 'finding' parameter contains a detailed description of how the issue works and step-by-step instructions to recreate it. For exposed credentials (e.g. .env leaks), do not set exploitable='yes' unless you successfully authenticate using the leaked credentials and include that evidence in test_code. If not enough evidence, do not log it as confirmed or informational.", currentTarget, finding, origVulnID)
+	prompt := fmt.Sprintf("You are a vulnerability helper sub-agent. Focus only on target '%s' and finding '%s' (vuln_id: %s). Use the available tools to validate exploitability and refine proof-of-concept evidence. DO NOT write your own custom tools or scripts; you must use the provided tools for testing. If this is a confirmed security vulnerability, call log_vulnerability with status='confirmed', severity='critical'|'high'|'medium'|'low'|'unknown', vuln_id, target, finding, exploitable yes/no and concise test_code. If this is a confirmed informational observation rather than a vulnerability, call log_vulnerability with status='informational' and severity='informational'. Make sure the 'finding' parameter contains a detailed description of how the issue works and step-by-step instructions to recreate it. For exposed credentials (e.g. .env leaks), do not set exploitable='yes' unless you successfully authenticate using the leaked credentials and include that evidence in test_code. If not enough evidence, do not log it as confirmed or informational. The queued finding text may describe a negative or inconclusive result. Confirm only if your own verification reproduces it; otherwise mark informational or disprove.", currentTarget, finding, origVulnID)
 
 	history := []fantasy.Message{
 		{Role: "system", Content: []fantasy.MessagePart{fantasy.TextPart{Text: "You are a focused vulnerability helper sub-agent. DO NOT write your own custom tools or scripts; you must use the provided tools for testing."}}},
@@ -117,6 +117,7 @@ func runVulnerabilityHelperSubAgent(ctx context.Context, env *agentEnv, currentT
 	defer func() { env.currentTarget = prevTarget }()
 
 	env.vulnLogged = false
+	env.evidenceToolRuns = 0
 
 	history := buildHelperHistory(env, currentTarget, finding, origVulnID)
 
@@ -161,6 +162,10 @@ func runVulnerabilityHelperSubAgent(ctx context.Context, env *agentEnv, currentT
 		log.Infof("Helper exhausted iterations without confirmed or informational finding, marking disproven for vuln_id=%s", origVulnID)
 		_ = matrix.MarkVulnerabilityDisproven(origVulnID)
 	}
+
+	// The queued finding reached a terminal resolution either way; prune the
+	// graph string so it is neither re-queued nor re-published in dumps.
+	env.kg.RemoveVulnerability(currentTarget, finding)
 
 	return out.String()
 }
